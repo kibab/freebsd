@@ -384,7 +384,7 @@ MIASM =  \
 	shmctl.o \
 	lpathconf.o \
 	cap_new.o \
-	cap_getrights.o \
+	cap_rights_get.o \
 	cap_enter.o \
 	cap_getmode.o \
 	pdfork.o \
@@ -400,4 +400,9 @@ MIASM =  \
 	rctl_remove_rule.o \
 	posix_fallocate.o \
 	posix_fadvise.o \
-	wait6.o
+	wait6.o \
+	cap_rights_limit.o \
+	cap_ioctls_limit.o \
+	cap_ioctls_get.o \
+	cap_fcntls_limit.o \
+	cap_fcntls_get.o

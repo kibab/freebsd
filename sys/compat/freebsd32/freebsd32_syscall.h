@@ -416,7 +416,7 @@
 #define	FREEBSD32_SYS_freebsd32_shmctl	512
 #define	FREEBSD32_SYS_lpathconf	513
 #define	FREEBSD32_SYS_cap_new	514
-#define	FREEBSD32_SYS_cap_getrights	515
+#define	FREEBSD32_SYS_cap_rights_get	515
 #define	FREEBSD32_SYS_cap_enter	516
 #define	FREEBSD32_SYS_cap_getmode	517
 #define	FREEBSD32_SYS_freebsd32_pselect	522
@@ -430,4 +430,9 @@
 #define	FREEBSD32_SYS_freebsd32_posix_fallocate	530
 #define	FREEBSD32_SYS_freebsd32_posix_fadvise	531
 #define	FREEBSD32_SYS_freebsd32_wait6	532
-#define	FREEBSD32_SYS_MAXSYSCALL	533
+#define	FREEBSD32_SYS_cap_rights_limit	533
+#define	FREEBSD32_SYS_cap_ioctls_limit	534
+#define	FREEBSD32_SYS_cap_ioctls_get	535
+#define	FREEBSD32_SYS_cap_fcntls_limit	536
+#define	FREEBSD32_SYS_cap_fcntls_get	537
+#define	FREEBSD32_SYS_MAXSYSCALL	538

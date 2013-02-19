@@ -400,7 +400,7 @@ nsmb_getfp(struct filedesc* fdp, int fd, int flag)
 
 	FILEDESC_SLOCK(fdp);
 	if (fd < 0 || fd >= fdp->fd_nfiles ||
-	    (fp = fdp->fd_ofiles[fd]) == NULL ||
+	    (fp = fdp->fd_ofiles[fd].fde_file) == NULL ||
 	    (fp->f_flag & flag) == 0) {
 		FILEDESC_SUNLOCK(fdp);
 		return (NULL);

@@ -1,6 +1,9 @@
 /*-
- * Copyright (c) 2007 Pawel Jakub Dawidek <pjd@FreeBSD.org>
+ * Copyright (c) 2012 The FreeBSD Foundation
  * All rights reserved.
+ *
+ * This software was developed by Pawel Jakub Dawidek under sponsorship from
+ * the FreeBSD Foundation.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -22,43 +25,36 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
-#ifndef _OPENSOLARIS_SYS_FILE_H_
-#define	_OPENSOLARIS_SYS_FILE_H_
+#ifndef _MISC_H_
+#define	_MISC_H_
 
-#include_next <sys/file.h>
+#define	OK()	do {							\
+	int _serrno = errno;						\
+	printf("ok # line %u\n", __LINE__);				\
+	fflush(stdout);							\
+	errno = _serrno;						\
+} while (0)
+#define	NOK()	do {							\
+	int _serrno = errno;						\
+	printf("not ok # line %u\n", __LINE__);				\
+	fflush(stdout);							\
+	errno = _serrno;						\
+} while (0)
+#define	CHECK(cond)	do {						\
+	if ((cond))							\
+		OK();							\
+	else								\
+		NOK();							\
+} while (0)
 
-#define	FKIOCTL	0x80000000	/* ioctl addresses are from kernel */
+/*
+ * This can be removed once pdwait4(2) is implemented.
+ */
+int pdwait(int pfd);
 
-#ifdef _KERNEL
-typedef	struct file	file_t;
+int descriptor_send(int sock, int fd);
+int descriptor_recv(int sock, int *fdp);
 
-#include <sys/capability.h>
-
-static __inline file_t *
-getf(int fd, cap_rights_t rights)
-{
-	struct file *fp;
-
-	if (fget(curthread, fd, rights, &fp) == 0)
-		return (fp);
-	return (NULL);
-}
-
-static __inline void
-releasef(int fd)
-{
-	struct file *fp;
-
-	/* No CAP_ rights required, as we're only releasing. */
-	if (fget(curthread, fd, 0, &fp) == 0) {
-		fdrop(fp, curthread);
-		fdrop(fp, curthread);
-	}
-}
-#endif	/* _KERNEL */
-
-#endif	/* !_OPENSOLARIS_SYS_FILE_H_ */
+#endif	/* !_MISC_H_ */

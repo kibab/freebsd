@@ -1,6 +1,9 @@
 /*-
- * Copyright (c) 2007 Pawel Jakub Dawidek <pjd@FreeBSD.org>
+ * Copyright (c) 2012 The FreeBSD Foundation
  * All rights reserved.
+ *
+ * This software was developed by Pawel Jakub Dawidek under sponsorship from
+ * the FreeBSD Foundation.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -22,43 +25,26 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
-#ifndef _OPENSOLARIS_SYS_FILE_H_
-#define	_OPENSOLARIS_SYS_FILE_H_
-
-#include_next <sys/file.h>
-
-#define	FKIOCTL	0x80000000	/* ioctl addresses are from kernel */
-
-#ifdef _KERNEL
-typedef	struct file	file_t;
+#include <sys/cdefs.h>
+__FBSDID("$FreeBSD$");
 
 #include <sys/capability.h>
 
-static __inline file_t *
-getf(int fd, cap_rights_t rights)
+#include <assert.h>
+#include <errno.h>
+#include <stdbool.h>
+
+bool
+cap_sandboxed(void)
 {
-	struct file *fp;
+	int mode;
 
-	if (fget(curthread, fd, rights, &fp) == 0)
-		return (fp);
-	return (NULL);
-}
-
-static __inline void
-releasef(int fd)
-{
-	struct file *fp;
-
-	/* No CAP_ rights required, as we're only releasing. */
-	if (fget(curthread, fd, 0, &fp) == 0) {
-		fdrop(fp, curthread);
-		fdrop(fp, curthread);
+	if (cap_getmode(&mode) == -1) {
+		assert(errno == ENOSYS);
+		return (false);
 	}
+	assert(mode == 0 || mode == 1);
+	return (mode == 1);
 }
-#endif	/* _KERNEL */
-
-#endif	/* !_OPENSOLARIS_SYS_FILE_H_ */

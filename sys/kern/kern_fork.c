@@ -136,6 +136,7 @@ sys_pdfork(td, uap)
 		td->td_retval[0] = p2->p_pid;
 		td->td_retval[1] = 0;
 		error = copyout(&fd, uap->fdp, sizeof(fd));
+		/* XXXPJD: Shouldn't we kill new process on copyout() error? */
 	}
 	return (error);
 #else
@@ -942,7 +943,7 @@ fail1:
 		vmspace_free(vm2);
 	uma_zfree(proc_zone, newproc);
 #ifdef PROCDESC
-	if (((flags & RFPROCDESC) != 0) && (fp_procdesc != NULL)) {
+	if ((flags & RFPROCDESC) != 0 && fp_procdesc != NULL) {
 		fdclose(td->td_proc->p_fd, fp_procdesc, *procdescp, td);
 		fdrop(fp_procdesc, td);
 	}
