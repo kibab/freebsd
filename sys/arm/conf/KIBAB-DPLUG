@@ -89,12 +89,6 @@ device  	ehci 			# USB host controller
 device  	umass			# Mass storage
 device  	uhid 			# Human-interface devices
 device  	rum  			# Ralink Technology RT2501USB wireless NICs
-device  	uath 			# Atheros AR5523 wireless NICs
-device  	ural 			# Ralink Technology RT2500USB wireless NICs
-device  	zyd  			# ZyDAS zb1211/zb1211b wireless NICs
-device  	urtw 			# Realtek RTL8187B/L USB
-device  	upgt 			# Conexant/Intersil PrismGT SoftMAC USB
-device  	u3g  			# USB-based 3G modems (Option, Huawei, Sierra)
 
 # I2C (TWSI)
 device		iic
@@ -170,4 +164,3 @@ options 	BOOTP_WIRED_TO=mge0
 # nomakeoptions FDT_DTS_FILE
 # makeoptions	FDT_DTS_FILE=dreamplug-1001N.dts
 # device 	nand
-
