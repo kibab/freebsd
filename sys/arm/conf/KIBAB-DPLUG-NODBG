@@ -25,6 +25,10 @@ ident		KIBAB-DPLUG-NODBG
 
 include KIBAB-DPLUG
 
+# Do not compile FDT in kernel
+nomakeoptions	FDT_DTS_FILE
+nooptions 	FDT_DTB_STATIC
+
 # Debugging
 nomakeoptions 	DEBUG
 nooptions 	BREAK_TO_DEBUGGER
