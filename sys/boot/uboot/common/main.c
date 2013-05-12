@@ -122,6 +122,7 @@ main(void)
 	struct api_signature *sig = NULL;
 	int i;
 	struct open_file f;
+	char *ub_currdev;
 
 	if (!api_search_sig(&sig))
 		return (-1);
@@ -166,6 +167,7 @@ main(void)
 	printf("(%s, %s)\n", bootprog_maker, bootprog_date);
 	meminfo();
 
+	ub_currdev = ub_env_get("currdev");
 	/*
 	 * March through the device switch probing for things.
 	 */
@@ -198,8 +200,13 @@ main(void)
 	if (devsw[i] == NULL)
 		panic("No boot device found!");
 
-	env_setenv("currdev", EV_VOLATILE, uboot_fmtdev(&currdev),
-	    uboot_setcurrdev, env_nounset);
+	if (ub_currdev) {
+		env_setenv("currdev", EV_VOLATILE, ub_currdev,
+		    uboot_setcurrdev, env_nounset);
+	} else {
+		env_setenv("currdev", EV_VOLATILE, uboot_fmtdev(&currdev),
+		    uboot_setcurrdev, env_nounset);
+	}
 	env_setenv("loaddev", EV_VOLATILE, uboot_fmtdev(&currdev),
 	    env_noset, env_nounset);
 
