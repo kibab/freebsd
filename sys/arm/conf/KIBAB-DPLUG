@@ -98,6 +98,11 @@ device		iicbus
 device		mvs
 device		ahci
 
+# SDIO
+device		mv_sdio
+device		mmcsd
+device		mmc
+
 # Sound
 device 		sound
 device 		snd_uaudio
