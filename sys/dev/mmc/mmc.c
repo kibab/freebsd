@@ -89,6 +89,8 @@ struct mmc_ivars {
 	uint32_t raw_sd_status[16];	/* Raw bits of the SD_STATUS */
 	uint16_t rca;
 	enum mmc_card_mode mode;
+	uint8_t sdio_present;
+	uint8_t mem_present;
 	struct mmc_cid cid;	/* cid decoded */
 	struct mmc_csd csd;	/* csd decoded */
 	struct mmc_scr scr;	/* scr decoded */
@@ -273,6 +275,9 @@ mmc_acquire_bus(device_t busdev, device_t dev)
 	struct mmc_ivars *ivar;
 	int err;
 	int rca;
+
+	/* XXX HACK */
+	mmc_debug = 10;
 
 	err = MMCBR_ACQUIRE_HOST(device_get_parent(busdev), busdev);
 	if (err)
@@ -1264,7 +1269,7 @@ mmc_discover_cards(struct mmc_softc *sc)
 	if (bootverbose || mmc_debug)
 		device_printf(sc->dev, "Probing cards\n");
 	while (1) {
-		err = mmc_all_send_cid(sc, raw_cid);
+		err = mmc_all_send_cid(sc, raw_cid); /* Command 2 */
 		if (err == MMC_ERR_TIMEOUT)
 			break;
 		if (err != MMC_ERR_NONE) {
@@ -1518,9 +1523,48 @@ mmc_delete_cards(struct mmc_softc *sc)
 	return (0);
 }
 
+static int
+mmc_probe_sdio(struct mmc_softc *sc, uint32_t ocr, uint32_t *rocr, uint8_t *nfunc, uint8_t *mem_present) {
+	struct mmc_command cmd;
+	int err = MMC_ERR_NONE, i;
+
+	memset(&cmd, 0, sizeof(cmd));
+	cmd.opcode = IO_SEND_OP_COND;
+	cmd.arg = 0;
+	cmd.flags = MMC_RSP_R4;
+	cmd.data = NULL;
+
+	for (i = 0; i < 1000; i++) {
+		err = mmc_wait_for_cmd(sc, &cmd, CMD_RETRIES);
+		if (err != MMC_ERR_NONE)
+			break;
+		if ((cmd.resp[0] & MMC_OCR_CARD_BUSY) ||
+		    (ocr & MMC_OCR_VOLTAGE) == 0)
+			break;
+		err = MMC_ERR_TIMEOUT;
+		mmc_ms_delay(10);
+	}
+
+	if (err == MMC_ERR_NONE) {
+		device_printf(sc->dev, "No timeout: OCR %08X, here are the values:\n", cmd.resp[0]);
+		if (rocr)
+			*rocr = cmd.resp[0];
+		if (nfunc)
+			*nfunc = cmd.resp[0] >> 28 & 0x7;
+		if (mem_present)
+			*mem_present = cmd.resp[0] >> 27 & 0x1;
+
+		device_printf(sc->dev, "NF: %d\n", cmd.resp[0] >> 28 & 0x7);
+		device_printf(sc->dev, "MEM: %d\n", cmd.resp[0] >> 27 & 0x1);
+	}
+
+	return (err);
+}
+
 static void
 mmc_go_discovery(struct mmc_softc *sc)
 {
+	uint8_t nfunc, mem_present;
 	uint32_t ocr;
 	device_t dev;
 	int err;
@@ -1536,17 +1580,20 @@ mmc_go_discovery(struct mmc_softc *sc)
 		if (bootverbose || mmc_debug)
 			device_printf(sc->dev, "Probing bus\n");
 		mmc_idle_cards(sc);
-		err = mmc_send_if_cond(sc, 1);
+		err = mmc_send_if_cond(sc, 1);  /* SD_SEND_IF_COND = 8 */
 		if ((bootverbose || mmc_debug) && err == 0)
 			device_printf(sc->dev, "SD 2.0 interface conditions: OK\n");
-		if (mmc_send_app_op_cond(sc, 0, &ocr) != MMC_ERR_NONE) {
+		if (mmc_probe_sdio(sc, 0, &ocr, &nfunc, &mem_present) == MMC_ERR_NONE) {
+			device_printf(dev, "SDIO probe OK (OCR: 0x%08x, F%d functions, memory: %d)\n", ocr, nfunc, mem_present);
+		} else
+		if (mmc_send_app_op_cond(sc, 0, &ocr) != MMC_ERR_NONE) { /* retry 55 -> then 41 */
 			if (bootverbose || mmc_debug)
 				device_printf(sc->dev, "SD probe: failed\n");
 			/*
 			 * Failed, try MMC
 			 */
 			mmcbr_set_mode(dev, mode_mmc);
-			if (mmc_send_op_cond(sc, 0, &ocr) != MMC_ERR_NONE) {
+			if (mmc_send_op_cond(sc, 0, &ocr) != MMC_ERR_NONE) { /* command 1 */
 				if (bootverbose || mmc_debug)
 					device_printf(sc->dev, "MMC probe: failed\n");
 				ocr = 0; /* Failed both, powerdown. */
@@ -1580,6 +1627,12 @@ mmc_go_discovery(struct mmc_softc *sc)
 	 * Reselect the cards after we've idled them above.
 	 */
 	if (mmcbr_get_mode(dev) == mode_sd) {
+		if (nfunc > 0) {
+			err = mmc_probe_sdio(sc, 0, &ocr, &nfunc, &mem_present);
+			if (err != MMC_ERR_NONE) {
+				device_printf(sc->dev,"Error detecting SDIO after reset");
+			}
+		}
 		err = mmc_send_if_cond(sc, 1);
 		mmc_send_app_op_cond(sc,
 		    (err ? 0 : MMC_OCR_CCS) | mmcbr_get_ocr(dev), NULL);
