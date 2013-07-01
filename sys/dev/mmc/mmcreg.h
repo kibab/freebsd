@@ -85,6 +85,7 @@ struct mmc_command {
 #define	MMC_RSP_R1B	(MMC_RSP_PRESENT | MMC_RSP_CRC | MMC_RSP_OPCODE | MMC_RSP_BUSY)
 #define	MMC_RSP_R2	(MMC_RSP_PRESENT | MMC_RSP_136 | MMC_RSP_CRC)
 #define	MMC_RSP_R3	(MMC_RSP_PRESENT)
+#define MMC_RSP_R4	(MMC_RSP_PRESENT)
 #define	MMC_RSP_R6	(MMC_RSP_PRESENT | MMC_RSP_CRC)
 #define	MMC_RSP_R7	(MMC_RSP_PRESENT | MMC_RSP_CRC)
 #define	MMC_RSP(x)	((x) & MMC_RSP_MASK)
@@ -181,7 +182,7 @@ struct mmc_request {
 #define	MMC_SET_RELATIVE_ADDR	3
 #define	SD_SEND_RELATIVE_ADDR	3
 #define	MMC_SET_DSR		4
-			/* reserved: 5 */
+#define IO_SEND_OP_COND		5
 #define	MMC_SWITCH_FUNC		6
 #define	 MMC_SWITCH_FUNC_CMDS	 0
 #define	 MMC_SWITCH_FUNC_SET	 1
