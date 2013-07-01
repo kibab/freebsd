@@ -86,6 +86,7 @@ struct mmc_command {
 #define	MMC_RSP_R2	(MMC_RSP_PRESENT | MMC_RSP_136 | MMC_RSP_CRC)
 #define	MMC_RSP_R3	(MMC_RSP_PRESENT)
 #define MMC_RSP_R4	(MMC_RSP_PRESENT)
+#define MMC_RSP_R5	(MMC_RSP_PRESENT | MMC_RSP_CRC | MMC_RSP_OPCODE)
 #define	MMC_RSP_R6	(MMC_RSP_PRESENT | MMC_RSP_CRC)
 #define	MMC_RSP_R7	(MMC_RSP_PRESENT | MMC_RSP_CRC)
 #define	MMC_RSP(x)	((x) & MMC_RSP_MASK)
@@ -151,6 +152,30 @@ struct mmc_command {
 #define	R1_STATE_RCV	6
 #define	R1_STATE_PRG	7
 #define	R1_STATE_DIS	8
+
+/*
+ * R5 responses
+ *
+ * Types (per SD 2.0 standard)
+ *e : error bit
+ *s : status bit
+ *r : detected and set for the actual command response
+ *x : Detected and set during command execution.  The host can get
+ *    the status by issuing a command with R1 response.
+ *
+ * Clear Condition (per SD 2.0 standard)
+ *a : according to the card current state.
+ *b : always related to the previous command.  reception of a valid
+ *    command will clear it (with a delay of one command).
+ *c : clear by read
+ */
+#define R5_COM_CRC_ERROR		(1u << 15)/* er, b */
+#define R5_ILLEGAL_COMMAND		(1u << 14)/* er, b */
+#define R5_IO_CURRENT_STATE_MASK	(3u << 12)/* s, b */
+#define R5_IO_CURRENT_STATE(x) 		(((x) & R5_IO_CURRENT_STATE_MASK) >> 12)
+#define R5_ERROR			(1u << 11)/* erx, c */
+#define R5_FUNCTION_NUMBER		(1u << 9)/* er, c */
+#define R5_OUT_OF_RANGE			(1u << 8)/* er, c */
 
 struct mmc_data {
 	size_t len;		/* size of the data */
@@ -335,6 +360,20 @@ struct mmc_request {
 #define	SD_SET_CARD_DETECT	1
 
 #define	SD_MAX_HS		50000000
+
+/*
+ * SDIO Direct & Extended I/O
+ */
+#define SD_IO_RW_WR		(1u << 31)
+#define SD_IO_RW_FUNC(x)	(((x) & 0x7) << 28)
+#define SD_IO_RW_RAW		(1u << 27)
+#define SD_IO_RW_INCR		(1u << 26)
+#define SD_IO_RW_ADR(x)		(((x) & 0x1FFFF) << 9)
+#define SD_IO_RW_DAT(x)		(((x) & 0xFF) << 0)
+#define SD_IO_RW_LEN(x)		(((x) & 0xFF) << 0)
+
+#define SD_IOE_RW_LEN(x)	(((x) & 0x1FF) << 0)
+#define SD_IOE_RW_BLK		(1u << 27)
 
 /* OCR bits */
 

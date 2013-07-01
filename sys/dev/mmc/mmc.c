@@ -67,6 +67,8 @@ __FBSDID("$FreeBSD$");
 #include <dev/mmc/mmcreg.h>
 #include <dev/mmc/mmcbrvar.h>
 #include <dev/mmc/mmcvar.h>
+#include <dev/mmc/mmcioreg.h>
+
 #include "mmcbr_if.h"
 #include "mmcbus_if.h"
 
@@ -89,8 +91,6 @@ struct mmc_ivars {
 	uint32_t raw_sd_status[16];	/* Raw bits of the SD_STATUS */
 	uint16_t rca;
 	enum mmc_card_mode mode;
-	uint8_t sdio_present;
-	uint8_t mem_present;
 	struct mmc_cid cid;	/* cid decoded */
 	struct mmc_csd csd;	/* csd decoded */
 	struct mmc_scr scr;	/* scr decoded */
@@ -98,11 +98,13 @@ struct mmc_ivars {
 	u_char read_only;	/* True when the device is read-only */
 	u_char bus_width;	/* Bus width to use */
 	u_char timing;		/* Bus timing support */
+	uint8_t mem_present;	/* Is memory present */
 	u_char high_cap;	/* High Capacity card (block addressed) */
 	uint32_t sec_count;	/* Card capacity in 512byte blocks */
 	uint32_t tran_speed;	/* Max speed in normal mode */
 	uint32_t hs_tran_speed;	/* Max speed in high speed mode */
 	uint32_t erase_sector;	/* Card native erase sector size */
+	uint8_t sdio_numfunc;	/* Number of IO functions */
 	char card_id_string[64];/* Formatted CID info (serial, MFG, etc) */
 };
 
@@ -167,6 +169,7 @@ static void mmc_ms_delay(int ms);
 static void mmc_log_card(device_t dev, struct mmc_ivars *ivar, int newcard);
 static void mmc_power_down(struct mmc_softc *sc);
 static void mmc_power_up(struct mmc_softc *sc);
+static int mmc_probe_sdio(struct mmc_softc *sc, uint32_t ocr, uint32_t *rocr, uint8_t *nfunc, uint8_t *mem_present);
 static void mmc_rescan_cards(struct mmc_softc *sc);
 static void mmc_scan(struct mmc_softc *sc);
 static int mmc_sd_switch(struct mmc_softc *sc, uint8_t mode, uint8_t grp,
@@ -487,6 +490,7 @@ mmc_wait_for_command(struct mmc_softc *sc, uint32_t opcode,
 	return (0);
 }
 
+/* CMD0 */
 static void
 mmc_idle_cards(struct mmc_softc *sc)
 {
@@ -511,6 +515,7 @@ mmc_idle_cards(struct mmc_softc *sc)
 	mmc_ms_delay(1);
 }
 
+/* CMD41 -> CMD55 */
 static int
 mmc_send_app_op_cond(struct mmc_softc *sc, uint32_t ocr, uint32_t *rocr)
 {
@@ -538,6 +543,7 @@ mmc_send_app_op_cond(struct mmc_softc *sc, uint32_t ocr, uint32_t *rocr)
 	return (err);
 }
 
+/* CMD1 */
 static int
 mmc_send_op_cond(struct mmc_softc *sc, uint32_t ocr, uint32_t *rocr)
 {
@@ -565,6 +571,7 @@ mmc_send_op_cond(struct mmc_softc *sc, uint32_t ocr, uint32_t *rocr)
 	return (err);
 }
 
+/* CMD8 */
 static int
 mmc_send_if_cond(struct mmc_softc *sc, uint8_t vhs)
 {
@@ -617,6 +624,7 @@ mmc_power_down(struct mmc_softc *sc)
 	mmcbr_update_ios(dev);
 }
 
+/* CMD7 */
 static int
 mmc_select_card(struct mmc_softc *sc, uint16_t rca)
 {
@@ -1068,6 +1076,7 @@ mmc_app_decode_sd_status(uint32_t *raw_sd_status,
 	sd_status->erase_offset = mmc_get_bits(raw_sd_status, 512, 400, 2);
 }
 
+/* CMD2 */
 static int
 mmc_all_send_cid(struct mmc_softc *sc, uint32_t *rawcid)
 {
@@ -1191,6 +1200,7 @@ mmc_set_relative_addr(struct mmc_softc *sc, uint16_t resp)
 	return (err);
 }
 
+/* CMD3 */
 static int
 mmc_send_relative_addr(struct mmc_softc *sc, uint32_t *resp)
 {
@@ -1207,6 +1217,7 @@ mmc_send_relative_addr(struct mmc_softc *sc, uint32_t *resp)
 	return (err);
 }
 
+/* CMD13 */
 static int
 mmc_send_status(struct mmc_softc *sc, uint16_t rca, uint32_t *status)
 {
@@ -1254,7 +1265,41 @@ mmc_log_card(device_t dev, struct mmc_ivars *ivar, int newcard)
 	    ivar->sec_count, ivar->erase_sector,
 	    ivar->read_only ? ", read-only" : "");
 }
+/*
+static int
+mmc_io_rw_direct(struct mmc_softc *sc, int wr, uint32_t fn, uint32_t adr,
+		      uint8_t *data)
+{
+	struct mmc_command cmd;
+	int err;
 
+	memset(&cmd, 0, sizeof(cmd));
+	cmd.opcode = SD_IO_RW_DIRECT;
+	cmd.arg = SD_IO_RW_FUNC(fn) | SD_IO_RW_ADR(adr);
+	if (wr)
+		cmd.arg |= SD_IO_RW_WR | SD_IO_RW_RAW | SD_IO_RW_DAT(*data);
+	cmd.flags = MMC_RSP_R5 | MMC_CMD_AC;
+	cmd.data = NULL;
+
+	printf("[BRG] mmc_io_rw_direct : cmd.opcode = 0x%08x : cmd.arg = 0x%08x\n", cmd.opcode, cmd.arg);
+
+	err = mmc_wait_for_cmd(sc, &cmd, CMD_RETRIES);
+	if (err)
+		return (err);
+	if (cmd.error)
+		return (cmd.error);
+
+	if (cmd.resp[0] & R5_COM_CRC_ERROR)
+	return (MMC_ERR_BADCRC);
+	if (cmd.resp[0] & (R5_ILLEGAL_COMMAND | R5_FUNCTION_NUMBER))
+		return (MMC_ERR_INVALID);
+	if (cmd.resp[0] & R5_OUT_OF_RANGE)
+		return (MMC_ERR_FAILED);
+
+	*data = (uint8_t) (cmd.resp[0] & 0xff);
+	return (MMC_ERR_NONE);
+}
+*/
 static void
 mmc_discover_cards(struct mmc_softc *sc)
 {
@@ -1265,10 +1310,40 @@ mmc_discover_cards(struct mmc_softc *sc)
 	device_t child;
 	uint16_t rca = 2;
 	u_char switch_res[64];
+	uint8_t nfunc, mem_present;
+	uint8_t reg;
 
 	if (bootverbose || mmc_debug)
 		device_printf(sc->dev, "Probing cards\n");
 	while (1) {
+		/*
+		 * Probe SDIO first, because SDIO cards don't have
+		 * a CID register and won't respond to the CMD2
+		 */
+		mmc_idle_cards(sc);
+		err = mmc_probe_sdio(sc, 0, NULL, &nfunc, &mem_present);
+		if (err != MMC_ERR_NONE && err != MMC_ERR_TIMEOUT) {
+			device_printf(sc->dev, "Error probing SDIO %d\n", err);
+			break;
+		}
+
+		/* The card answered OK -> SDIO */
+		if (err == MMC_ERR_NONE) {
+			device_printf(sc->dev, "Detected SDIO card");
+			ivar = malloc(sizeof(struct mmc_ivars), M_DEVBUF,
+			    M_WAITOK | M_ZERO);
+			mmc_send_relative_addr(sc, &resp); /* CMD3 */
+			ivar->rca = resp >> 16;
+			err = mmc_select_card(sc, ivar->rca); /* CMD7 */
+			if (err != MMC_ERR_NONE) {
+				device_printf(sc->dev, "Error selecting SDIO %d\n", err);
+				break;
+			}
+
+			/* Finally, test that the card is in correct state */
+			/*err = mmc_io_rw_direct(sc, 0, 0, );*/reg=0;
+		}
+
 		err = mmc_all_send_cid(sc, raw_cid); /* Command 2 */
 		if (err == MMC_ERR_TIMEOUT)
 			break;
@@ -1523,6 +1598,7 @@ mmc_delete_cards(struct mmc_softc *sc)
 	return (0);
 }
 
+/* CMD 5 */
 static int
 mmc_probe_sdio(struct mmc_softc *sc, uint32_t ocr, uint32_t *rocr, uint8_t *nfunc, uint8_t *mem_present) {
 	struct mmc_command cmd;
@@ -1584,7 +1660,7 @@ mmc_go_discovery(struct mmc_softc *sc)
 		if ((bootverbose || mmc_debug) && err == 0)
 			device_printf(sc->dev, "SD 2.0 interface conditions: OK\n");
 		if (mmc_probe_sdio(sc, 0, &ocr, &nfunc, &mem_present) == MMC_ERR_NONE) {
-			device_printf(dev, "SDIO probe OK (OCR: 0x%08x, F%d functions, memory: %d)\n", ocr, nfunc, mem_present);
+			device_printf(dev, "SDIO probe OK (OCR: 0x%08x, %d functions, memory: %d)\n", ocr, nfunc, mem_present);
 		} else
 		if (mmc_send_app_op_cond(sc, 0, &ocr) != MMC_ERR_NONE) { /* retry 55 -> then 41 */
 			if (bootverbose || mmc_debug)
@@ -1627,15 +1703,11 @@ mmc_go_discovery(struct mmc_softc *sc)
 	 * Reselect the cards after we've idled them above.
 	 */
 	if (mmcbr_get_mode(dev) == mode_sd) {
-		if (nfunc > 0) {
-			err = mmc_probe_sdio(sc, 0, &ocr, &nfunc, &mem_present);
-			if (err != MMC_ERR_NONE) {
-				device_printf(sc->dev,"Error detecting SDIO after reset");
-			}
+		if (mem_present) {
+			err = mmc_send_if_cond(sc, 1); /* CMD 8 */
+			mmc_send_app_op_cond(sc, /* 41 -> 55 */
+			    (err ? 0 : MMC_OCR_CCS) | mmcbr_get_ocr(dev), NULL);
 		}
-		err = mmc_send_if_cond(sc, 1);
-		mmc_send_app_op_cond(sc,
-		    (err ? 0 : MMC_OCR_CCS) | mmcbr_get_ocr(dev), NULL);
 	} else
 		mmc_send_op_cond(sc, mmcbr_get_ocr(dev), NULL);
 	mmc_discover_cards(sc);
@@ -1716,7 +1788,7 @@ mmc_read_ivar(device_t bus, device_t child, int which, uintptr_t *result)
 		return (EINVAL);
 	case MMC_IVAR_DSR_IMP:
 		*result = ivar->csd.dsr_imp;
-		break;
+		 break;
 	case MMC_IVAR_MEDIA_SIZE:
 		*result = ivar->sec_count;
 		break;
