@@ -165,6 +165,8 @@ static uint32_t mmc_get_bits(uint32_t *bits, int bit_len, int start,
     int size);
 static int mmc_highest_voltage(uint32_t ocr);
 static void mmc_idle_cards(struct mmc_softc *sc);
+static int mmc_io_rw_direct(struct mmc_softc *sc, int wr, uint32_t fn, uint32_t adr,
+   uint8_t *data);
 static void mmc_ms_delay(int ms);
 static void mmc_log_card(device_t dev, struct mmc_ivars *ivar, int newcard);
 static void mmc_power_down(struct mmc_softc *sc);
@@ -1265,7 +1267,46 @@ mmc_log_card(device_t dev, struct mmc_ivars *ivar, int newcard)
 	    ivar->sec_count, ivar->erase_sector,
 	    ivar->read_only ? ", read-only" : "");
 }
-/*
+
+static int
+mmc_io_func_enable(struct mmc_softc *sc, uint32_t fn)
+{
+	int err, i;
+	uint8_t funcs;
+
+	/* XXX Check if function number is valid */
+	err = mmc_io_rw_direct(sc, 0, 0, SD_IO_CCCR_FN_READY, &funcs);
+	if (err != MMC_ERR_NONE) {
+		device_printf(sc->dev, "Error reading SDIO func ready %d\n", err);
+		return (err);
+	}
+	device_printf(sc->dev, "Ready funcs: %08X \n", funcs);
+	funcs |= 1 << fn;
+	device_printf(sc->dev, "Set to: %08X \n", funcs);
+	err = mmc_io_rw_direct(sc, 1, 0, SD_IO_CCCR_FN_ENABLE, &funcs);
+	if (err != MMC_ERR_NONE) {
+		device_printf(sc->dev, "Error writing SDIO func enable %d\n", err);
+		return (err);
+	}
+
+	funcs = 0;
+	for(i=0; i < 10; i++) {
+		err = mmc_io_rw_direct(sc, 0, 0, SD_IO_CCCR_FN_ENABLE, &funcs);
+		if (err != MMC_ERR_NONE) {
+			device_printf(sc->dev, "Error reading SDIO func enable %d\n", err);
+			return (err);
+		}
+		device_printf(sc->dev, "*** NOW Ready funcs: %08X \n", funcs);
+
+		if (funcs & (1 << fn))
+			return 0;
+		pause("mmc_io_func_enable", 100);
+	}
+
+	device_printf(sc->dev, "FUCK :-(");
+	return 1;
+}
+
 static int
 mmc_io_rw_direct(struct mmc_softc *sc, int wr, uint32_t fn, uint32_t adr,
 		      uint8_t *data)
@@ -1296,10 +1337,13 @@ mmc_io_rw_direct(struct mmc_softc *sc, int wr, uint32_t fn, uint32_t adr,
 	if (cmd.resp[0] & R5_OUT_OF_RANGE)
 		return (MMC_ERR_FAILED);
 
+	/* Just for information... */
+	printf("SDIO current state: %d\n", R5_IO_CURRENT_STATE(cmd.resp[0]));
+
 	*data = (uint8_t) (cmd.resp[0] & 0xff);
 	return (MMC_ERR_NONE);
 }
-*/
+
 static void
 mmc_discover_cards(struct mmc_softc *sc)
 {
@@ -1311,7 +1355,7 @@ mmc_discover_cards(struct mmc_softc *sc)
 	uint16_t rca = 2;
 	u_char switch_res[64];
 	uint8_t nfunc, mem_present;
-	uint8_t reg;
+	uint8_t reg = 0;
 
 	if (bootverbose || mmc_debug)
 		device_printf(sc->dev, "Probing cards\n");
@@ -1341,7 +1385,10 @@ mmc_discover_cards(struct mmc_softc *sc)
 			}
 
 			/* Finally, test that the card is in correct state */
-			/*err = mmc_io_rw_direct(sc, 0, 0, );*/reg=0;
+			err = mmc_io_rw_direct(sc, 0, 0, SD_IO_CCCR_FN_ENABLE, &reg);
+			device_printf(sc->dev, "Enabled funcs: %08X \n", reg);
+			mmc_io_func_enable(sc, 1);
+			return;
 		}
 
 		err = mmc_all_send_cid(sc, raw_cid); /* Command 2 */
