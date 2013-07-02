@@ -1291,9 +1291,9 @@ mmc_io_func_enable(struct mmc_softc *sc, uint32_t fn)
 
 	funcs = 0;
 	for(i=0; i < 10; i++) {
-		err = mmc_io_rw_direct(sc, 0, 0, SD_IO_CCCR_FN_ENABLE, &funcs);
+		err = mmc_io_rw_direct(sc, 0, 0, SD_IO_CCCR_FN_READY, &funcs);
 		if (err != MMC_ERR_NONE) {
-			device_printf(sc->dev, "Error reading SDIO func enable %d\n", err);
+			device_printf(sc->dev, "Error reading SDIO func ready %d\n", err);
 			return (err);
 		}
 		device_printf(sc->dev, "*** NOW Ready funcs: %08X \n", funcs);
