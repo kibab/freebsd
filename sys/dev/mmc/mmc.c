@@ -72,12 +72,27 @@ __FBSDID("$FreeBSD$");
 #include "mmcbr_if.h"
 #include "mmcbus_if.h"
 
+/* CIS structure of SDIO card */
+struct sdio_function {
+	int		number;
+	uint8_t		cis1_major;
+	uint8_t		cis1_minor;
+	uint16_t	manufacturer;
+	uint16_t	product;
+	uint16_t	fn0_blksize;
+	uint8_t		max_tran_speed;
+	STAILQ_ENTRY(sdio_function) sdiof_list;
+};
+
 struct mmc_softc {
 	device_t dev;
 	struct mtx sc_mtx;
 	struct intr_config_hook config_intrhook;
 	device_t owner;
 	uint32_t last_rca;
+	uint8_t sdio_nfunc;
+	struct sdio_function sdio_func0;
+	STAILQ_HEAD(, sdio_function) sdiof_head;
 };
 
 /*
@@ -230,6 +245,8 @@ mmc_attach(device_t dev)
 	sc = device_get_softc(dev);
 	sc->dev = dev;
 	MMC_LOCK_INIT(sc);
+
+	STAILQ_INIT(&sc->sdiof_head);
 
 	/* We'll probe and attach our children later, but before / mount */
 	sc->config_intrhook.ich_func = mmc_delayed_attach;
@@ -1361,24 +1378,18 @@ mmc_io_read_1(struct mmc_softc *sc, uint32_t fn, uint32_t adr)
  * Both Function 0 CIS and Function 1-7 CIS are supported.
  */
 static int
-mmc_io_parse_cis(struct mmc_softc *sc, uint8_t func, uint32_t cisptr)
+mmc_io_parse_cis(struct mmc_softc *sc, uint8_t func, uint32_t cisptr, struct sdio_function *sdio_func)
 {
-	/*
-	 * XXX Need a structure to store all information that we get from CIS!
-	 * But where to place it after that?..
-	*/
 	uint32_t tmp;
 
 	uint8_t tuple_id, tuple_len, func_id;
 	uint32_t addr, maninfo_p;
-	uint16_t manufacturer, product;
-	uint16_t fn0_blksize;
-	uint8_t max_tran_speed;
-	uint8_t cis1_major, cis1_minor;
-	char *cis1_info[4];
 
+	char *cis1_info[4];
 	int start, i, ch, count;
 	char cis1_info_buf[256];
+
+	sdio_func->number  = func;
 
 	cis1_info[0] = NULL;
 	cis1_info[1] = NULL;
@@ -1409,8 +1420,8 @@ mmc_io_parse_cis(struct mmc_softc *sc, uint8_t func, uint32_t cisptr)
 		case SD_IO_CISTPL_VERS_1:
 			maninfo_p = addr;
 
-			cis1_major = mmc_io_read_1(sc, 0, maninfo_p);
-			cis1_minor = mmc_io_read_1(sc, 0, maninfo_p + 1);
+			sdio_func->cis1_major = mmc_io_read_1(sc, 0, maninfo_p);
+			sdio_func->cis1_minor = mmc_io_read_1(sc, 0, maninfo_p + 1);
 
 			for (count = 0, start = 0, i = 0;
 			    (count < 4) && ((i + 4) < 256); i++) {
@@ -1426,6 +1437,10 @@ mmc_io_parse_cis(struct mmc_softc *sc, uint8_t func, uint32_t cisptr)
 				}
 			}
 
+			/*
+			 * At least on Dreamplug there is only crap
+			 * in these strings...
+			 */
 			device_printf(sc->dev, "*** Info[0]: %s\n", cis1_info[0]);
 			device_printf(sc->dev, "*** Info[1]: %s\n", cis1_info[1]);
 			device_printf(sc->dev, "*** Info[2]: %s\n", cis1_info[2]);
@@ -1437,16 +1452,11 @@ mmc_io_parse_cis(struct mmc_softc *sc, uint8_t func, uint32_t cisptr)
 				device_printf(sc->dev, "MANFID is too short\n");
 				break;
 			}
-			manufacturer = mmc_io_read_1(sc, 0, addr);
-			manufacturer |= mmc_io_read_1(sc, 0, addr + 1) << 8;
+			sdio_func->manufacturer = mmc_io_read_1(sc, 0, addr);
+			sdio_func->manufacturer |= mmc_io_read_1(sc, 0, addr + 1) << 8;
 
-			product = mmc_io_read_1(sc, 0, addr + 2);
-			product |= mmc_io_read_1(sc, 0, addr + 3) << 8;
-
-			device_printf(sc->dev,
-			    "*** Vendor %04X, product %04X\n",
-			    manufacturer, product);
-
+			sdio_func->product = mmc_io_read_1(sc, 0, addr + 2);
+			sdio_func->product |= mmc_io_read_1(sc, 0, addr + 3) << 8;
 			break;
 
 		case SD_IO_CISTPL_FUNCID:
@@ -1466,31 +1476,31 @@ mmc_io_parse_cis(struct mmc_softc *sc, uint8_t func, uint32_t cisptr)
 				break;
 			}
 			uint8_t ext_data_type = mmc_io_read_1(sc, 0, addr);
-			device_printf(sc->dev, "*** Function ext type %d\n",
-			    ext_data_type);
 
 			if (func == 0) {
 				if (ext_data_type != 0x0)
 					device_printf(sc->dev,
 					    "funce for func 0 non-std: %d\n",
 					    ext_data_type);
-				fn0_blksize = mmc_io_read_1(sc, 0, addr + 1);
-				fn0_blksize |= mmc_io_read_1(sc, 0, addr + 2) << 8;
+				sdio_func->fn0_blksize = mmc_io_read_1(sc, 0, addr + 1);
+				sdio_func->fn0_blksize |= mmc_io_read_1(sc, 0, addr + 2) << 8;
 
-				max_tran_speed = mmc_io_read_1(sc, 0, addr + 3);
-				uint8_t max_tran_rate = max_tran_speed & 0x3;
-				uint8_t timecode = (max_tran_speed >> 3) & 0xF;
+				sdio_func->max_tran_speed = mmc_io_read_1(sc, 0, addr + 3);
+				/* XXX Do we need this? If yes, need to store in sdio_func */
+				uint8_t max_tran_rate = sdio_func->max_tran_speed & 0x3;
+				uint8_t timecode = (sdio_func->max_tran_speed >> 3) & 0xF;
 
 				device_printf(sc->dev,
 				    "*** Max tran rate %d, timecode %d\n",
 				    max_tran_rate, timecode);
 			} else {
+				/* ext_data_type is 1 here */
 				/*
 				 * XXX Do we need any information from FUNCE
 				 * for non-0 functions?
 				 */
 				device_printf(sc->dev,
-				    "I don't know how to parse FUNCE\n");
+				    "Not parsing FUNCE for func != 0\n");
 			}
 
 			break;
@@ -1527,7 +1537,7 @@ mmc_io_parse_cccr(struct mmc_softc *sc)
 		return (-1);
 	}
 
-	return mmc_io_parse_cis(sc, 0, cisptr);
+	return mmc_io_parse_cis(sc, 0, cisptr, &sc->sdio_func0);
 }
 
 /*
@@ -1549,7 +1559,10 @@ mmc_io_parse_fbr(struct mmc_softc *sc, uint8_t func)
 		return (-1);
 	}
 
-	return mmc_io_parse_cis(sc, func, cisptr);
+	struct sdio_function *f = malloc(sizeof(struct sdio_function), M_DEVBUF, M_WAITOK);
+	STAILQ_INSERT_TAIL(&sc->sdiof_head, f, sdiof_list);
+
+	return mmc_io_parse_cis(sc, func, cisptr, f);
 }
 
 static void
@@ -1573,6 +1586,7 @@ mmc_discover_cards(struct mmc_softc *sc)
 		 */
 		mmc_idle_cards(sc);
 		err = mmc_probe_sdio(sc, 0, NULL, &nfunc, &mem_present);
+		sc->sdio_nfunc = nfunc;
 		if (err != MMC_ERR_NONE && err != MMC_ERR_TIMEOUT) {
 			device_printf(sc->dev, "Error probing SDIO %d\n", err);
 			break;
@@ -1599,6 +1613,16 @@ mmc_discover_cards(struct mmc_softc *sc)
 				mmc_io_parse_fbr(sc, i);
 				mmc_io_func_enable(sc, i);
 			}
+
+			device_printf(sc->dev, "=== Functions ===\n");
+			struct sdio_function *f;
+
+			STAILQ_FOREACH(f, &sc->sdiof_head, sdiof_list)
+				device_printf(sc->dev,
+				    "FN %d, vendor %04X, product %04X\n",
+				    f->number, f->manufacturer, f->product
+					);
+
 			if (!mem_present)
 				return;
 		}
