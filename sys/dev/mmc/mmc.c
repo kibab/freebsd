@@ -1562,7 +1562,6 @@ mmc_discover_cards(struct mmc_softc *sc)
 	uint16_t rca = 2;
 	u_char switch_res[64];
 	uint8_t nfunc, mem_present;
-	uint8_t reg = 0;
 
 	if (bootverbose || mmc_debug)
 		device_printf(sc->dev, "Probing cards\n");
@@ -1919,7 +1918,7 @@ mmc_go_discovery(struct mmc_softc *sc)
 			device_printf(sc->dev, "SD 2.0 interface conditions: OK\n");
 		if (mmc_probe_sdio(sc, 0, &ocr, &nfunc, &mem_present) == MMC_ERR_NONE) {
 			device_printf(dev, "SDIO probe OK (OCR: 0x%08x, %d functions, memory: %d)\n", ocr, nfunc, mem_present);
-			if (nfunc > 0 && memory_present) {
+			if (nfunc > 0 && mem_present) {
 				device_printf(sc->dev, "SDIO combo cards are not supported yet");
 				return;
 			}
