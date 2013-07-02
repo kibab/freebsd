@@ -87,8 +87,9 @@
 #define SD_IO_CISTPL_MANFID		0x20
 #define SD_IO_CISTPL_FUNCID		0x21
 #define SD_IO_CISTPL_FUNCE		0x22
+#define SD_IO_CISTPL_END		0xff
 
 /* CISTPL_FUNCID codes */
-#define SDMMC_FUNCTION_WLAN		0x0c
-
+/* OpenBSD incorrectly defines 0x0c as FUNCTION_WLAN */
+/* #define SDMMC_FUNCTION_WLAN		0x0c */
 #endif
