@@ -165,13 +165,14 @@ static uint32_t mmc_get_bits(uint32_t *bits, int bit_len, int start,
     int size);
 static int mmc_highest_voltage(uint32_t ocr);
 static void mmc_idle_cards(struct mmc_softc *sc);
-static int mmc_io_rw_direct(struct mmc_softc *sc, int wr, uint32_t fn, uint32_t adr,
-   uint8_t *data);
+static int mmc_io_rw_direct(struct mmc_softc *sc, int wr, uint32_t fn,
+    uint32_t adr, uint8_t *data);
 static void mmc_ms_delay(int ms);
 static void mmc_log_card(device_t dev, struct mmc_ivars *ivar, int newcard);
 static void mmc_power_down(struct mmc_softc *sc);
 static void mmc_power_up(struct mmc_softc *sc);
-static int mmc_probe_sdio(struct mmc_softc *sc, uint32_t ocr, uint32_t *rocr, uint8_t *nfunc, uint8_t *mem_present);
+static int mmc_probe_sdio(struct mmc_softc *sc, uint32_t ocr, uint32_t *rocr,
+    uint8_t *nfunc, uint8_t *mem_present);
 static void mmc_rescan_cards(struct mmc_softc *sc);
 static void mmc_scan(struct mmc_softc *sc);
 static int mmc_sd_switch(struct mmc_softc *sc, uint8_t mode, uint8_t grp,
@@ -280,9 +281,6 @@ mmc_acquire_bus(device_t busdev, device_t dev)
 	struct mmc_ivars *ivar;
 	int err;
 	int rca;
-
-	/* XXX HACK */
-	mmc_debug = 10;
 
 	err = MMCBR_ACQUIRE_HOST(device_get_parent(busdev), busdev);
 	if (err)
@@ -1275,14 +1273,13 @@ mmc_io_func_enable(struct mmc_softc *sc, uint32_t fn)
 	uint8_t funcs;
 
 	/* XXX Check if function number is valid */
+
 	err = mmc_io_rw_direct(sc, 0, 0, SD_IO_CCCR_FN_READY, &funcs);
 	if (err != MMC_ERR_NONE) {
 		device_printf(sc->dev, "Error reading SDIO func ready %d\n", err);
 		return (err);
 	}
-	device_printf(sc->dev, "Ready funcs: %08X \n", funcs);
 	funcs |= 1 << fn;
-	device_printf(sc->dev, "Set to: %08X \n", funcs);
 	err = mmc_io_rw_direct(sc, 1, 0, SD_IO_CCCR_FN_ENABLE, &funcs);
 	if (err != MMC_ERR_NONE) {
 		device_printf(sc->dev, "Error writing SDIO func enable %d\n", err);
@@ -1296,14 +1293,13 @@ mmc_io_func_enable(struct mmc_softc *sc, uint32_t fn)
 			device_printf(sc->dev, "Error reading SDIO func ready %d\n", err);
 			return (err);
 		}
-		device_printf(sc->dev, "*** NOW Ready funcs: %08X \n", funcs);
 
 		if (funcs & (1 << fn))
 			return 0;
 		pause("mmc_io_func_enable", 100);
 	}
 
-	device_printf(sc->dev, "FUCK :-(");
+	device_printf(sc->dev, "Cannot enable function %d!\n", fn);
 	return 1;
 }
 
@@ -1322,8 +1318,6 @@ mmc_io_rw_direct(struct mmc_softc *sc, int wr, uint32_t fn, uint32_t adr,
 	cmd.flags = MMC_RSP_R5 | MMC_CMD_AC;
 	cmd.data = NULL;
 
-	printf("[BRG] mmc_io_rw_direct : cmd.opcode = 0x%08x : cmd.arg = 0x%08x\n", cmd.opcode, cmd.arg);
-
 	err = mmc_wait_for_cmd(sc, &cmd, CMD_RETRIES);
 	if (err)
 		return (err);
@@ -1338,10 +1332,223 @@ mmc_io_rw_direct(struct mmc_softc *sc, int wr, uint32_t fn, uint32_t adr,
 		return (MMC_ERR_FAILED);
 
 	/* Just for information... */
-	printf("SDIO current state: %d\n", R5_IO_CURRENT_STATE(cmd.resp[0]));
+	if (R5_IO_CURRENT_STATE(cmd.resp[0]) != 1)
+		printf("!!! SDIO state %d\n", R5_IO_CURRENT_STATE(cmd.resp[0]));
 
 	*data = (uint8_t) (cmd.resp[0] & 0xff);
 	return (MMC_ERR_NONE);
+}
+
+/* CMD52 */
+static uint8_t
+mmc_io_read_1(struct mmc_softc *sc, uint32_t fn, uint32_t adr)
+{
+	int err;
+	uint8_t val = 0;
+
+	err = mmc_io_rw_direct(sc, 0, fn, adr, &val);
+	if (err) {
+		device_printf(sc->dev, "Err reading FN %d addr 0x%08X: %d",
+			      fn, adr, err);
+		return (0xff);
+	}
+	return val;
+}
+
+/*
+ * Parse Card Information Structure of the SDIO card.
+ * Both Function 0 CIS and Function 1-7 CIS are supported.
+ */
+static int
+mmc_io_parse_cis(struct mmc_softc *sc, uint8_t func, uint32_t cisptr)
+{
+	/*
+	 * XXX Need a structure to store all information that we get from CIS!
+	 * But where to place it after that?..
+	*/
+	uint32_t tmp;
+
+	uint8_t tuple_id, tuple_len, func_id;
+	uint32_t addr, maninfo_p;
+	uint16_t manufacturer, product;
+	uint16_t fn0_blksize;
+	uint8_t max_tran_speed;
+	uint8_t cis1_major, cis1_minor;
+	char *cis1_info[4];
+
+	int start, i, ch, count;
+	char cis1_info_buf[256];
+
+	cis1_info[0] = NULL;
+	cis1_info[1] = NULL;
+	cis1_info[2] = NULL;
+	cis1_info[3] = NULL;
+	memset(cis1_info_buf, 0, 256);
+
+	tmp = 0;
+	addr = cisptr;
+
+	/*
+	 * XXX Some parts of this code are taken
+	 * from sys/dev/pccard/pccard_cis.c.
+	 * Need to think about making it more abstract.
+	 */
+	do {
+		tuple_id = mmc_io_read_1(sc, 0, addr++);
+		if (tuple_id == SD_IO_CISTPL_END)
+			break;
+		tuple_len = mmc_io_read_1(sc, 0, addr++);
+		if (tuple_len == 0 && tuple_id != 0x00) {
+			device_printf(sc->dev,
+			    "Parse error: 0-length tuple %02X\n", tuple_id);
+			break;
+		}
+
+		switch (tuple_id) {
+		case SD_IO_CISTPL_VERS_1:
+			maninfo_p = addr;
+
+			cis1_major = mmc_io_read_1(sc, 0, maninfo_p);
+			cis1_minor = mmc_io_read_1(sc, 0, maninfo_p + 1);
+
+			for (count = 0, start = 0, i = 0;
+			    (count < 4) && ((i + 4) < 256); i++) {
+				ch = mmc_io_read_1(sc, 0, maninfo_p + 2 + i);
+				if (ch == 0xff)
+					break;
+				cis1_info_buf[i] = ch;
+				if (ch == 0) {
+					cis1_info[count] =
+					    cis1_info_buf + start;
+					start = i + 1;
+					count++;
+				}
+			}
+
+			device_printf(sc->dev, "*** Info[0]: %s\n", cis1_info[0]);
+			device_printf(sc->dev, "*** Info[1]: %s\n", cis1_info[1]);
+			device_printf(sc->dev, "*** Info[2]: %s\n", cis1_info[2]);
+			device_printf(sc->dev, "*** Info[3]: %s\n", cis1_info[3]);
+			break;
+
+		case SD_IO_CISTPL_MANFID:
+			if (tuple_len < 4) {
+				device_printf(sc->dev, "MANFID is too short\n");
+				break;
+			}
+			manufacturer = mmc_io_read_1(sc, 0, addr);
+			manufacturer |= mmc_io_read_1(sc, 0, addr + 1) << 8;
+
+			product = mmc_io_read_1(sc, 0, addr + 2);
+			product |= mmc_io_read_1(sc, 0, addr + 3) << 8;
+
+			device_printf(sc->dev,
+			    "*** Vendor %04X, product %04X\n",
+			    manufacturer, product);
+
+			break;
+
+		case SD_IO_CISTPL_FUNCID:
+			/* Function ID for SDIO devices is always 0x0C */
+			if (tuple_len < 1) {
+				device_printf(sc->dev, "FUNCID is too short\n");
+				break;
+			}
+			func_id = mmc_io_read_1(sc, 0, addr);
+			if (func_id != 0x0C)
+				device_printf(sc->dev, "func_id non-std: %d\n", func_id);
+			break;
+
+		case SD_IO_CISTPL_FUNCE:
+			if (tuple_len < 4) {
+				device_printf(sc->dev, "FUNCE is too short\n");
+				break;
+			}
+			uint8_t ext_data_type = mmc_io_read_1(sc, 0, addr);
+			device_printf(sc->dev, "*** Function ext type %d\n",
+			    ext_data_type);
+
+			if (func == 0) {
+				if (ext_data_type != 0x0)
+					device_printf(sc->dev,
+					    "funce for func 0 non-std: %d\n",
+					    ext_data_type);
+				fn0_blksize = mmc_io_read_1(sc, 0, addr + 1);
+				fn0_blksize |= mmc_io_read_1(sc, 0, addr + 2) << 8;
+
+				max_tran_speed = mmc_io_read_1(sc, 0, addr + 3);
+				uint8_t max_tran_rate = max_tran_speed & 0x3;
+				uint8_t timecode = (max_tran_speed >> 3) & 0xF;
+
+				device_printf(sc->dev,
+				    "*** Max tran rate %d, timecode %d\n",
+				    max_tran_rate, timecode);
+			} else {
+				/*
+				 * XXX Do we need any information from FUNCE
+				 * for non-0 functions?
+				 */
+				device_printf(sc->dev,
+				    "I don't know how to parse FUNCE\n");
+			}
+
+			break;
+
+		default:
+			device_printf(sc->dev,
+			    "*** Skipping tuple ID %02X len %02X\n",
+			    tuple_id, tuple_len);
+			break;
+		}
+
+		addr += tuple_len;
+		tmp++;
+	} while (tuple_id != SD_IO_CISTPL_END && tmp < 10);
+
+	return 0;
+}
+
+/*
+ * Parse Card Common Control Register of the SDIO card
+ */
+static int
+mmc_io_parse_cccr(struct mmc_softc *sc)
+{
+	uint32_t cisptr = 0;
+
+	cisptr =  mmc_io_read_1(sc, 0, SD_IO_CCCR_CISPTR);
+	cisptr |= mmc_io_read_1(sc, 0, SD_IO_CCCR_CISPTR + 1) << 8;
+	cisptr |= mmc_io_read_1(sc, 0, SD_IO_CCCR_CISPTR + 2) << 16;
+
+	if (cisptr < SD_IO_CIS_START ||
+	    cisptr > SD_IO_CIS_START +  SD_IO_CIS_SIZE) {
+		device_printf(sc->dev, "Bad CIS pointer in CCCR: %08X\n", cisptr);
+		return (-1);
+	}
+
+	return mmc_io_parse_cis(sc, 0, cisptr);
+}
+
+/*
+ * Parse Function Basic Register of the given function
+ */
+static int
+mmc_io_parse_fbr(struct mmc_softc *sc, uint8_t func)
+{
+	uint32_t fbr_addr, cisptr;
+
+	fbr_addr = SD_IO_FBR_START * func + 0x9;
+	cisptr =  mmc_io_read_1(sc, 0, fbr_addr);
+	cisptr |= mmc_io_read_1(sc, 0, fbr_addr + 1) << 8;
+	cisptr |= mmc_io_read_1(sc, 0, fbr_addr + 2) << 16;
+
+	if (cisptr < SD_IO_CIS_START ||
+	    cisptr > SD_IO_CIS_START +  SD_IO_CIS_SIZE) {
+		device_printf(sc->dev, "Bad CIS pointer in FBR: %08X\n", cisptr);
+		return (-1);
+	}
+
+	return mmc_io_parse_cis(sc, func, cisptr);
 }
 
 static void
@@ -1373,7 +1580,7 @@ mmc_discover_cards(struct mmc_softc *sc)
 
 		/* The card answered OK -> SDIO */
 		if (err == MMC_ERR_NONE) {
-			device_printf(sc->dev, "Detected SDIO card");
+			device_printf(sc->dev, "Detected SDIO card\n");
 			ivar = malloc(sizeof(struct mmc_ivars), M_DEVBUF,
 			    M_WAITOK | M_ZERO);
 			mmc_send_relative_addr(sc, &resp); /* CMD3 */
@@ -1384,11 +1591,15 @@ mmc_discover_cards(struct mmc_softc *sc)
 				break;
 			}
 
-			/* Finally, test that the card is in correct state */
-			err = mmc_io_rw_direct(sc, 0, 0, SD_IO_CCCR_FN_ENABLE, &reg);
-			device_printf(sc->dev, "Enabled funcs: %08X \n", reg);
-			mmc_io_func_enable(sc, 1);
-			return;
+			device_printf(sc->dev, "Get card info\n");
+			mmc_io_parse_cccr(sc);
+			for(i=1; i <= nfunc; i++) {
+				device_printf(sc->dev,
+				    "Get info for function %d\n", i);
+				mmc_io_parse_fbr(sc, i);
+			}
+			if (!mem_present)
+				return;
 		}
 
 		err = mmc_all_send_cid(sc, raw_cid); /* Command 2 */
@@ -1708,6 +1919,10 @@ mmc_go_discovery(struct mmc_softc *sc)
 			device_printf(sc->dev, "SD 2.0 interface conditions: OK\n");
 		if (mmc_probe_sdio(sc, 0, &ocr, &nfunc, &mem_present) == MMC_ERR_NONE) {
 			device_printf(dev, "SDIO probe OK (OCR: 0x%08x, %d functions, memory: %d)\n", ocr, nfunc, mem_present);
+			if (nfunc > 0 && memory_present) {
+				device_printf(sc->dev, "SDIO combo cards are not supported yet");
+				return;
+			}
 		} else
 		if (mmc_send_app_op_cond(sc, 0, &ocr) != MMC_ERR_NONE) { /* retry 55 -> then 41 */
 			if (bootverbose || mmc_debug)
