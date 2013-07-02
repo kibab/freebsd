@@ -165,6 +165,7 @@ static uint32_t mmc_get_bits(uint32_t *bits, int bit_len, int start,
     int size);
 static int mmc_highest_voltage(uint32_t ocr);
 static void mmc_idle_cards(struct mmc_softc *sc);
+static int mmc_io_func_enable(struct mmc_softc *sc, uint32_t fn);
 static int mmc_io_rw_direct(struct mmc_softc *sc, int wr, uint32_t fn,
     uint32_t adr, uint8_t *data);
 static void mmc_ms_delay(int ms);
@@ -1596,6 +1597,7 @@ mmc_discover_cards(struct mmc_softc *sc)
 				device_printf(sc->dev,
 				    "Get info for function %d\n", i);
 				mmc_io_parse_fbr(sc, i);
+				mmc_io_func_enable(sc, i);
 			}
 			if (!mem_present)
 				return;
