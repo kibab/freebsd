@@ -79,8 +79,8 @@ struct sdio_function {
 	uint8_t		cis1_minor;
 	uint16_t	manufacturer;
 	uint16_t	product;
-	uint16_t	fn0_blksize;
-	uint8_t		max_tran_speed;
+	uint16_t	max_blksize;
+	uint8_t		max_tran_speed;	/* only for func0 */
 	STAILQ_ENTRY(sdio_function) sdiof_list;
 };
 
@@ -91,6 +91,7 @@ struct mmc_softc {
 	device_t owner;
 	uint32_t last_rca;
 	uint8_t sdio_nfunc;
+	u_char sdio_bus_width;
 	struct sdio_function sdio_func0;
 	STAILQ_HEAD(, sdio_function) sdiof_head;
 };
@@ -113,14 +114,13 @@ struct mmc_ivars {
 	u_char read_only;	/* True when the device is read-only */
 	u_char bus_width;	/* Bus width to use */
 	u_char timing;		/* Bus timing support */
-	uint8_t mem_present;	/* Is memory present */
 	u_char high_cap;	/* High Capacity card (block addressed) */
 	uint32_t sec_count;	/* Card capacity in 512byte blocks */
 	uint32_t tran_speed;	/* Max speed in normal mode */
 	uint32_t hs_tran_speed;	/* Max speed in high speed mode */
 	uint32_t erase_sector;	/* Card native erase sector size */
-	uint8_t sdio_numfunc;	/* Number of IO functions */
 	char card_id_string[64];/* Formatted CID info (serial, MFG, etc) */
+	struct sdio_function *sdiof;
 };
 
 #define CMD_RETRIES	3
@@ -1482,25 +1482,30 @@ mmc_io_parse_cis(struct mmc_softc *sc, uint8_t func, uint32_t cisptr, struct sdi
 					device_printf(sc->dev,
 					    "funce for func 0 non-std: %d\n",
 					    ext_data_type);
-				sdio_func->fn0_blksize = mmc_io_read_1(sc, 0, addr + 1);
-				sdio_func->fn0_blksize |= mmc_io_read_1(sc, 0, addr + 2) << 8;
-
-				sdio_func->max_tran_speed = mmc_io_read_1(sc, 0, addr + 3);
+				sdio_func->max_blksize =
+				    mmc_io_read_1(sc, 0, addr + 1);
+				sdio_func->max_blksize |=
+				    mmc_io_read_1(sc, 0, addr + 2) << 8;
+				sdio_func->max_tran_speed =
+				    mmc_io_read_1(sc, 0, addr + 3);
 				/* XXX Do we need this? If yes, need to store in sdio_func */
-				uint8_t max_tran_rate = sdio_func->max_tran_speed & 0x3;
-				uint8_t timecode = (sdio_func->max_tran_speed >> 3) & 0xF;
+				uint8_t max_tran_rate =
+				    sdio_func->max_tran_speed & 0x3;
+				uint8_t timecode =
+				    (sdio_func->max_tran_speed >> 3) & 0xF;
 
 				device_printf(sc->dev,
 				    "*** Max tran rate %d, timecode %d\n",
 				    max_tran_rate, timecode);
 			} else {
-				/* ext_data_type is 1 here */
-				/*
-				 * XXX Do we need any information from FUNCE
-				 * for non-0 functions?
-				 */
-				device_printf(sc->dev,
-				    "Not parsing FUNCE for func != 0\n");
+				if (ext_data_type != 0x1)
+					device_printf(sc->dev,
+					    "funce for func 0 non-std: %d\n",
+					    ext_data_type);
+				sdio_func->max_blksize =
+				    mmc_io_read_1(sc, 0, addr + 0x0c);
+				sdio_func->max_blksize |=
+				    mmc_io_read_1(sc, 0, addr + 0x0d) << 8;
 			}
 
 			break;
@@ -1566,6 +1571,36 @@ mmc_io_parse_fbr(struct mmc_softc *sc, uint8_t func)
 }
 
 static void
+mmc_io_get_info(struct mmc_softc *sc)
+{
+	sc->sdio_bus_width = bus_width_1;
+
+	uint8_t cardcap =  mmc_io_read_1(sc, 0, SD_IO_CCCR_CARDCAP);
+
+	/*
+	 * If the card is full-speed card, it supports 4-bit bus width.
+	 * If it is low-speed, we check 4BLS to determine 4-bit width.
+	 */
+	if (((cardcap & (1 << 6)) && (cardcap & (1 << 7))) || ((cardcap & (1 << 6)) == 0))
+		sc->sdio_bus_width = bus_width_4;
+}
+
+/* Set bus width for SDIO card */
+static int
+mmc_io_set_bus_width(struct mmc_softc *sc, int width)
+{
+	uint8_t busctrl = mmc_io_read_1(sc, 0, SD_IO_CCCR_BUS_WIDTH);
+
+	busctrl |= width == bus_width_4 ? CCCR_BUS_WIDTH_4 : 0;
+
+	if (mmc_debug)
+		device_printf(sc->dev, "Setting bus width to %d bits\n",
+		    width == bus_width_4 ? 4 : 1);
+
+	return mmc_io_rw_direct(sc, 1, 0, SD_IO_CCCR_BUS_WIDTH, &busctrl);
+}
+
+static void
 mmc_discover_cards(struct mmc_softc *sc)
 {
 	struct mmc_ivars *ivar = NULL;
@@ -1595,11 +1630,9 @@ mmc_discover_cards(struct mmc_softc *sc)
 		/* The card answered OK -> SDIO */
 		if (err == MMC_ERR_NONE) {
 			device_printf(sc->dev, "Detected SDIO card\n");
-			ivar = malloc(sizeof(struct mmc_ivars), M_DEVBUF,
-			    M_WAITOK | M_ZERO);
 			mmc_send_relative_addr(sc, &resp); /* CMD3 */
-			ivar->rca = resp >> 16;
-			err = mmc_select_card(sc, ivar->rca); /* CMD7 */
+			uint16_t rca = resp >> 16;
+			err = mmc_select_card(sc, rca); /* CMD7 */
 			if (err != MMC_ERR_NONE) {
 				device_printf(sc->dev, "Error selecting SDIO %d\n", err);
 				break;
@@ -1607,6 +1640,7 @@ mmc_discover_cards(struct mmc_softc *sc)
 
 			device_printf(sc->dev, "Get card info\n");
 			mmc_io_parse_cccr(sc);
+			mmc_io_get_info(sc);
 			for(i=1; i <= nfunc; i++) {
 				device_printf(sc->dev,
 				    "Get info for function %d\n", i);
@@ -1619,9 +1653,21 @@ mmc_discover_cards(struct mmc_softc *sc)
 
 			STAILQ_FOREACH(f, &sc->sdiof_head, sdiof_list)
 				device_printf(sc->dev,
-				    "FN %d, vendor %04X, product %04X\n",
-				    f->number, f->manufacturer, f->product
+				    "FN %d, vendor %04X, product %04X; blksize %02X\n",
+					      f->number, f->manufacturer, f->product, f->max_blksize
 					);
+
+			/* Turn on debug */
+			mmc_debug = 10;
+
+			/*
+			 * Only set 4-bit width if both the host and the card
+			 * support it.
+			 * The card starts in 1-bit mode by default.
+			 */
+			if (mmcbr_get_caps(sc->dev) & MMC_CAP_4_BIT_DATA &&
+			    sc->sdio_bus_width == bus_width_4)
+				mmc_io_set_bus_width(sc, sc->sdio_bus_width);
 
 			if (!mem_present)
 				return;

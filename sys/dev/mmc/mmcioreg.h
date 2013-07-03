@@ -72,6 +72,7 @@
 #define SD_IO_CCCR_BUS_WIDTH		0x07
 #define  CCCR_BUS_WIDTH_4		(1<<1)
 #define  CCCR_BUS_WIDTH_1		(1<<0)
+#define SD_IO_CCCR_CARDCAP		0x08
 #define SD_IO_CCCR_CISPTR		0x09 /* XXX 9-10, 10-11, or 9-12 */
 
 /* Function Basic Registers (FBR) */
