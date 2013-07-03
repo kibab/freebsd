@@ -90,7 +90,8 @@ struct mmc_softc {
 	struct intr_config_hook config_intrhook;
 	device_t owner;
 	uint32_t last_rca;
-	uint32_t __sdio_rca; /* temp; for testng only */
+	uint32_t __sdio_rca; /* XXX Temp; for testng only */
+	uint32_t __sdio_cis1_info;
 	uint8_t sdio_nfunc;
 	u_char sdio_bus_width;
 	uint8_t sdio_support_hs;
@@ -185,6 +186,7 @@ static uint32_t mmc_get_bits(uint32_t *bits, int bit_len, int start,
 static int mmc_highest_voltage(uint32_t ocr);
 static void mmc_idle_cards(struct mmc_softc *sc);
 static int mmc_io_func_enable(struct mmc_softc *sc, uint32_t fn);
+static uint8_t mmc_io_read_1(struct mmc_softc *sc, uint32_t fn, uint32_t adr);
 static int mmc_io_rw_direct(struct mmc_softc *sc, int wr, uint32_t fn,
     uint32_t adr, uint8_t *data);
 static void mmc_ms_delay(int ms);
@@ -193,7 +195,7 @@ static void mmc_power_down(struct mmc_softc *sc);
 static void mmc_power_up(struct mmc_softc *sc);
 static int mmc_probe_sdio(struct mmc_softc *sc, uint32_t ocr, uint32_t *rocr,
     uint8_t *nfunc, uint8_t *mem_present);
-/* static void mmc_rescan_cards(struct mmc_softc *sc); */
+static void mmc_rescan_cards(struct mmc_softc *sc);
 static void mmc_scan(struct mmc_softc *sc);
 static int mmc_sd_switch(struct mmc_softc *sc, uint8_t mode, uint8_t grp,
     uint8_t value, uint8_t *res);
@@ -420,10 +422,8 @@ mmc_wait_for_req(struct mmc_softc *sc, struct mmc_request *req)
 	}
 	MMCBR_REQUEST(device_get_parent(sc->dev), sc->dev, req);
 	MMC_LOCK(sc);
-	while ((req->flags & MMC_REQ_DONE) == 0) {
-		device_printf(sc->dev, ".\n");
+	while ((req->flags & MMC_REQ_DONE) == 0)
 		msleep(req, &sc->sc_mtx, 0, "mmcreq", 0);
-	}
 	MMC_UNLOCK(sc);
 	if (mmc_debug > 2 || (mmc_debug > 0 && req->cmd->error != MMC_ERR_NONE))
 		device_printf(sc->dev, "CMD%d RESULT: %d\n", 
@@ -1290,19 +1290,22 @@ mmc_log_card(device_t dev, struct mmc_ivars *ivar, int newcard)
 	    ivar->read_only ? ", read-only" : "");
 }
 
+/*
+ * Enables the given function on SDIO card.
+ */
 static int
 mmc_io_func_enable(struct mmc_softc *sc, uint32_t fn)
 {
 	int err, i;
 	uint8_t funcs;
 
-	/* XXX Check if function number is valid */
-
-	err = mmc_io_rw_direct(sc, 0, 0, SD_IO_CCCR_FN_READY, &funcs);
-	if (err != MMC_ERR_NONE) {
-		device_printf(sc->dev, "Error reading SDIO func ready %d\n", err);
-		return (err);
+	if (fn > sc->sdio_nfunc) {
+		device_printf(sc->dev, "Invalid function to enable: %d\n", fn);
+		return (MMC_ERR_INVALID);
 	}
+
+	funcs = mmc_io_read_1(sc, 0, SD_IO_CCCR_FN_READY);
+
 	funcs |= 1 << fn;
 	err = mmc_io_rw_direct(sc, 1, 0, SD_IO_CCCR_FN_ENABLE, &funcs);
 	if (err != MMC_ERR_NONE) {
@@ -1312,21 +1315,18 @@ mmc_io_func_enable(struct mmc_softc *sc, uint32_t fn)
 
 	funcs = 0;
 	for(i=0; i < 10; i++) {
-		err = mmc_io_rw_direct(sc, 0, 0, SD_IO_CCCR_FN_READY, &funcs);
-		if (err != MMC_ERR_NONE) {
-			device_printf(sc->dev, "Error reading SDIO func ready %d\n", err);
-			return (err);
-		}
+		funcs = mmc_io_read_1(sc, 0, SD_IO_CCCR_FN_READY);
 
 		if (funcs & (1 << fn))
 			return 0;
-		pause("mmc_io_func_enable", 100);
+		mmc_ms_delay(10);
 	}
 
 	device_printf(sc->dev, "Cannot enable function %d!\n", fn);
-	return 1;
+	return (MMC_ERR_FAILED);
 }
 
+/* CMD52 */
 static int
 mmc_io_rw_direct(struct mmc_softc *sc, int wr, uint32_t fn, uint32_t adr,
 		      uint8_t *data)
@@ -1359,10 +1359,17 @@ mmc_io_rw_direct(struct mmc_softc *sc, int wr, uint32_t fn, uint32_t adr,
 	if (R5_IO_CURRENT_STATE(cmd.resp[0]) != 1)
 		printf("!!! SDIO state %d\n", R5_IO_CURRENT_STATE(cmd.resp[0]));
 
+	if (cmd.resp[0] & R5_ERROR)
+		printf("An error was detected!\n");
+
+	if (cmd.resp[0] & R5_COM_CRC_ERROR)
+		printf("A CRC error was detected!\n");
+
 	*data = (uint8_t) (cmd.resp[0] & 0xff);
 	return (MMC_ERR_NONE);
 }
 
+/* CMD53 */
 static int
 mmc_io_rw_extended(struct mmc_softc *sc, int wr, uint32_t fn, uint32_t adr,
 		 uint8_t *datap, size_t datalen, uint8_t incr, uint8_t blks)
@@ -1393,9 +1400,8 @@ mmc_io_rw_extended(struct mmc_softc *sc, int wr, uint32_t fn, uint32_t adr,
 	data.len = datalen;
 	data.flags = wr ? MMC_DATA_WRITE : MMC_DATA_READ;
 
-	device_printf(sc->dev, "Starting CMD...");
 	err = mmc_wait_for_cmd(sc, &cmd, CMD_RETRIES);
-	device_printf(sc->dev, "*** DONE ***\n");
+
 	if (err)
 		return (err);
 	if (cmd.error)
@@ -1411,7 +1417,6 @@ mmc_io_rw_extended(struct mmc_softc *sc, int wr, uint32_t fn, uint32_t adr,
 	return (MMC_ERR_NONE);
 }
 
-/* CMD52 */
 static uint8_t
 mmc_io_read_1(struct mmc_softc *sc, uint32_t fn, uint32_t adr)
 {
@@ -1477,6 +1482,11 @@ mmc_io_parse_cis(struct mmc_softc *sc, uint8_t func, uint32_t cisptr, struct sdi
 			sdio_func->cis1_major = mmc_io_read_1(sc, 0, maninfo_p);
 			sdio_func->cis1_minor = mmc_io_read_1(sc, 0, maninfo_p + 1);
 
+			/*
+			 * XXX Temp; use this to test if multi-byte read from
+			 * cis1_info will also return crap
+			 */
+			sc->__sdio_cis1_info = maninfo_p + 2;
 			for (count = 0, start = 0, i = 0;
 			    (count < 4) && ((i + 4) < 256); i++) {
 				ch = mmc_io_read_1(sc, 0, maninfo_p + 2 + i);
@@ -1490,11 +1500,9 @@ mmc_io_parse_cis(struct mmc_softc *sc, uint8_t func, uint32_t cisptr, struct sdi
 					count++;
 				}
 			}
+			device_printf(sc->dev, "Read using 1-byte read:\n");
+			hexdump(cis1_info_buf, 256, NULL, 0);
 
-			/*
-			 * At least on Dreamplug there is only crap
-			 * in these strings...
-			 */
 			device_printf(sc->dev, "*** Info[0]: %s\n", cis1_info[0]);
 			device_printf(sc->dev, "*** Info[1]: %s\n", cis1_info[1]);
 			device_printf(sc->dev, "*** Info[2]: %s\n", cis1_info[2]);
@@ -1542,17 +1550,15 @@ mmc_io_parse_cis(struct mmc_softc *sc, uint8_t func, uint32_t cisptr, struct sdi
 				    mmc_io_read_1(sc, 0, addr + 2) << 8;
 				sdio_func->max_tran_speed =
 				    mmc_io_read_1(sc, 0, addr + 3);
-				/* XXX Do we need this? If yes, need to store in sdio_func */
 				uint8_t max_tran_rate =
-				    sdio_func->max_tran_speed & 0x3;
+				    sdio_func->max_tran_speed & 0x7;
 				uint8_t timecode =
 				    (sdio_func->max_tran_speed >> 3) & 0xF;
 
 				device_printf(sc->dev,
-				    "*** Max tran rate %d, timecode %d\n",
-				    max_tran_rate, timecode);
+				    "*** Max tran speed: %02X (unit %d, time value code %d\n",
+				    sdio_func->max_tran_speed, max_tran_rate, timecode);
 			} else {
-				mmc_debug = 10;
 				if (ext_data_type != 0x1)
 					device_printf(sc->dev,
 					    "funce for func 0 non-std: %d\n",
@@ -1630,15 +1636,21 @@ static void
 mmc_io_get_info(struct mmc_softc *sc)
 {
 	sc->sdio_bus_width = bus_width_1;
+	sc->sdio_support_hs = 0;
 
-	uint8_t cardcap =  mmc_io_read_1(sc, 0, SD_IO_CCCR_CARDCAP);
+	uint8_t cardcap = mmc_io_read_1(sc, 0, SD_IO_CCCR_CARDCAP);
+	uint8_t hs_info = mmc_io_read_1(sc, 0, SD_IO_CCCR_CISPTR + 0x13);
 
 	/*
-	 * If the card is full-speed card, it supports 4-bit bus width.
-	 * If it is low-speed, we check 4BLS to determine 4-bit width.
+	 * If the card is a full-speed card, it supports 4-bit bus width.
+	 * If it is low-speed, we check 4BLS to determine if it
+	 * supports 4-bit width
 	 */
-	if (((cardcap & (1 << 6)) && (cardcap & (1 << 7))) || ((cardcap & (1 << 6)) == 0))
+	if (((cardcap & (1 << 6)) && (cardcap & (1 << 7))) ||
+	    ((cardcap & (1 << 6)) == 0))
 		sc->sdio_bus_width = bus_width_4;
+
+	sc->sdio_support_hs = hs_info & (1 << 0);
 }
 
 /* Set bus width for SDIO card */
@@ -1650,7 +1662,7 @@ mmc_io_set_bus_width(struct mmc_softc *sc, int width)
 	busctrl |= width == bus_width_4 ? CCCR_BUS_WIDTH_4 : 0;
 
 	if (mmc_debug)
-		device_printf(sc->dev, "Setting bus width to %d bits\n",
+		device_printf(sc->dev, "Setting SDIO bus width to %d bits\n",
 		    width == bus_width_4 ? 4 : 1);
 
 	return mmc_io_rw_direct(sc, 1, 0, SD_IO_CCCR_BUS_WIDTH, &busctrl);
@@ -1689,7 +1701,7 @@ mmc_discover_cards(struct mmc_softc *sc)
 			mmc_send_relative_addr(sc, &resp); /* CMD3 */
 			uint16_t rca = resp >> 16;
 			err = mmc_select_card(sc, rca); /* CMD7 */
-			sc->__sdio_rca = rca;
+			sc->__sdio_rca = rca; /* XXX Temp; for testing only */
 			if (err != MMC_ERR_NONE) {
 				device_printf(sc->dev, "Error selecting SDIO %d\n", err);
 				break;
@@ -1711,8 +1723,7 @@ mmc_discover_cards(struct mmc_softc *sc)
 			STAILQ_FOREACH(f, &sc->sdiof_head, sdiof_list)
 				device_printf(sc->dev,
 				    "FN %d, vendor %04X, product %04X; blksize %02X\n",
-					      f->number, f->manufacturer, f->product, f->max_blksize
-					);
+				    f->number, f->manufacturer, f->product, f->max_blksize);
 
 			/*
 			 * Only set 4-bit width if both the host and the card
@@ -1724,17 +1735,12 @@ mmc_discover_cards(struct mmc_softc *sc)
 				mmc_io_set_bus_width(sc, sc->sdio_bus_width);
 				mmcbr_set_bus_width(sc->dev, sc->sdio_bus_width);
 			}
-			/* Set high speed mode */
-			uint8_t hs_info;
-			hs_info = mmc_io_read_1(sc, 0,
-			    SD_IO_CCCR_CISPTR + 0x13);
-			sc->sdio_support_hs = hs_info & (1 << 0);
 
-			device_printf(sc->dev, "HS support: %d\n",
-			    sc->sdio_support_hs);
-
-			if (sc->sdio_support_hs) {
-				hs_info |= 1 << 1;
+			/* Set high speed mode if host and card support it */
+			if (mmcbr_get_caps(sc->dev) & MMC_CAP_HSPEED &&
+			    sc->sdio_support_hs) {
+				device_printf(sc->dev, "Activating high-speed mode");
+				uint8_t hs_info = 1;
 				err = mmc_io_rw_direct(sc, 1, 0,
 				    SD_IO_CCCR_CISPTR + 0x13, &hs_info);
 				if (err != MMC_ERR_NONE) {
@@ -1961,7 +1967,7 @@ mmc_discover_cards(struct mmc_softc *sc)
 		}
 	}
 }
-/*
+
 static void
 mmc_rescan_cards(struct mmc_softc *sc)
 {
@@ -1984,7 +1990,7 @@ mmc_rescan_cards(struct mmc_softc *sc)
 	free(devlist, M_TEMP);
 	mmc_select_card(sc, 0);
 }
-*/
+
 static int
 mmc_delete_cards(struct mmc_softc *sc)
 {
@@ -2030,16 +2036,12 @@ mmc_probe_sdio(struct mmc_softc *sc, uint32_t ocr, uint32_t *rocr, uint8_t *nfun
 	}
 
 	if (err == MMC_ERR_NONE) {
-		device_printf(sc->dev, "No timeout: OCR %08X, here are the values:\n", cmd.resp[0]);
 		if (rocr)
 			*rocr = cmd.resp[0];
 		if (nfunc)
-			*nfunc = cmd.resp[0] >> 28 & 0x7;
+			*nfunc = SD_IO_OCR_NUM_FUNCTIONS(cmd.resp[0]);
 		if (mem_present)
 			*mem_present = cmd.resp[0] >> 27 & 0x1;
-
-		device_printf(sc->dev, "NF: %d\n", cmd.resp[0] >> 28 & 0x7);
-		device_printf(sc->dev, "MEM: %d\n", cmd.resp[0] >> 27 & 0x1);
 	}
 
 	return (err);
@@ -2123,14 +2125,11 @@ mmc_go_discovery(struct mmc_softc *sc)
 	} else
 		mmc_send_op_cond(sc, mmcbr_get_ocr(dev), NULL);
 	mmc_discover_cards(sc);
-	/*
-	 * Disable this temporarily...
 	mmc_rescan_cards(sc);
+
 	mmcbr_set_bus_mode(dev, pushpull);
-	*/
 	mmcbr_update_ios(dev);
 	mmc_calculate_clock(sc);
-
 
 	/* XXX TESTING RW_EXTENDED */
 	mmc_select_card(sc, sc->__sdio_rca);
@@ -2144,11 +2143,10 @@ mmc_go_discovery(struct mmc_softc *sc)
 	/* Now try actual command */
 	mmc_debug = 10;
 	uint8_t data[100];
-	err = mmc_io_rw_extended(sc, 0, 0, SD_IO_CCCR_START, data, 100, 0, 0);
+	err = mmc_io_rw_extended(sc, 0, 0, sc->__sdio_cis1_info, data, 100, 0, 0);
 	if (err)
 		device_printf(sc->dev, "Ext read err %d\n", err);
 	hexdump(data, 100, NULL, 0);
-
 
 	bus_generic_attach(dev);
 /*	mmc_update_children_sysctl(dev);*/
@@ -2228,7 +2226,7 @@ mmc_read_ivar(device_t bus, device_t child, int which, uintptr_t *result)
 		return (EINVAL);
 	case MMC_IVAR_DSR_IMP:
 		*result = ivar->csd.dsr_imp;
-		 break;
+		break;
 	case MMC_IVAR_MEDIA_SIZE:
 		*result = ivar->sec_count;
 		break;
