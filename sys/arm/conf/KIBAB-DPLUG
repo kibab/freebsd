@@ -102,6 +102,7 @@ device		ahci
 device		mv_sdio
 device		mmcsd
 device		mmc
+device		mv_sdiowl
 
 # Sound
 device 		sound

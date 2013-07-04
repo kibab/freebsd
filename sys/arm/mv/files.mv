@@ -33,6 +33,7 @@ arm/mv/mv_ts.c			standard
 arm/mv/timer.c			standard
 arm/mv/twsi.c			optional	iicbus
 arm/mv/mv_sdio.c		optional	mv_sdio
+arm/mv/mv_sdiowl.c		optional	mv_sdiowl
 
 dev/cesa/cesa.c			optional	cesa
 dev/mge/if_mge.c		optional	mge
