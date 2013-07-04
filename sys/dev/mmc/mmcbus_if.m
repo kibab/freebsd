@@ -99,7 +99,7 @@ METHOD int io_write_1 {
 	device_t	brdev;
 	device_t	reqdev;
 	uint32_t	adr;
-	uint8_t		*val;
+	uint8_t		val;
 };
 
 #
