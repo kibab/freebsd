@@ -2296,6 +2296,35 @@ mmc_child_location_str(device_t dev, device_t child, char *buf,
 
 /* SDIO-related MMC bus methods */
 static int
+mmcb_io_set_block_size(device_t dev, device_t child, uint16_t bs)
+{
+	int err;
+	uint32_t addr;
+	uint8_t val;
+	struct mmc_ivars *ivar = device_get_ivars(child);
+
+	addr = SD_IO_FBR_START * ivar->sdiof->number + 0x110;
+	val = bs & 0xFF;
+
+	err = mmc_io_rw_direct(device_get_softc(dev), 1, 0,
+	    addr++, &val);
+	if (err) {
+		device_printf(dev, "mmcb_io_set_block_size: Err %d", err);
+		return (err);
+	}
+
+	val = (bs >> 8) & 0xFF;
+	err = mmc_io_rw_direct(device_get_softc(dev), 1, 0,
+	    addr++, &val);
+	if (err) {
+		device_printf(dev, "mmcb_io_set_block_size: Err %d", err);
+		return (err);
+	}
+
+	return (err);
+}
+
+static int
 mmcb_io_f0_read_1(device_t dev, device_t child, uint32_t adr, uint8_t *val)
 {
 	int err;
@@ -2331,6 +2360,20 @@ mmcb_io_write_1(device_t dev, device_t child, uint32_t adr, uint8_t val)
 	return (err);
 }
 
+static int
+mmcb_io_write_multi(device_t dev, device_t child, uint32_t adr,
+		   uint8_t *datap, size_t datalen)
+{
+	int err;
+	struct mmc_ivars *ivar = device_get_ivars(child);
+
+	err = mmc_io_rw_extended(device_get_softc(dev), 1, ivar->sdiof->number,
+	    adr, datap, datalen, 0, 1);
+	if (err)
+		device_printf(dev, "mmc_io_write_multi: Err %d", err);
+	return (err);
+}
+
 static device_method_t mmc_methods[] = {
 	/* device_if */
 	DEVMETHOD(device_probe, mmc_probe),
@@ -2346,9 +2389,11 @@ static device_method_t mmc_methods[] = {
 
 	/* MMC Bus interface */
 	DEVMETHOD(mmcbus_wait_for_request, mmc_wait_for_request),
+	DEVMETHOD(mmcbus_io_set_block_size, mmcb_io_set_block_size),
 	DEVMETHOD(mmcbus_io_f0_read_1, mmcb_io_f0_read_1),
 	DEVMETHOD(mmcbus_io_read_1, mmcb_io_read_1),
 	DEVMETHOD(mmcbus_io_write_1, mmcb_io_write_1),
+	DEVMETHOD(mmcbus_io_write_multi, mmcb_io_write_multi),
 	DEVMETHOD(mmcbus_acquire_bus, mmc_acquire_bus),
 	DEVMETHOD(mmcbus_release_bus, mmc_release_bus),
 

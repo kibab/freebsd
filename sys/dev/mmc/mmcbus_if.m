@@ -73,6 +73,14 @@ METHOD int wait_for_request {
 };
 
 #
+# SDIO: Set block size for the current function
+# Returns: error or 0
+METHOD int io_set_block_size {
+	device_t	brdev;
+	device_t	reqdev;
+	uint16_t	bs;
+};
+
 # SDIO: read 1 byte from function 0
 # Returns: error or 0
 METHOD int io_f0_read_1 {
@@ -100,6 +108,17 @@ METHOD int io_write_1 {
 	device_t	reqdev;
 	uint32_t	adr;
 	uint8_t		val;
+};
+
+#
+# SDIO: write multiple bytes to current function
+# Return: error or 0
+METHOD int io_write_multi {
+	device_t	brdev;
+	device_t	reqdev;
+	uint32_t	adr;
+	uint8_t		*datap;
+	size_t		datalen;
 };
 
 #
