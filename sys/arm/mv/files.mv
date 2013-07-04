@@ -43,3 +43,23 @@ dev/uart/uart_dev_ns8250.c	optional	uart
 dev/usb/controller/ehci_mv.c	optional	ehci
 
 kern/kern_clocksource.c		standard
+
+mv_sdiowl_fw.c			optional mv_sdiowl_fw			\
+	compile-with	"${AWK} -f $S/tools/fw_stub.awk sd8787_uapsta.bin:sdiowl_fw -msdiowl_fw -c${.TARGET}" \
+	no-implicit-rule before-depend local				\
+	clean		"mv_sdiowl_fw.c"
+#
+# NB: ld encodes the path in the binary symbols generated for the
+#     firmware image so link the file to the object directory to
+#     get known values for reference in the _fw.c file.
+#
+sd8787_uapsta.fwo		optional mv_sdiowl_fw		\
+	dependency	"sd8787_uapsta.bin"				\
+	compile-with	"${LD} -b binary -d -warn-common -r -d -o ${.TARGET} sd8787_uapsta.bin" \
+	no-implicit-rule					\
+	clean		"sd8787_uapsta.fwo"
+sd8787_uapsta.bin		optional mv_sdiowl_fw		\
+	dependency	"$S/contrib/dev/mv_sdiowl/sd8787_uapsta.bin.uu"	\
+	compile-with	"uudecode < $S/contrib/dev/mv_sdiowl/sd8787_uapsta.bin.uu" \
+	no-obj no-implicit-rule						\
+	clean		"sd8787_uapsta.bin"

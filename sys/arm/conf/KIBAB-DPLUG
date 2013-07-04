@@ -103,6 +103,7 @@ device		mv_sdio
 device		mmcsd
 device		mmc
 device		mv_sdiowl
+device		mv_sdiowl_fw
 
 # Sound
 device 		sound

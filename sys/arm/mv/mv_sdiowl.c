@@ -61,6 +61,8 @@ __FBSDID("$FreeBSD$");
 #include <sys/malloc.h>
 #include <sys/module.h>
 #include <sys/mutex.h>
+#include <sys/linker.h>
+#include <sys/firmware.h>
 
 #include <dev/mmc/mmcbrvar.h>
 #include <dev/mmc/mmcreg.h>
@@ -70,10 +72,45 @@ __FBSDID("$FreeBSD$");
 
 #include "mmcbus_if.h"
 
+#define DN_LD_CARD_RDY		(1u << 0)
+#define CARD_IO_READY		(1u << 3)
+
+/* Host Control Registers */
+/* Host Control Registers : Host interrupt RSR */
+#define HOST_INT_RSR_REG	0x01
+#define SDIO_INT_MASK		0x3F
+
+/* Host Control Registers : I/O port 0 */
+#define IO_PORT_0_REG		0x78
+/* Host Control Registers : I/O port 1 */
+#define IO_PORT_1_REG		0x79
+/* Host Control Registers : I/O port 2 */
+#define IO_PORT_2_REG		0x7A
+
+/* Host F1 read base 0 */
+#define HOST_F1_RD_BASE_0	0x0040
+/* Host F1 read base 1 */
+#define HOST_F1_RD_BASE_1	0x0041
+
+/* Card Control Registers : Card status register */
+#define CARD_STATUS_REG		0x30
+/* Card Control Registers : Miscellaneous Configuration Register */
+#define CARD_MISC_CFG_REG	0x6C
+
+/* Misc. Config Register : Auto Re-enable interrupts */
+#define AUTO_RE_ENABLE_INT	1 << 4
+
+/* SD block size can not bigger than 64 due to buf size limit in firmware */
+/* define SD block size for data Tx/Rx */
+#define SDIO_BLOCK_SIZE	64
+
+
 struct sdiowl_softc {
 	device_t dev;
 	struct mtx sc_mtx;
 	int running;
+	int sdio_function;
+	uint32_t ioport;
 };
 
 /* bus entry points */
@@ -110,9 +147,10 @@ sdiowl_probe(device_t dev)
 			 &sdio_vendor) ||
 	   BUS_READ_IVAR(device_get_parent(dev), dev, MMC_IVAR_SDIO_PRODUCT,
 			 &sdio_product)) {
-		device_printf(dev, "Cannot get vendor/product from the bus!\n");
+		device_printf(dev, "Cannot get vendor/product/function from the bus!\n");
 		return (-1);
 	}
+
 	if (sdio_vendor == 0x02DF && sdio_product == 0x9119)
 		return (0);
 	else
@@ -120,16 +158,132 @@ sdiowl_probe(device_t dev)
 }
 
 static int
+sdiowl_read_1(struct sdiowl_softc *sc, uint32_t reg, uint8_t *val) {
+	return MMCBUS_IO_READ_1(device_get_parent(sc->dev), sc->dev,
+	    reg, val);
+}
+
+static int
+sdiowl_write_1(struct sdiowl_softc *sc, uint32_t reg, uint8_t val) {
+	return MMCBUS_IO_WRITE_1(device_get_parent(sc->dev), sc->dev,
+	    reg, val);
+}
+
+static int
 sdiowl_attach(device_t dev)
 {
 	struct sdiowl_softc *sc;
+	const struct firmware *fw;
+	uint8_t funcs_enabled;
 //	char unit;
 
 	sc = device_get_softc(dev);
 	sc->dev = dev;
 	SDIOWL_LOCK_INIT(sc);
-
 	sc->running = 1;
+	BUS_READ_IVAR(device_get_parent(dev), dev, MMC_IVAR_SDIO_FUNCTION,
+	    &sc->sdio_function);
+
+	device_printf(dev, "Trying to load firmware...\n");
+	fw = firmware_get("sdiowl_fw");
+	if (!fw) {
+		device_printf(dev, "Fail to load fw");
+		return (-1);
+	}
+
+	device_printf(dev, "OK. name=%s data=%08X, size=%d, ver=%d\n",
+		      fw->name, (uint32_t )fw->data, fw->datasize, fw->version);
+
+	if (MMCBUS_IO_F0_READ_1(device_get_parent(dev), dev,
+	    SD_IO_CCCR_FN_ENABLE, &funcs_enabled))
+		return (-1);
+	if (funcs_enabled | sc->sdio_function)
+		device_printf(dev, "My function is enabled, good!\n");
+	else {
+		/* XXX Enable function from here? */
+		device_printf(dev, "My func is NOT enabled, bad!\n");
+		return (-1);
+	}
+
+	/* Try to set block size */
+	device_printf(dev, "Setting block size to %d bytes\n", SDIO_BLOCK_SIZE);
+	if(MMCBUS_IO_SET_BLOCK_SIZE(device_get_parent(dev), dev, SDIO_BLOCK_SIZE))
+		return (-1);
+
+	/* Get IO Port */
+	uint8_t reg;
+	if (sdiowl_read_1(sc, IO_PORT_0_REG, &reg))
+		return (-1);
+	sc->ioport = reg;
+	if (sdiowl_read_1(sc, IO_PORT_1_REG, &reg))
+		return (-1);
+	sc->ioport = reg << 8;
+	if (sdiowl_read_1(sc, IO_PORT_2_REG, &reg))
+		return (-1);
+	sc->ioport = reg << 16;
+	device_printf(dev, "IO Port: 0x%08X\n", sc->ioport);
+
+	/* Set Host interrupt reset to read to clear */
+	if (!sdiowl_read_1(sc, HOST_INT_RSR_REG, &reg))
+		sdiowl_write_1(sc, HOST_INT_RSR_REG, reg | SDIO_INT_MASK);
+	else
+		return (-1);
+
+	/* Dnld/Upld ready set to auto reset */
+	if (!sdiowl_read_1(sc, CARD_MISC_CFG_REG, &reg))
+		sdiowl_write_1(sc, CARD_MISC_CFG_REG, reg | AUTO_RE_ENABLE_INT);
+	else
+		return (-1);
+
+	/* Now upload FW to the card */
+	uint8_t status, base0, base1, tries;
+	uint32_t len, txlen, tx_blocks, offset;
+
+	offset = len = 0;
+	do {
+		for (tries = 0; tries < 200; tries ++) {
+			/* Ask card about its status */
+			if (sdiowl_read_1(sc, CARD_STATUS_REG, &status))
+				return (-1);
+			device_printf(dev, "Card status: %d\n", status);
+			if (status | CARD_IO_READY | DN_LD_CARD_RDY)
+				device_printf(dev, "Card ready to accept FW\n");
+			else {
+				device_printf(dev, "Card NOT ready to accept FW\n");
+				return (-1);
+			}
+
+			/* XXX: This doesn't work and returns 0's :( */
+			if (sdiowl_read_1(sc, HOST_F1_RD_BASE_0, &base0) > 0 ||
+			    sdiowl_read_1(sc, HOST_F1_RD_BASE_1, &base1) > 0) {
+				device_printf(dev, "Err while reading BASEx\n");
+				return (-1);
+			}
+
+			len = (((base1 & 0xff) << 8) | (base0 & 0xff));
+			device_printf(dev, "len = %d [base0=%d, base1=%d]\n", len, base0, base1);
+			if (len)
+				break;
+			/* Sleep here */
+		}
+
+		if (!len)
+			break;
+		txlen = len;
+
+		if (fw->datasize - offset < txlen)
+			txlen = fw->datasize - offset;
+
+		tx_blocks = (txlen + SDIO_BLOCK_SIZE - 1)
+			/ SDIO_BLOCK_SIZE;
+
+/*
+		ret = mwifiex_write_data_sync(adapter, fwbuf, tx_blocks *
+					      MWIFIEX_SDIO_BLOCK_SIZE,
+					      adapter->ioport);
+*/
+	} while (true);
+
 
 	return (0);
 }
