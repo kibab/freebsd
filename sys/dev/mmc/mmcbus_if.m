@@ -74,11 +74,32 @@ METHOD int wait_for_request {
 
 #
 # SDIO: read 1 byte from function 0
-#
+# Returns: error or 0
 METHOD int io_f0_read_1 {
 	device_t	brdev;
 	device_t	reqdev;
 	uint32_t	adr;
+	uint8_t		*val;
+};
+
+#
+# SDIO: read 1 byte from current function
+# Return: error or 0
+METHOD int io_read_1 {
+	device_t	brdev;
+	device_t	reqdev;
+	uint32_t	adr;
+	uint8_t		*ret;
+};
+
+#
+# SDIO: write 1 byte to current function
+# Return: error or 0
+METHOD int io_write_1 {
+	device_t	brdev;
+	device_t	reqdev;
+	uint32_t	adr;
+	uint8_t		*val;
 };
 
 #
