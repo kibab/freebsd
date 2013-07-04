@@ -73,6 +73,15 @@ METHOD int wait_for_request {
 };
 
 #
+# SDIO: read 1 byte from function 0
+#
+METHOD int io_f0_read_1 {
+	device_t	brdev;
+	device_t	reqdev;
+	uint32_t	adr;
+};
+
+#
 # Claim the current bridge, blocking the current thread until the host
 # is no longer busy.
 #

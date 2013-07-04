@@ -2294,6 +2294,20 @@ mmc_child_location_str(device_t dev, device_t child, char *buf,
 	return (0);
 }
 
+/* SDIO-related MMC bus methods */
+static int
+mmc_io_f0_read_1(device_t dev, device_t child, uint32_t adr)
+{
+	int err;
+	uint8_t res;
+	err = mmc_io_rw_direct(device_get_softc(dev), 0, 0, adr, &res);
+	if (err) {
+		device_printf(dev, "mmc_io_f0_read_1: Err %d", err);
+		return 0xff;
+	}
+	return res;
+}
+
 static device_method_t mmc_methods[] = {
 	/* device_if */
 	DEVMETHOD(device_probe, mmc_probe),
@@ -2309,6 +2323,7 @@ static device_method_t mmc_methods[] = {
 
 	/* MMC Bus interface */
 	DEVMETHOD(mmcbus_wait_for_request, mmc_wait_for_request),
+	DEVMETHOD(mmcbus_io_f0_read_1, mmc_io_f0_read_1),
 	DEVMETHOD(mmcbus_acquire_bus, mmc_acquire_bus),
 	DEVMETHOD(mmcbus_release_bus, mmc_release_bus),
 
