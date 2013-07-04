@@ -68,21 +68,10 @@ __FBSDID("$FreeBSD$");
 #include <dev/mmc/mmcbrvar.h>
 #include <dev/mmc/mmcvar.h>
 #include <dev/mmc/mmcioreg.h>
+#include <dev/mmc/mmciovar.h>
 
 #include "mmcbr_if.h"
 #include "mmcbus_if.h"
-
-/* CIS structure of SDIO card */
-struct sdio_function {
-	int		number;
-	uint8_t		cis1_major;
-	uint8_t		cis1_minor;
-	uint16_t	manufacturer;
-	uint16_t	product;
-	uint16_t	max_blksize;
-	uint8_t		max_tran_speed;	/* only for func0 */
-	STAILQ_ENTRY(sdio_function) sdiof_list;
-};
 
 struct mmc_softc {
 	device_t dev;
@@ -95,8 +84,6 @@ struct mmc_softc {
 	uint8_t sdio_nfunc;
 	u_char sdio_bus_width;
 	uint8_t sdio_support_hs;
-	u_char sdio_timing;
-	uint32_t sdio_tran_speed;
 	struct sdio_function sdio_func0;
 	STAILQ_HEAD(, sdio_function) sdiof_head;
 };
@@ -1736,6 +1723,8 @@ mmc_discover_cards(struct mmc_softc *sc)
 				mmcbr_set_bus_width(sc->dev, sc->sdio_bus_width);
 			}
 
+			u_char sdio_timing;
+			uint32_t sdio_tran_speed;
 			/* Set high speed mode if host and card support it */
 			if (mmcbr_get_caps(sc->dev) & MMC_CAP_HSPEED &&
 			    sc->sdio_support_hs) {
@@ -1747,13 +1736,26 @@ mmc_discover_cards(struct mmc_softc *sc)
 					device_printf(sc->dev, "Error setting HS mode%d\n", err);
 					return;
 				}
-				sc->sdio_timing = bus_timing_hs;
-				sc->sdio_tran_speed = 50 * 1000 * 1000;
+				sdio_timing = bus_timing_hs;
+				sdio_tran_speed = 50 * 1000 * 1000;
 			} else {
-				sc->sdio_tran_speed = 25 * 1000 * 1000;
-				sc->sdio_timing = bus_timing_normal;
+				sdio_tran_speed = 25 * 1000 * 1000;
+				sdio_timing = bus_timing_normal;
 			}
 
+			/* Attach children */
+			STAILQ_FOREACH(f, &sc->sdiof_head, sdiof_list) {
+				ivar = malloc(sizeof(struct mmc_ivars), M_DEVBUF,
+				    M_WAITOK | M_ZERO);
+				ivar->sec_count = 0;
+				ivar->sdiof = f;
+				ivar->rca = rca;
+				ivar->timing = sdio_timing;
+				ivar->tran_speed =
+					ivar->hs_tran_speed = sdio_tran_speed;
+				child = device_add_child(sc->dev, NULL, -1);
+				device_set_ivars(child, ivar);
+			}
 			if (!mem_present)
 				return;
 		}
@@ -2167,11 +2169,6 @@ mmc_calculate_clock(struct mmc_softc *sc)
 	else
 		max_timing = bus_timing_normal;
 
-	if (sc->sdio_timing < max_timing)
-		max_timing = sc->sdio_timing;
-	if (sc->sdio_tran_speed < max_dtr)
-		max_dtr = sc->sdio_tran_speed;
-
 	if (device_get_children(sc->dev, &kids, &nkid) != 0)
 		panic("can't get children");
 	for (i = 0; i < nkid; i++) {
@@ -2256,6 +2253,12 @@ mmc_read_ivar(device_t bus, device_t child, int which, uintptr_t *result)
 		break;
 	case MMC_IVAR_MAX_DATA:
 		*result = mmcbr_get_max_data(bus);
+		break;
+	case MMC_IVAR_SDIO_VENDOR:
+		*result = ivar->sdiof ? ivar->sdiof->manufacturer : 0;
+		break;
+	case MMC_IVAR_SDIO_PRODUCT:
+		*result = ivar->sdiof ? ivar->sdiof->product : 0;
 		break;
 	case MMC_IVAR_CARD_ID_STRING:
 		*(char **)result = ivar->card_id_string;
