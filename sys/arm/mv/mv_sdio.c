@@ -71,7 +71,7 @@
 #define MV_SDIO_BLOCKS_MAX		65535
 
 /* Halfword bit masks used for command response extraction. */
-#define MV_SDIO_RSP48_BM2	0x0002	/* Lower 2 bits. */
+#define MV_SDIO_RSP48_BM2	0x0003	/* Lower 2 bits. */
 #define MV_SDIO_RSP48_BM6	0x003f	/* Lower 6 bits. */
 #define MV_SDIO_RSP48_BM16	0xffff	/* 16 bits */
 
