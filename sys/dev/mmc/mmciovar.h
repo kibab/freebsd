@@ -62,5 +62,6 @@ struct sdio_function {
 	uint16_t	product;
 	uint16_t	max_blksize;
 	uint8_t		max_tran_speed;	/* only for func0 */
+	uint16_t	blksize;
 	STAILQ_ENTRY(sdio_function) sdiof_list;
 };

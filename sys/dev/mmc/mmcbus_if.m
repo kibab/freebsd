@@ -101,6 +101,18 @@ METHOD int io_read_1 {
 };
 
 #
+# SDIO: read multiple bytes from current function
+# Return: error or 0
+METHOD int io_read_multi {
+	device_t	brdev;
+	device_t	reqdev;
+	uint32_t	adr;
+	uint8_t		*datap;
+	size_t		datalen;
+	uint16_t	nblocks;
+};
+
+#
 # SDIO: write 1 byte to current function
 # Return: error or 0
 METHOD int io_write_1 {

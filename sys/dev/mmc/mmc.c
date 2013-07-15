@@ -1356,7 +1356,10 @@ mmc_io_rw_direct(struct mmc_softc *sc, int wr, uint32_t fn, uint32_t adr,
 	return (MMC_ERR_NONE);
 }
 
-/* CMD53 */
+/*
+ * CMD53
+ * incr = 1 with non-zero block count does not make any sense!
+*/
 static int
 mmc_io_rw_extended(struct mmc_softc *sc, int wr, uint32_t fn, uint32_t adr,
 		 uint8_t *datap, size_t datalen, uint8_t incr, uint8_t blks)
@@ -1386,6 +1389,10 @@ mmc_io_rw_extended(struct mmc_softc *sc, int wr, uint32_t fn, uint32_t adr,
 	data.data = datap;
 	data.len = datalen;
 	data.flags = wr ? MMC_DATA_WRITE : MMC_DATA_READ;
+	if (blks > 1) {
+		data.flags |= MMC_DATA_MULTI;
+		data.blocksz = data.len / blks;
+	}
 
 	err = mmc_wait_for_cmd(sc, &cmd, CMD_RETRIES);
 
@@ -1487,7 +1494,7 @@ mmc_io_parse_cis(struct mmc_softc *sc, uint8_t func, uint32_t cisptr, struct sdi
 					count++;
 				}
 			}
-			device_printf(sc->dev, "Read using 1-byte read:\n");
+			device_printf(sc->dev, "Read from %02X using 1-byte read:\n", sc->__sdio_cis1_info);
 			hexdump(cis1_info_buf, 256, NULL, 0);
 
 			device_printf(sc->dev, "*** Info[0]: %s\n", cis1_info[0]);
@@ -1653,6 +1660,36 @@ mmc_io_set_bus_width(struct mmc_softc *sc, int width)
 		    width == bus_width_4 ? 4 : 1);
 
 	return mmc_io_rw_direct(sc, 1, 0, SD_IO_CCCR_BUS_WIDTH, &busctrl);
+}
+
+static int
+mmc_io_set_block_size(struct mmc_softc *sc, struct sdio_function *sdiof,
+    uint16_t bs)
+{
+	uint32_t addr;
+	uint8_t val;
+	int err;
+
+	addr = SD_IO_FBR_START * sdiof->number + 0x10;
+	val = bs & 0xFF;
+
+	err = mmc_io_rw_direct(sc, 1, 0,
+	    addr++, &val);
+	if (err) {
+		device_printf(sc->dev, "mmc_io_set_block_size: Err %d\n", err);
+		return (err);
+	}
+
+	val = (bs >> 8) & 0xFF;
+	err = mmc_io_rw_direct(sc, 1, 0,
+	    addr++, &val);
+	if (err) {
+		device_printf(sc->dev, "mmc_io_set_block_size: Err %d\n", err);
+		return (err);
+	}
+	sdiof->blksize = bs;
+
+	return (err);
 }
 
 static void
@@ -2142,6 +2179,12 @@ mmc_go_discovery(struct mmc_softc *sc)
 	if (err)
 		device_printf(sc->dev, "HS INFO read err %d\n", err);
 
+	/* Disable interrupts from all functions */
+	hs_info = 0;
+	err = mmc_io_rw_direct(sc, 1, 0, SD_IO_CCCR_INT_ENABLE, &hs_info);
+	if (err)
+		device_printf(sc->dev, "Interrupt disable err %d\n", err);
+
 	/* Now try actual command */
 	mmc_debug = 10;
 	uint8_t data[100];
@@ -2298,30 +2341,9 @@ mmc_child_location_str(device_t dev, device_t child, char *buf,
 static int
 mmcb_io_set_block_size(device_t dev, device_t child, uint16_t bs)
 {
-	int err;
-	uint32_t addr;
-	uint8_t val;
 	struct mmc_ivars *ivar = device_get_ivars(child);
 
-	addr = SD_IO_FBR_START * ivar->sdiof->number + 0x110;
-	val = bs & 0xFF;
-
-	err = mmc_io_rw_direct(device_get_softc(dev), 1, 0,
-	    addr++, &val);
-	if (err) {
-		device_printf(dev, "mmcb_io_set_block_size: Err %d", err);
-		return (err);
-	}
-
-	val = (bs >> 8) & 0xFF;
-	err = mmc_io_rw_direct(device_get_softc(dev), 1, 0,
-	    addr++, &val);
-	if (err) {
-		device_printf(dev, "mmcb_io_set_block_size: Err %d", err);
-		return (err);
-	}
-
-	return (err);
+	return mmc_io_set_block_size(device_get_softc(dev), ivar->sdiof, bs);
 }
 
 static int
@@ -2374,6 +2396,25 @@ mmcb_io_write_multi(device_t dev, device_t child, uint32_t adr,
 	return (err);
 }
 
+static int
+mmcb_io_read_multi(device_t dev, device_t child, uint32_t adr,
+		   uint8_t *datap, size_t datalen, uint16_t nblocks)
+{
+	int err;
+	struct mmc_ivars *ivar = device_get_ivars(child);
+
+	err = mmc_io_rw_extended(device_get_softc(dev), 0, ivar->sdiof->number,
+	    adr, datap, datalen, 1, nblocks);
+//	adr = 0x8004;
+//	device_printf(dev, "Buffer addr: %08X, reading from %02X\n", (uint32_t) datap, adr);
+//	err = mmc_io_rw_extended(device_get_softc(dev), 0, 0,
+//	    adr, datap, 32, 0, 4);
+
+	if (err)
+		device_printf(dev, "mmc_io_read_multi: Err %d\n", err);
+	return (err);
+}
+
 static device_method_t mmc_methods[] = {
 	/* device_if */
 	DEVMETHOD(device_probe, mmc_probe),
@@ -2392,6 +2433,7 @@ static device_method_t mmc_methods[] = {
 	DEVMETHOD(mmcbus_io_set_block_size, mmcb_io_set_block_size),
 	DEVMETHOD(mmcbus_io_f0_read_1, mmcb_io_f0_read_1),
 	DEVMETHOD(mmcbus_io_read_1, mmcb_io_read_1),
+	DEVMETHOD(mmcbus_io_read_multi, mmcb_io_read_multi),
 	DEVMETHOD(mmcbus_io_write_1, mmcb_io_write_1),
 	DEVMETHOD(mmcbus_io_write_multi, mmcb_io_write_multi),
 	DEVMETHOD(mmcbus_acquire_bus, mmc_acquire_bus),
