@@ -102,7 +102,7 @@ __FBSDID("$FreeBSD$");
 
 /* SD block size can not bigger than 64 due to buf size limit in firmware */
 /* define SD block size for data Tx/Rx */
-#define SDIO_BLOCK_SIZE	64
+#define SDIO_BLOCK_SIZE		64
 
 
 struct sdiowl_softc {
@@ -235,6 +235,17 @@ sdiowl_attach(device_t dev)
 	else
 		return (-1);
 
+	char data[256]; /* = 4 blocks */
+	memset(data, 0, 256);
+	if (MMCBUS_IO_READ_MULTI(device_get_parent(dev), dev, 0,
+				 data, 256, 4)) {
+		device_printf(dev, "Cannot read-multi\n");
+	} else hexdump(data, 256, NULL, 0);
+
+	/* Stop init here for now */
+	return (-1);
+
+
 	/* Now upload FW to the card */
 	uint8_t status, base0, base1, tries;
 	uint32_t len, txlen, tx_blocks, offset;
@@ -281,6 +292,8 @@ sdiowl_attach(device_t dev)
 		ret = mwifiex_write_data_sync(adapter, fwbuf, tx_blocks *
 					      MWIFIEX_SDIO_BLOCK_SIZE,
 					      adapter->ioport);
+
+This uses FIFO write -- need to implement the bus method for this.
 */
 	} while (true);
 
