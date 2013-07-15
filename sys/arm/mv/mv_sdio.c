@@ -992,14 +992,14 @@ mv_sdio_start_data(struct mv_sdio_softc *sc, struct mmc_data *data)
 	 */
 	blk_size = (data->len < MV_SDIO_BLOCK_SIZE) ? data->len :
 	    MV_SDIO_BLOCK_SIZE;
-	if (data->flags | MMC_DATA_MULTI)
+	if (data->flags & MMC_DATA_MULTI)
 		blk_size = data->blocksz > MV_SDIO_BLOCK_SIZE ?
 		    MV_SDIO_BLOCK_SIZE : data->blocksz;
 	MV_SDIO_WR4(sc, MV_SDIO_BLK_SIZE, blk_size);
 
 	/* Set block count. */
 	blk_count = (data->len + MV_SDIO_BLOCK_SIZE - 1) / MV_SDIO_BLOCK_SIZE;
-	if (data->flags | MMC_DATA_MULTI)
+	if (data->flags & MMC_DATA_MULTI)
 		blk_count = data->len / blk_size;
 	MV_SDIO_WR4(sc, MV_SDIO_BLK_COUNT, blk_count);
 	device_printf(sc->sc_dev, "BLK SIZE: %d, COUNT: %d\n", blk_size, blk_count);
