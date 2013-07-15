@@ -992,11 +992,17 @@ mv_sdio_start_data(struct mv_sdio_softc *sc, struct mmc_data *data)
 	 */
 	blk_size = (data->len < MV_SDIO_BLOCK_SIZE) ? data->len :
 	    MV_SDIO_BLOCK_SIZE;
+	if (data->flags | MMC_DATA_MULTI)
+		blk_size = data->blocksz > MV_SDIO_BLOCK_SIZE ?
+		    MV_SDIO_BLOCK_SIZE : data->blocksz;
 	MV_SDIO_WR4(sc, MV_SDIO_BLK_SIZE, blk_size);
 
 	/* Set block count. */
 	blk_count = (data->len + MV_SDIO_BLOCK_SIZE - 1) / MV_SDIO_BLOCK_SIZE;
+	if (data->flags | MMC_DATA_MULTI)
+		blk_count = data->len / blk_size;
 	MV_SDIO_WR4(sc, MV_SDIO_BLK_COUNT, blk_count);
+	device_printf(sc->sc_dev, "BLK SIZE: %d, COUNT: %d\n", blk_size, blk_count);
 
 	/* We want to initiate transfer by software. */
 	xfer = MV_SDIO_XFER_SW_WR_EN;
@@ -1135,7 +1141,7 @@ mv_sdio_intr(void *arg)
 	uint32_t irq_stat, eirq_stat;
 
   sc = (struct mv_sdio_softc *)arg;
-#if 0
+#if 1
 	device_printf(sc->sc_dev,"intr 0x%04x intr_en 0x%04x hw_state 0x%04x\n",
                 MV_SDIO_RD4( sc, MV_SDIO_IRQ_SR ) ,  
                 MV_SDIO_RD4( sc, MV_SDIO_IRQ_EN ),
@@ -1220,10 +1226,18 @@ mv_sdio_cmd_intr(struct mv_sdio_softc *sc, uint32_t irq, uint32_t eirq)
 		sc->sc_curcmd->error = MMC_ERR_BADCRC;
 		device_printf(sc->sc_dev, "Error - bad command %d "
 		    "checksum!\n", sc->sc_curcmd->opcode);
+	} else if (eirq & MV_SDIO_EIRQ_DATA_CRC16) {
+		sc->sc_curcmd->error = MMC_ERR_BADCRC;
+		device_printf(sc->sc_dev, "Error - bad command %d "
+		    "DATA checksum!\n", sc->sc_curcmd->opcode);
+	} else if (eirq & MV_SDIO_EIRQ_DATA_ENDBIT) {
+		sc->sc_curcmd->error = MMC_ERR_BADCRC;
+		device_printf(sc->sc_dev, "Error - bad command %d "
+		    "end bit error!\n", sc->sc_curcmd->opcode);
 	} else if (eirq) {
 		sc->sc_curcmd->error = MMC_ERR_FAILED;
-		device_printf(sc->sc_dev, "Command %d error!\n",
-		    sc->sc_curcmd->opcode);
+		device_printf(sc->sc_dev, "Command %d error eirq=%d!\n",
+		    sc->sc_curcmd->opcode, eirq);
 	}
 
 	if (sc->sc_curcmd->error != MMC_ERR_NONE) {

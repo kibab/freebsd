@@ -186,6 +186,7 @@ struct mmc_data {
 #define	MMC_DATA_READ	(1UL << 1)
 #define	MMC_DATA_STREAM	(1UL << 2)
 #define	MMC_DATA_MULTI	(1UL << 3)
+	uint32_t	blocksz; /* Size of the data block */
 	struct mmc_request *mrq;
 };
 
