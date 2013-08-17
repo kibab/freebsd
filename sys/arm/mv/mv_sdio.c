@@ -1002,7 +1002,7 @@ mv_sdio_start_data(struct mv_sdio_softc *sc, struct mmc_data *data)
 	if (data->flags & MMC_DATA_MULTI)
 		blk_count = data->len / blk_size;
 	MV_SDIO_WR4(sc, MV_SDIO_BLK_COUNT, blk_count);
-	device_printf(sc->sc_dev, "BLK SIZE: %d, COUNT: %d\n", blk_size, blk_count);
+//	device_printf(sc->sc_dev, "BLK SIZE: %d, COUNT: %d\n", blk_size, blk_count);
 
 	/* We want to initiate transfer by software. */
 	xfer = MV_SDIO_XFER_SW_WR_EN;
@@ -1141,7 +1141,7 @@ mv_sdio_intr(void *arg)
 	uint32_t irq_stat, eirq_stat;
 
   sc = (struct mv_sdio_softc *)arg;
-#if 1
+#if 0
 	device_printf(sc->sc_dev,"intr 0x%04x intr_en 0x%04x hw_state 0x%04x\n",
                 MV_SDIO_RD4( sc, MV_SDIO_IRQ_SR ) ,  
                 MV_SDIO_RD4( sc, MV_SDIO_IRQ_EN ),
