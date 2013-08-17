@@ -2186,7 +2186,7 @@ mmc_go_discovery(struct mmc_softc *sc)
 		device_printf(sc->dev, "Interrupt disable err %d\n", err);
 
 	/* Now try actual command */
-	mmc_debug = 10;
+//	mmc_debug = 10;
 	uint8_t data[100];
 	err = mmc_io_rw_extended(sc, 0, 0, sc->__sdio_cis1_info, data, 100, 0, 0);
 	if (err)
@@ -2384,15 +2384,15 @@ mmcb_io_write_1(device_t dev, device_t child, uint32_t adr, uint8_t val)
 
 static int
 mmcb_io_write_multi(device_t dev, device_t child, uint32_t adr,
-		   uint8_t *datap, size_t datalen)
+		    uint8_t *datap, size_t datalen, uint16_t nblocks)
 {
 	int err;
 	struct mmc_ivars *ivar = device_get_ivars(child);
 
 	err = mmc_io_rw_extended(device_get_softc(dev), 1, ivar->sdiof->number,
-	    adr, datap, datalen, 0, 1);
+	    adr, datap, datalen, 1, nblocks);
 	if (err)
-		device_printf(dev, "mmc_io_write_multi: Err %d", err);
+		device_printf(dev, "mmcb_io_write_multi: Err %d", err);
 	return (err);
 }
 
@@ -2412,6 +2412,22 @@ mmcb_io_read_multi(device_t dev, device_t child, uint32_t adr,
 
 	if (err)
 		device_printf(dev, "mmc_io_read_multi: Err %d\n", err);
+	return (err);
+}
+
+static int
+mmcb_io_write_fifo(device_t dev, device_t child, uint32_t adr,
+		   uint8_t *datap, size_t datalen)
+{
+	int err;
+	struct mmc_ivars *ivar = device_get_ivars(child);
+
+	device_printf(dev, "mmcb_io_write_fifo: func %d, adr=0x%04X, datap=0x%04X, len %d\n", ivar->sdiof->number, adr, (unsigned int) datap, datalen);
+
+	err = mmc_io_rw_extended(device_get_softc(dev), 0, ivar->sdiof->number,
+	    adr, datap, datalen, 0, 0);
+	if (err)
+		device_printf(dev, "mmcb_io_write_fifo: Err %d\n", err);
 	return (err);
 }
 
@@ -2436,6 +2452,7 @@ static device_method_t mmc_methods[] = {
 	DEVMETHOD(mmcbus_io_read_multi, mmcb_io_read_multi),
 	DEVMETHOD(mmcbus_io_write_1, mmcb_io_write_1),
 	DEVMETHOD(mmcbus_io_write_multi, mmcb_io_write_multi),
+	DEVMETHOD(mmcbus_io_write_fifo, mmcb_io_write_fifo),
 	DEVMETHOD(mmcbus_acquire_bus, mmc_acquire_bus),
 	DEVMETHOD(mmcbus_release_bus, mmc_release_bus),
 
