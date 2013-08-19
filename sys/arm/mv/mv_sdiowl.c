@@ -286,10 +286,10 @@ sdiowl_attach(device_t dev)
 	 * XXX: We probably should just enable function from the driver code
 	 * and not rely on MMC/SDIO stack to do this!
 	 */
-	if (funcs_enabled & sc->sdio_function)
+	if (funcs_enabled & (1 << sc->sdio_function))
 		device_printf(dev, "My function is enabled, good!\n");
 	else {
-		device_printf(dev, "My func is NOT enabled, bad!\n");
+		device_printf(dev, "My func is NOT enabled, bad (mask = %d, func=%d)!\n", funcs_enabled, sc->sdio_function);
 		return (-1);
 	}
 
@@ -342,7 +342,10 @@ sdiowl_attach(device_t dev)
 	/* Now upload FW to the card */
 	uint8_t status, base0, base1, tries;
 	uint32_t len, txlen, tx_blocks, offset;
+
+	/* XXX Zero allocated memory! */
 	uint8_t *fwbuf_ = malloc(2048 + BUF_ALIGN, M_MVSDIOWL, M_WAITOK);
+
 	size_t fwbuf_a = (size_t) fwbuf_;
 	fwbuf_a &= ~ (BUF_ALIGN - 1) ;
 	fwbuf_a += BUF_ALIGN;
@@ -394,6 +397,7 @@ sdiowl_attach(device_t dev)
 		tx_blocks = (txlen + SDIO_BLOCK_SIZE - 1)
 			/ SDIO_BLOCK_SIZE;
 		/* Copy payload to buffer */
+		memset(fwbuf_, 0, 2048 + BUF_ALIGN);
 		memmove(fwbuf, (uint8_t *)((size_t)fw->data + offset), txlen);
 
 		device_printf(sc->dev, "TX from off 0x%02X, len 0x%02X, tx_blocks=%d\n", offset, txlen, tx_blocks);
@@ -407,11 +411,10 @@ sdiowl_attach(device_t dev)
 		offset += txlen;
 
 /*
+ * Linux code as follows:
 		ret = mwifiex_write_data_sync(adapter, fwbuf, tx_blocks *
 					      MWIFIEX_SDIO_BLOCK_SIZE,
 					      adapter->ioport);
-
-This uses FIFO write -- need to implement the bus method for this.
 */
 	} while (true);
 
