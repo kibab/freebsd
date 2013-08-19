@@ -2410,10 +2410,6 @@ mmcb_io_read_multi(device_t dev, device_t child, uint32_t adr,
 
 	err = mmc_io_rw_extended(device_get_softc(dev), 0, ivar->sdiof->number,
 	    adr, datap, datalen, 1, nblocks);
-//	adr = 0x8004;
-//	device_printf(dev, "Buffer addr: %08X, reading from %02X\n", (uint32_t) datap, adr);
-//	err = mmc_io_rw_extended(device_get_softc(dev), 0, 0,
-//	    adr, datap, 32, 0, 4);
 
 	if (err)
 		device_printf(dev, "mmc_io_read_multi: Err %d\n", err);
@@ -2425,14 +2421,38 @@ mmcb_io_write_fifo(device_t dev, device_t child, uint32_t adr,
 		   uint8_t *datap, size_t datalen)
 {
 	int err;
+	uint32_t b_written = 0;
+	uint32_t b_to_write = datalen;
+	uint32_t nblocks = 0;
 	struct mmc_ivars *ivar = device_get_ivars(child);
 
-	device_printf(dev, "mmcb_io_write_fifo: func %d, adr=0x%04X, datap=0x%04X, len %d\n", ivar->sdiof->number, adr, (unsigned int) datap, datalen);
+//	device_printf(dev, "mmcb_io_write_fifo: func %d, adr=0x%04X, datap=0x%04X, len %d\n", ivar->sdiof->number, adr, (unsigned int) datap, datalen);
+	err = 0;
 
-	err = mmc_io_rw_extended(device_get_softc(dev), 1, ivar->sdiof->number,
-	    adr, datap, datalen, 0, 0);
-	if (err)
-		device_printf(dev, "mmcb_io_write_fifo: Err %d\n", err);
+/*
+ * Linux code takes into account the max block size that is allowed
+ * by the host controller. Would be nice to be able to get such information.
+ */
+	if (datalen >= ivar->sdiof->blksize) {
+		nblocks = datalen / ivar->sdiof->blksize;
+		b_to_write = ivar->sdiof->blksize * nblocks;
+		err = mmc_io_rw_extended(device_get_softc(dev), 1,
+		    ivar->sdiof->number, adr, datap, b_to_write, 0, nblocks);
+		if (err) {
+			device_printf(dev, "mmcb_io_write_fifo: Err %d\n", err);
+			return (err);
+		}
+
+		b_written = b_to_write;
+	}
+
+	if (datalen - b_written > 0) {
+		b_to_write = datalen - b_written;
+		err = mmc_io_rw_extended(device_get_softc(dev), 1,
+		    ivar->sdiof->number, adr, datap + b_written, b_to_write, 0, 0);
+		if (err)
+			device_printf(dev, "mmcb_io_write_fifo: Err %d\n", err);
+	}
 	return (err);
 }
 
