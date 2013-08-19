@@ -1370,7 +1370,6 @@ mmc_io_rw_extended(struct mmc_softc *sc, int wr, uint32_t fn, uint32_t adr,
 
 	memset(&cmd, 0, sizeof(cmd));
 	memset(&data, 0, sizeof(data));
-	memset(datap, 0, datalen);
 
 	cmd.opcode = SD_IO_RW_EXTENDED;
 	cmd.flags = MMC_RSP_R5 | MMC_CMD_AC;
@@ -1382,6 +1381,9 @@ mmc_io_rw_extended(struct mmc_softc *sc, int wr, uint32_t fn, uint32_t adr,
 		cmd.arg |= SD_IOE_RW_LEN(datalen);
 	if (wr)
 		cmd.arg |= SD_IO_RW_WR;
+	else
+		memset(datap, 0, datalen);
+
 	if (incr)
 		cmd.arg |= SD_IO_RW_INCR;
 	cmd.data = &data;
@@ -2427,7 +2429,7 @@ mmcb_io_write_fifo(device_t dev, device_t child, uint32_t adr,
 
 	device_printf(dev, "mmcb_io_write_fifo: func %d, adr=0x%04X, datap=0x%04X, len %d\n", ivar->sdiof->number, adr, (unsigned int) datap, datalen);
 
-	err = mmc_io_rw_extended(device_get_softc(dev), 0, ivar->sdiof->number,
+	err = mmc_io_rw_extended(device_get_softc(dev), 1, ivar->sdiof->number,
 	    adr, datap, datalen, 0, 0);
 	if (err)
 		device_printf(dev, "mmcb_io_write_fifo: Err %d\n", err);
