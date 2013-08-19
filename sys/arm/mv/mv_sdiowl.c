@@ -223,8 +223,6 @@ sdiowl_check_fw_status(struct sdiowl_softc *sc) {
 		ret = sdiowl_get_fw_status(sc, &status);
 		if (ret)
 			continue;
-		device_printf(sc->dev, "FW status = %08X\n", status);
-
 		if (status == FIRMWARE_READY_SDIO) {
 			status_ok = status;
 			ret = 0;
@@ -331,27 +329,25 @@ sdiowl_attach(device_t dev)
 	else
 		return (-1);
 
-/*
+
+	/* XXX No idea but without this FW upload doesn't work :-( */
 	char data[256];
 	memset(data, 0, 256);
 	if (MMCBUS_IO_READ_MULTI(device_get_parent(dev), dev, 0,
 				 data, 256, 1)) {
 		device_printf(dev, "Cannot read-multi\n");
-	} else hexdump(data, 256, NULL, 0);
-*/
+	}
+
 	/* Now upload FW to the card */
 	uint8_t status, base0, base1, tries;
 	uint32_t len, txlen, tx_blocks, offset;
 
-	/* XXX Zero allocated memory! */
 	uint8_t *fwbuf_ = malloc(2048 + BUF_ALIGN, M_MVSDIOWL, M_WAITOK);
 
 	size_t fwbuf_a = (size_t) fwbuf_;
 	fwbuf_a &= ~ (BUF_ALIGN - 1) ;
 	fwbuf_a += BUF_ALIGN;
 	uint8_t *fwbuf = (uint8_t *) fwbuf_a;
-	device_printf(dev, "fwbuf_ = %04X, aligned = %04X\n", (unsigned int) fwbuf, (unsigned int) fwbuf_a);
-
 	offset = len = 0;
 	do {
 		for (tries = 0; tries < 200; tries ++) {
@@ -359,11 +355,10 @@ sdiowl_attach(device_t dev)
 			/* Ask card about its status */
 			if (sdiowl_read_1(sc, CARD_STATUS_REG, &status))
 				return (-1);
-			device_printf(dev, "Card status: %d\n", status);
-			if (status | CARD_IO_READY | DN_LD_CARD_RDY)
-				device_printf(dev, "Card ready to accept FW\n");
-			else {
-				device_printf(dev, "Card NOT ready to accept FW\n");
+			if (!(status | CARD_IO_READY | DN_LD_CARD_RDY)) {
+				device_printf(dev,
+				    "Card NOT ready to accept FW (status %d)\n",
+				    status);
 				return (-1);
 			}
 
@@ -374,13 +369,10 @@ sdiowl_attach(device_t dev)
 			}
 
 			len = (((base1 & 0xff) << 8) | (base0 & 0xff));
-			device_printf(dev, "len = %d [base0=%d, base1=%d]\n", len, base0, base1);
 			if (len)
 				break;
 			pause("sdiowl", 10);
 		}
-		if (offset >= fw->datasize)
-			break;
 
 		txlen = len;
 
@@ -400,7 +392,6 @@ sdiowl_attach(device_t dev)
 		memset(fwbuf_, 0, 2048 + BUF_ALIGN);
 		memmove(fwbuf, (uint8_t *)((size_t)fw->data + offset), txlen);
 
-		device_printf(sc->dev, "TX from off 0x%02X, len 0x%02X, tx_blocks=%d\n", offset, txlen, tx_blocks);
 		if (MMCBUS_IO_WRITE_FIFO(device_get_parent(dev), dev, sc->ioport,
 		    (uint8_t *) fwbuf,
 		    tx_blocks * SDIO_BLOCK_SIZE)) {
@@ -410,12 +401,10 @@ sdiowl_attach(device_t dev)
 
 		offset += txlen;
 
-/*
- * Linux code as follows:
-		ret = mwifiex_write_data_sync(adapter, fwbuf, tx_blocks *
-					      MWIFIEX_SDIO_BLOCK_SIZE,
-					      adapter->ioport);
-*/
+		if (offset >= fw->datasize)
+			break;
+		pause("sdiowl", 2);
+
 	} while (true);
 
 	device_printf(sc->dev, "FW download over, size %d bytes\n", offset);
