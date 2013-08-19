@@ -252,6 +252,16 @@ sdiowl_disable_host_int(struct sdiowl_softc *sc) {
 }
 
 static int
+sdiowl_enable_host_int(struct sdiowl_softc *sc) {
+	if (sdiowl_write_1(sc, HOST_INT_MASK_REG, HOST_INT_ENABLE)) {
+		device_printf(sc->dev, "Enabling host interrupt failed!\n");
+		return (-1);
+	}
+
+	return 0;
+}
+
+static int
 sdiowl_attach(device_t dev)
 {
 	struct sdiowl_softc *sc;
@@ -412,7 +422,12 @@ sdiowl_attach(device_t dev)
 	/* Check FW status */
 	if (sdiowl_check_fw_status(sc)) {
 		device_printf(sc->dev, "FW did not come up in time\n");
+		return (-1);
 	} else device_printf(sc->dev, "FW READY\n");
+
+	/* Enable host interrupts */
+	sdiowl_enable_host_int(sc);
+
 	return (0);
 }
 
