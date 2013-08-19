@@ -2303,6 +2303,9 @@ mmc_read_ivar(device_t bus, device_t child, int which, uintptr_t *result)
 	case MMC_IVAR_SDIO_PRODUCT:
 		*result = ivar->sdiof ? ivar->sdiof->product : 0;
 		break;
+	case MMC_IVAR_SDIO_FUNCTION:
+		*result = ivar->sdiof ? ivar->sdiof->number : 0;
+		break;
 	case MMC_IVAR_CARD_ID_STRING:
 		*(char **)result = ivar->card_id_string;
 		break;
