@@ -1313,6 +1313,41 @@ mmc_io_func_enable(struct mmc_softc *sc, uint32_t fn)
 	return (MMC_ERR_FAILED);
 }
 
+/*
+ * Enables or disables interrupt generation
+ * for the given function on SDIO card.
+ */
+static int
+mmc_io_set_intr(struct mmc_softc *sc, uint32_t fn, char enable)
+{
+	int err;
+	uint8_t intrs;
+
+	if (fn > sc->sdio_nfunc) {
+		device_printf(sc->dev, "Invalid function to manage interrupt: %d\n", fn);
+		return (MMC_ERR_INVALID);
+	}
+
+	intrs = mmc_io_read_1(sc, 0, SD_IO_CCCR_INT_ENABLE);
+
+	if (enable) {
+		intrs |= (1 << fn);
+		intrs |= 1; /* Master interrupt enable */
+	} else {
+		intrs &= ~ (1 << fn);
+		if (intrs == 0x01)
+			intrs = 0x0; /* No interrupts enabled -> disable on card */
+	}
+
+	device_printf(sc->dev, "mmc_io_set_intr(): writing %d to INT_ENABLE\n", intrs);
+	err = mmc_io_rw_direct(sc, 1, 0, SD_IO_CCCR_INT_ENABLE, &intrs);
+	if (err != MMC_ERR_NONE) {
+		device_printf(sc->dev, "Error writing SDIO intr enable %d\n", err);
+		return (err);
+	}
+	return (0);
+}
+
 /* CMD52 */
 static int
 mmc_io_rw_direct(struct mmc_softc *sc, int wr, uint32_t fn, uint32_t adr,
@@ -2456,6 +2491,18 @@ mmcb_io_write_fifo(device_t dev, device_t child, uint32_t adr,
 	return (err);
 }
 
+static int
+mmcb_io_set_intr(device_t dev, device_t child, size_t *handler)
+{
+	int err;
+	struct mmc_ivars *ivar = device_get_ivars(child);
+
+	/* TODO: actually set the interrupt handler! */
+	err = mmc_io_set_intr(device_get_softc(dev), ivar->sdiof->number,
+		handler == NULL ? 0 : 1);
+	return (err);
+}
+
 static device_method_t mmc_methods[] = {
 	/* device_if */
 	DEVMETHOD(device_probe, mmc_probe),
@@ -2478,6 +2525,7 @@ static device_method_t mmc_methods[] = {
 	DEVMETHOD(mmcbus_io_write_1, mmcb_io_write_1),
 	DEVMETHOD(mmcbus_io_write_multi, mmcb_io_write_multi),
 	DEVMETHOD(mmcbus_io_write_fifo, mmcb_io_write_fifo),
+	DEVMETHOD(mmcbus_io_set_intr, mmcb_io_set_intr),
 	DEVMETHOD(mmcbus_acquire_bus, mmc_acquire_bus),
 	DEVMETHOD(mmcbus_release_bus, mmc_release_bus),
 
