@@ -126,6 +126,9 @@ MALLOC_DEFINE(M_MVSDIOWL, "mv_sdiowl", "Buffers of Marvell SDIO WLAN Driver");
 /* Misc. Config Register : Auto Re-enable interrupts */
 #define AUTO_RE_ENABLE_INT	1 << 4
 
+/* Firmware commands */
+#define HostCmd_CMD_FUNC_INIT	0x00a9
+
 /* SD block size can not bigger than 64 due to buf size limit in firmware */
 /* define SD block size for data Tx/Rx */
 #define SDIO_BLOCK_SIZE		256
@@ -142,6 +145,15 @@ struct sdiowl_softc {
 	uint32_t ioport;
 };
 
+struct sdiowl_cmd_hdr {
+	uint16_t command;
+	uint16_t size;
+	uint16_t seq_num;
+	uint16_t result;
+};
+
+#define HDR_SIZE sizeof(struct sdiowl_cmd_hdr)
+
 /* bus entry points */
 static int sdiowl_attach(device_t dev);
 static int sdiowl_detach(device_t dev);
@@ -155,6 +167,11 @@ static int sdiowl_probe(device_t dev);
 #define SDIOWL_LOCK_DESTROY(_sc)	mtx_destroy(&_sc->sc_mtx);
 #define SDIOWL_ASSERT_LOCKED(_sc) mtx_assert(&_sc->sc_mtx, MA_OWNED);
 #define SDIOWL_ASSERT_UNLOCKED(_sc) mtx_assert(&_sc->sc_mtx, MA_NOTOWNED);
+
+static int
+sdiowl_send_init(struct sdiowl_softc *sc) {
+
+}
 
 static int
 sdiowl_probe(device_t dev)
@@ -248,11 +265,23 @@ sdiowl_disable_host_int(struct sdiowl_softc *sc) {
 		return (-1);
 	}
 
+	if (MMCBUS_IO_SET_INTR(device_get_parent(sc->dev), sc->dev, NULL)) {
+		device_printf(sc->dev, "Bus call to disable interrupt!\n");
+		return (-1);
+	}
+
 	return 0;
 }
 
 static int
 sdiowl_enable_host_int(struct sdiowl_softc *sc) {
+	size_t handler = 0xdeadbeef;
+
+	if (MMCBUS_IO_SET_INTR(device_get_parent(sc->dev), sc->dev, &handler)) {
+		device_printf(sc->dev, "Bus call to enable interrupt!\n");
+		return (-1);
+	}
+
 	if (sdiowl_write_1(sc, HOST_INT_MASK_REG, HOST_INT_ENABLE)) {
 		device_printf(sc->dev, "Enabling host interrupt failed!\n");
 		return (-1);
@@ -308,8 +337,8 @@ sdiowl_attach(device_t dev)
 
 	/* ACK the first interrupt from bootloader, disable host intr mask */
 	sdio_irq = 0;
-	if(sdiowl_read_1(sc, HOST_INTSTATUS_REG, &sdio_irq))
-		return (-1);
+//	if(sdiowl_read_1(sc, HOST_INTSTATUS_REG, &sdio_irq))
+//		return (-1);
 
 	/* Disable host interrupts */
 	sdiowl_disable_host_int(sc);
