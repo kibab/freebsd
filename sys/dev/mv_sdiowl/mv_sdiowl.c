@@ -168,11 +168,11 @@ static int sdiowl_probe(device_t dev);
 #define SDIOWL_ASSERT_LOCKED(_sc) mtx_assert(&_sc->sc_mtx, MA_OWNED);
 #define SDIOWL_ASSERT_UNLOCKED(_sc) mtx_assert(&_sc->sc_mtx, MA_NOTOWNED);
 
-static int
+/*static int
 sdiowl_send_init(struct sdiowl_softc *sc) {
 
 }
-
+*/
 static int
 sdiowl_probe(device_t dev)
 {
