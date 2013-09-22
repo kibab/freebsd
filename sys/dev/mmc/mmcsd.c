@@ -128,8 +128,17 @@ static daddr_t mmcsd_rw(struct mmcsd_softc *sc, struct bio *bp);
 static int
 mmcsd_probe(device_t dev)
 {
-
 	device_quiet(dev);
+	size_t media_size;
+
+	if(BUS_READ_IVAR(device_get_parent(dev), dev, MMC_IVAR_MEDIA_SIZE,
+			 &media_size)) {
+		device_printf(dev, "Cannot get media size from bus!\n");
+		return (-1);
+	}
+	device_printf(dev, "Media size: %zu\n", media_size);
+	if (media_size == 0)
+		return(-1);
 	device_set_desc(dev, "MMC/SD Memory Card");
 	return (0);
 }
