@@ -52,6 +52,9 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
+#include "opt_inet.h"
+#include "opt_wlan.h"
+
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/bus.h>
@@ -61,8 +64,29 @@ __FBSDID("$FreeBSD$");
 #include <sys/malloc.h>
 #include <sys/module.h>
 #include <sys/mutex.h>
+#include <sys/condvar.h>
 #include <sys/linker.h>
 #include <sys/firmware.h>
+#include <sys/taskqueue.h>
+#include <sys/socket.h>
+
+#include <net/if.h>
+#include <net/if_dl.h>
+#include <net/if_media.h>
+#include <net/if_types.h>
+#include <net/if_arp.h>
+#include <net/ethernet.h>
+#include <net/if_llc.h>
+
+#include <net/bpf.h>
+
+#include <net80211/ieee80211_var.h>
+#include <net80211/ieee80211_regdomain.h>
+
+#ifdef INET
+#include <netinet/in.h>
+#include <netinet/if_ether.h>
+#endif /* INET */
 
 #include <dev/mmc/mmcbrvar.h>
 #include <dev/mmc/mmcreg.h>
@@ -126,8 +150,16 @@ MALLOC_DEFINE(M_MVSDIOWL, "mv_sdiowl", "Buffers of Marvell SDIO WLAN Driver");
 /* Misc. Config Register : Auto Re-enable interrupts */
 #define AUTO_RE_ENABLE_INT	1 << 4
 
+enum sdiowl_bss_type {
+	MWIFIEX_BSS_TYPE_STA = 0,
+	MWIFIEX_BSS_TYPE_UAP = 1,
+	MWIFIEX_BSS_TYPE_P2P = 2,
+	MWIFIEX_BSS_TYPE_ANY = 0xff,
+};
+
 /* Firmware commands */
 #define HostCmd_CMD_FUNC_INIT	0x00a9
+#define HostCmd_CMD_GET_HW_SPEC 0x0003
 
 /* SD block size can not bigger than 64 due to buf size limit in firmware */
 /* define SD block size for data Tx/Rx */
@@ -137,14 +169,7 @@ MALLOC_DEFINE(M_MVSDIOWL, "mv_sdiowl", "Buffers of Marvell SDIO WLAN Driver");
 
 #define BUF_ALIGN 512
 
-struct sdiowl_softc {
-	device_t dev;
-	struct mtx sc_mtx;
-	int running;
-	int sdio_function;
-	uint32_t ioport;
-};
-
+/* struct host_cmd_ds_gen */
 struct sdiowl_cmd_hdr {
 	uint16_t command;
 	uint16_t size;
@@ -152,12 +177,41 @@ struct sdiowl_cmd_hdr {
 	uint16_t result;
 };
 
+/* struct host_cmd_ds_command */
+struct sdiowl_cmd {
+	uint16_t __sdio_pkt_len;	/* SDIO-specific header */
+	uint16_t __sdio_cmd_type;	/* SDIO-specific header */
+	uint16_t command;
+	uint16_t size;
+	uint16_t seq_num;
+	uint16_t result;
+} __packed;
+
 #define HDR_SIZE sizeof(struct sdiowl_cmd_hdr)
+
+struct sdiowl_softc {
+	device_t dev;
+	struct mtx sc_mtx;
+	int running;
+	int sdio_function;
+	uint32_t ioport;
+	struct ifnet *sc_ifp;
+	struct taskqueue *sc_tq;
+	struct task sc_cmdtask;
+	struct cv sc_cmdtask_finished;
+	uint8_t bss_type;
+	uint8_t cmd_pending;
+	uint32_t lastseq;
+	struct sdiowl_cmd *cmd; /* XXX: should be a FIFO-type queue */
+};
 
 /* bus entry points */
 static int sdiowl_attach(device_t dev);
 static int sdiowl_detach(device_t dev);
 static int sdiowl_probe(device_t dev);
+
+static int sdiowl_read_1(struct sdiowl_softc *sc, uint32_t reg, uint8_t *val);
+static int sdiowl_write_1(struct sdiowl_softc *sc, uint32_t reg, uint8_t val);
 
 #define SDIOWL_LOCK(_sc)		mtx_lock(&(_sc)->sc_mtx)
 #define	SDIOWL_UNLOCK(_sc)	mtx_unlock(&(_sc)->sc_mtx)
@@ -168,15 +222,85 @@ static int sdiowl_probe(device_t dev);
 #define SDIOWL_ASSERT_LOCKED(_sc) mtx_assert(&_sc->sc_mtx, MA_OWNED);
 #define SDIOWL_ASSERT_UNLOCKED(_sc) mtx_assert(&_sc->sc_mtx, MA_NOTOWNED);
 
-/*static int
-sdiowl_send_init(struct sdiowl_softc *sc) {
+#define HostCmd_SET_SEQ_NO_BSS_INFO(seq, num, type) {   \
+		(((seq) & 0x00ff) |			\
+		 (((num) & 0x000f) << 8)) |		\
+		(((type) & 0x000f) << 12);  }
 
+/* This is executed in the separate task queue */
+static void
+sdiowl_send_cmd(void *arg, int npending)
+{
+	struct sdiowl_softc *sc = arg;
+	struct sdiowl_cmd *cmd = sc->cmd;
+	int ret;
+
+	device_printf(sc->dev, "Starting async command execution\n");
+
+	SDIOWL_LOCK(sc);
+	sc->lastseq++;
+	sc->cmd_pending = 1;
+	cmd->seq_num = (HostCmd_SET_SEQ_NO_BSS_INFO(sc->lastseq, 0, MWIFIEX_BSS_TYPE_STA));
+	cmd->result = 0;
+	cmd->__sdio_pkt_len = sizeof(struct sdiowl_cmd) - 4; /* without SDIO specific fields */
+	cmd->__sdio_cmd_type = 1; /* MWIFIEX_TYPE_DATA = 0, MWIFIEX_TYPE_CMD = 1, MWIFIEX_TYPE_EVENT = 3 */
+	device_printf(sc->dev, "sdiowl_send_cmd(): I WILL SEND THE COMMAND\n");
+
+	ret = MMCBUS_IO_WRITE_FIFO(device_get_parent(sc->dev), sc->dev,
+				   sc->ioport, (uint8_t *) cmd, sizeof(struct sdiowl_cmd));
+	if (ret) {
+		device_printf(sc->dev, "Error when writing to FIFO!\n");
+		/* XXX Think about handling errors in the main thread... */
+	}
+
+	cv_signal(&sc->sc_cmdtask_finished);
+	SDIOWL_UNLOCK(sc);
 }
-*/
+
+static int
+sdiowl_send_cmd_sync(struct sdiowl_softc *sc, struct sdiowl_cmd *cmd)
+{
+	device_printf(sc->dev, "Starting sync command execution\n");
+
+	SDIOWL_LOCK(sc);
+	sc->cmd_pending = 1;
+	sc->cmd = cmd;
+	taskqueue_enqueue(sc->sc_tq, &sc->sc_cmdtask);
+
+	device_printf(sc->dev, "Sleep on CV...\n");
+	cv_wait_sig(&sc->sc_cmdtask_finished, &sc->sc_mtx);
+	SDIOWL_UNLOCK(sc);
+
+	device_printf(sc->dev, "Executing command finished!\n");
+
+	pause("sdiowl", 1000);
+	uint8_t sdio_irq;
+	if(sdiowl_read_1(sc, HOST_INTSTATUS_REG, &sdio_irq))
+		return (-1);
+
+	device_printf(sc->dev, "IntStatus Reg = %d\n", sdio_irq);
+	return 0;
+}
+
+static int
+sdiowl_send_init(struct sdiowl_softc *sc) {
+	struct sdiowl_cmd *cmd;
+
+	cmd = malloc(sizeof(struct sdiowl_cmd), M_MVSDIOWL, M_WAITOK);
+	memset(cmd, 0, sizeof(struct sdiowl_cmd));
+
+	cmd->command = HostCmd_CMD_FUNC_INIT;
+	cmd->size = HDR_SIZE;
+
+	sdiowl_send_cmd_sync(sc, cmd);
+
+	return 0;
+}
+
 static int
 sdiowl_probe(device_t dev)
 {
-	uint32_t media_size, sdio_vendor, sdio_product;
+	size_t media_size, sdio_vendor, sdio_product;
 
 //	device_quiet(dev);
 	device_set_desc(dev, "Marvell dummy SDIO WLAN driver");
@@ -294,16 +418,24 @@ static int
 sdiowl_attach(device_t dev)
 {
 	struct sdiowl_softc *sc;
+	struct ifnet *ifp;
+	struct ieee80211com *ic;
+
 	const struct firmware *fw;
 	uint8_t funcs_enabled;
 	uint8_t sdio_irq;
+	size_t sdiofunc;
 
 	sc = device_get_softc(dev);
 	sc->dev = dev;
 	SDIOWL_LOCK_INIT(sc);
 	sc->running = 1;
+	sc->lastseq = 0;
+	sc->bss_type = MWIFIEX_BSS_TYPE_STA;
+
 	BUS_READ_IVAR(device_get_parent(dev), dev, MMC_IVAR_SDIO_FUNCTION,
-	    &sc->sdio_function);
+	    &sdiofunc);
+	sc->sdio_function = sdiofunc;
 
 	/* Call FW loader from FreeBSD firmware framework */
 	fw = firmware_get("sdiowl_fw");
@@ -311,9 +443,6 @@ sdiowl_attach(device_t dev)
 		device_printf(dev, "Firmware request failed!\n");
 		return (-1);
 	}
-
-	device_printf(dev, "Got FW: name=%s, data=%08X, ver=%d, size=%d\n",
-		      fw->name, (uint32_t )fw->data, fw->version, fw->datasize);
 
 	if (MMCBUS_IO_F0_READ_1(device_get_parent(dev), dev,
 	    SD_IO_CCCR_FN_ENABLE, &funcs_enabled))
@@ -337,8 +466,8 @@ sdiowl_attach(device_t dev)
 
 	/* ACK the first interrupt from bootloader, disable host intr mask */
 	sdio_irq = 0;
-//	if(sdiowl_read_1(sc, HOST_INTSTATUS_REG, &sdio_irq))
-//		return (-1);
+	if(sdiowl_read_1(sc, HOST_INTSTATUS_REG, &sdio_irq))
+		return (-1);
 
 	/* Disable host interrupts */
 	sdiowl_disable_host_int(sc);
@@ -456,6 +585,28 @@ sdiowl_attach(device_t dev)
 
 	/* Enable host interrupts */
 	sdiowl_enable_host_int(sc);
+
+	/* Now create the interface */
+	ifp = sc->sc_ifp = if_alloc(IFT_IEEE80211);
+	if (ifp == NULL) {
+		device_printf(sc->dev, "cannot if_alloc()\n");
+		return ENOSPC;
+	}
+	ic = ifp->if_l2com;
+
+	/* set these up early for if_printf use */
+	if_initname(ifp, device_get_name(sc->dev),
+		    device_get_unit(sc->dev));
+
+	sc->sc_tq = taskqueue_create("mv_sdiowl_taskq", M_NOWAIT,
+		taskqueue_thread_enqueue, &sc->sc_tq);
+	taskqueue_start_threads(&sc->sc_tq, 1, PI_NET,
+		"%s taskq", ifp->if_xname);
+
+	TASK_INIT(&sc->sc_cmdtask, 0, sdiowl_send_cmd, sc);
+	cv_init(&sc->sc_cmdtask_finished, "sdiowl task finish marker");
+
+	sdiowl_send_init(sc);
 
 	return (0);
 }
