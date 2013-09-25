@@ -2492,6 +2492,46 @@ mmcb_io_write_fifo(device_t dev, device_t child, uint32_t adr,
 }
 
 static int
+mmcb_io_read_fifo(device_t dev, device_t child, uint32_t adr,
+		   uint8_t *datap, size_t datalen)
+{
+	int err;
+	uint32_t b_written = 0;
+	uint32_t b_to_write = datalen;
+	uint32_t nblocks = 0;
+	struct mmc_ivars *ivar = device_get_ivars(child);
+
+	device_printf(dev, "mmcb_io_read_fifo: func %d, adr=0x%04X, datap=0x%04X, len %d\n", ivar->sdiof->number, adr, (unsigned int) datap, datalen);
+	err = 0;
+
+/*
+ * Linux code takes into account the max block size that is allowed
+ * by the host controller. Would be nice to be able to get such information.
+ */
+	if (datalen >= ivar->sdiof->blksize) {
+		nblocks = datalen / ivar->sdiof->blksize;
+		b_to_write = ivar->sdiof->blksize * nblocks;
+		err = mmc_io_rw_extended(device_get_softc(dev), 0,
+		    ivar->sdiof->number, adr, datap, b_to_write, 0, nblocks);
+		if (err) {
+			device_printf(dev, "mmcb_io_read_fifo: Err %d\n", err);
+			return (err);
+		}
+
+		b_written = b_to_write;
+	}
+
+	if (datalen - b_written > 0) {
+		b_to_write = datalen - b_written;
+		err = mmc_io_rw_extended(device_get_softc(dev), 0,
+		    ivar->sdiof->number, adr, datap + b_written, b_to_write, 0, 0);
+		if (err)
+			device_printf(dev, "mmcb_io_read_fifo: Err %d\n", err);
+	}
+	return (err);
+}
+
+static int
 mmcb_io_set_intr(device_t dev, device_t child, size_t *handler)
 {
 	int err;
@@ -2524,6 +2564,7 @@ static device_method_t mmc_methods[] = {
 	DEVMETHOD(mmcbus_io_read_multi, mmcb_io_read_multi),
 	DEVMETHOD(mmcbus_io_write_1, mmcb_io_write_1),
 	DEVMETHOD(mmcbus_io_write_multi, mmcb_io_write_multi),
+	DEVMETHOD(mmcbus_io_read_fifo, mmcb_io_read_fifo),
 	DEVMETHOD(mmcbus_io_write_fifo, mmcb_io_write_fifo),
 	DEVMETHOD(mmcbus_io_set_intr, mmcb_io_set_intr),
 	DEVMETHOD(mmcbus_acquire_bus, mmc_acquire_bus),

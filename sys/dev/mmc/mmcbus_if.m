@@ -135,6 +135,17 @@ METHOD int io_write_multi {
 };
 
 #
+# SDIO: read multiple bytes from the given FIFO
+# Return: error or 0
+METHOD int io_read_fifo {
+	device_t	brdev;
+	device_t	reqdev;
+	uint32_t	adr;
+	uint8_t		*datap;
+	size_t		datalen;
+};
+
+#
 # SDIO: write multiple bytes into the given FIFO
 # Return: error or 0
 METHOD int io_write_fifo {
