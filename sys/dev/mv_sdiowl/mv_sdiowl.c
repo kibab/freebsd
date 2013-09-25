@@ -234,6 +234,7 @@ sdiowl_send_cmd(void *arg, int npending)
 	struct sdiowl_softc *sc = arg;
 	struct sdiowl_cmd *cmd = sc->cmd;
 	int ret;
+	size_t blockcnt;
 
 	device_printf(sc->dev, "Starting async command execution\n");
 
@@ -242,12 +243,15 @@ sdiowl_send_cmd(void *arg, int npending)
 	sc->cmd_pending = 1;
 	cmd->seq_num = (HostCmd_SET_SEQ_NO_BSS_INFO(sc->lastseq, 0, MWIFIEX_BSS_TYPE_STA));
 	cmd->result = 0;
-	cmd->__sdio_pkt_len = sizeof(struct sdiowl_cmd) - 4; /* without SDIO specific fields */
+	cmd->__sdio_pkt_len = sizeof(struct sdiowl_cmd);
 	cmd->__sdio_cmd_type = 1; /* MWIFIEX_TYPE_DATA = 0, MWIFIEX_TYPE_CMD = 1, MWIFIEX_TYPE_EVENT = 3 */
-	device_printf(sc->dev, "sdiowl_send_cmd(): I WILL SEND THE COMMAND\n");
+	blockcnt = (cmd->__sdio_pkt_len + SDIO_BLOCK_SIZE - 1) / SDIO_BLOCK_SIZE;
 
+	device_printf(sc->dev, "sdiowl_send_cmd(): I WILL SEND THE COMMAND, pkt len=%d, write len=%d\n", cmd->__sdio_pkt_len, blockcnt * SDIO_BLOCK_SIZE);
+
+	hexdump(cmd, blockcnt * SDIO_BLOCK_SIZE, NULL, 0);
 	ret = MMCBUS_IO_WRITE_FIFO(device_get_parent(sc->dev), sc->dev,
-				   sc->ioport, (uint8_t *) cmd, sizeof(struct sdiowl_cmd));
+				   sc->ioport /* CTRL_PORT */, (uint8_t *) cmd, blockcnt * SDIO_BLOCK_SIZE);
 	if (ret) {
 		device_printf(sc->dev, "Error when writing to FIFO!\n");
 		/* XXX Think about handling errors in the main thread... */
@@ -274,11 +278,27 @@ sdiowl_send_cmd_sync(struct sdiowl_softc *sc, struct sdiowl_cmd *cmd)
 	device_printf(sc->dev, "Executing command finished!\n");
 
 	pause("sdiowl", 1000);
+	device_printf(sc->dev, "... ok, lets see what we have here...\n");
+
 	uint8_t sdio_irq;
+	char sdiowl_mpregs[64];
+	int ret;
+	memset(sdiowl_mpregs, 0, 64);
 	if(sdiowl_read_1(sc, HOST_INTSTATUS_REG, &sdio_irq))
 		return (-1);
 
 	device_printf(sc->dev, "IntStatus Reg = %d\n", sdio_irq);
+
+	ret = MMCBUS_IO_READ_FIFO(device_get_parent(sc->dev), sc->dev,
+				  0 /* REG_PORT | MWIFIEX_SDIO_BYTE_MODE_MASK */, (uint8_t *) sdiowl_mpregs, 64);
+	if (ret) {
+		device_printf(sc->dev, "Error when reading from FIFO 0!\n");
+		return -1;
+	}
+
+	device_printf(sc->dev, "IntStatus Reg in MP regs = %d\n", sdiowl_mpregs[HOST_INTSTATUS_REG]);
+	hexdump(sdiowl_mpregs, 64, NULL, 0);
+
 	return 0;
 }
 
@@ -286,8 +306,8 @@ static int
 sdiowl_send_init(struct sdiowl_softc *sc) {
 	struct sdiowl_cmd *cmd;
 
-	cmd = malloc(sizeof(struct sdiowl_cmd), M_MVSDIOWL, M_WAITOK);
-	memset(cmd, 0, sizeof(struct sdiowl_cmd));
+	cmd = malloc(256, M_MVSDIOWL, M_WAITOK);
+	memset(cmd, 0, 256);
 
 	cmd->command = HostCmd_CMD_FUNC_INIT;
 	cmd->size = HDR_SIZE;
