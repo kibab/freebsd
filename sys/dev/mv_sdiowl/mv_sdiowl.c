@@ -114,12 +114,24 @@ MALLOC_DEFINE(M_MVSDIOWL, "mv_sdiowl", "Buffers of Marvell SDIO WLAN Driver");
 /* Disable Host interrupt mask */
 #define HOST_INT_DISABLE	0xff
 
+/* The following defines the layout of CTRL register (0) */
 /* Host Control Registers : Host interrupt status */
 #define HOST_INTSTATUS_REG	0x03
 /* Host Control Registers : Upload host interrupt status */
 #define UP_LD_HOST_INT_STATUS	(0x1U)
 /* Host Control Registers : Download host interrupt status */
 #define DN_LD_HOST_INT_STATUS	(0x2U)
+
+/* Host Control Registers : R/W bitmaps */
+#define RD_BITMAP_L		0x04
+#define RD_BITMAP_U		0x05
+#define WR_BITMAP_L		0x06
+#define WR_BITMAP_U		0x07
+#define RD_LEN_P0_L		0x08
+#define RD_LEN_P0_U		0x09
+
+#define CTRL_PORT		0
+#define CTRL_PORT_MASK		0x0001
 
 /* Host Control Registers : Host interrupt RSR */
 #define HOST_INT_RSR_REG	0x01
@@ -178,6 +190,7 @@ struct sdiowl_cmd_hdr {
 };
 
 /* struct host_cmd_ds_command */
+/* This is also what we receive from the firmware */
 struct sdiowl_cmd {
 	uint16_t __sdio_pkt_len;	/* SDIO-specific header */
 	uint16_t __sdio_cmd_type;	/* SDIO-specific header */
@@ -195,6 +208,9 @@ struct sdiowl_softc {
 	int running;
 	int sdio_function;
 	uint32_t ioport;
+	uint8_t irqstatus;
+	uint16_t rd_bitmap;
+	uint16_t wr_bitmap;
 	struct ifnet *sc_ifp;
 	struct taskqueue *sc_tq;
 	struct task sc_cmdtask;
@@ -262,6 +278,63 @@ sdiowl_send_cmd(void *arg, int npending)
 }
 
 static int
+sdiowl_check_mp_regs(struct sdiowl_softc *sc)
+{
+	char sdiowl_mpregs[64];
+	int ret;
+	memset(sdiowl_mpregs, 0, 64);
+
+	/* Linux: REG_PORT | MWIFIEX_SDIO_BYTE_MODE_MASK, which is 0 finally */
+	ret = MMCBUS_IO_READ_FIFO(device_get_parent(sc->dev), sc->dev,
+				  0, (uint8_t *) sdiowl_mpregs, 64);
+	if (ret) {
+		device_printf(sc->dev, "Error when reading from FIFO 0!\n");
+		return -1;
+	}
+
+	sc->irqstatus = sdiowl_mpregs[HOST_INTSTATUS_REG];
+	sc->rd_bitmap = ( sdiowl_mpregs[RD_BITMAP_U] << 8)
+		| sdiowl_mpregs[RD_BITMAP_L];
+
+	sc->wr_bitmap = ( sdiowl_mpregs[WR_BITMAP_U] << 8)
+		| sdiowl_mpregs[WR_BITMAP_L];
+
+	device_printf(sc->dev, "IntStatus Reg in MP regs = %d\n",
+		      sc->irqstatus);
+	hexdump(sdiowl_mpregs, 64, NULL, 0);
+
+	uint8_t rd_port;
+	if (sc->rd_bitmap & CTRL_PORT_MASK) {
+		sc->rd_bitmap &= (uint16_t) (~CTRL_PORT_MASK);
+		rd_port = CTRL_PORT;
+	} else panic("rd_bitmap & CTRL_PORT_MASK is FALSE -- cannot handle");
+
+	uint8_t len_reg_l, len_reg_u;
+	uint16_t rx_len;
+	len_reg_l = RD_LEN_P0_L + (rd_port << 1);
+	len_reg_u = RD_LEN_P0_U + (rd_port << 1);
+
+	rx_len = ((uint16_t) sdiowl_mpregs[len_reg_u]) << 8;
+	rx_len |= (uint16_t) sdiowl_mpregs[len_reg_l];
+
+	device_printf(sc->dev, "RX len: %d from port %05x\n", rx_len, rd_port);
+
+	uint8_t rcvbuf[256];
+	KASSERT(rx_len <= 256, ("rx_len too large"));
+
+	if (MMCBUS_IO_READ_FIFO(device_get_parent(sc->dev), sc->dev,
+				sc->ioport + rd_port, rcvbuf, rx_len)) {
+		device_printf(sc->dev, "FAIL to read %d bytes from ioport %d",
+			      rx_len, sc->ioport + rd_port);
+		return (-1);
+	}
+
+	hexdump(rcvbuf, rx_len, NULL, 0);
+
+	return (0);
+}
+
+static int
 sdiowl_send_cmd_sync(struct sdiowl_softc *sc, struct sdiowl_cmd *cmd)
 {
 	device_printf(sc->dev, "Starting sync command execution\n");
@@ -271,34 +344,21 @@ sdiowl_send_cmd_sync(struct sdiowl_softc *sc, struct sdiowl_cmd *cmd)
 	sc->cmd = cmd;
 	taskqueue_enqueue(sc->sc_tq, &sc->sc_cmdtask);
 
-	device_printf(sc->dev, "Sleep on CV...\n");
+	device_printf(sc->dev, "Waiting for command to be sent...\n");
 	cv_wait_sig(&sc->sc_cmdtask_finished, &sc->sc_mtx);
 	SDIOWL_UNLOCK(sc);
 
 	device_printf(sc->dev, "Executing command finished!\n");
+	free(cmd);
 
+	/*
+	 * XXX: I assume that interrupt status should already  be set
+	 * at this point. I cannot set up an interrupt handler yet.
+	*/
 	pause("sdiowl", 1000);
 	device_printf(sc->dev, "... ok, lets see what we have here...\n");
 
-	uint8_t sdio_irq;
-	char sdiowl_mpregs[64];
-	int ret;
-	memset(sdiowl_mpregs, 0, 64);
-	if(sdiowl_read_1(sc, HOST_INTSTATUS_REG, &sdio_irq))
-		return (-1);
-
-	device_printf(sc->dev, "IntStatus Reg = %d\n", sdio_irq);
-
-	ret = MMCBUS_IO_READ_FIFO(device_get_parent(sc->dev), sc->dev,
-				  0 /* REG_PORT | MWIFIEX_SDIO_BYTE_MODE_MASK */, (uint8_t *) sdiowl_mpregs, 64);
-	if (ret) {
-		device_printf(sc->dev, "Error when reading from FIFO 0!\n");
-		return -1;
-	}
-
-	device_printf(sc->dev, "IntStatus Reg in MP regs = %d\n", sdiowl_mpregs[HOST_INTSTATUS_REG]);
-	hexdump(sdiowl_mpregs, 64, NULL, 0);
-
+	sdiowl_check_mp_regs(sc);
 	return 0;
 }
 
@@ -323,28 +383,32 @@ sdiowl_probe(device_t dev)
 	size_t media_size, sdio_vendor, sdio_product;
 
 //	device_quiet(dev);
-	device_set_desc(dev, "Marvell dummy SDIO WLAN driver");
+	device_set_desc(dev, "Marvell SD8787 WLAN driver");
 
 	if(BUS_READ_IVAR(device_get_parent(dev), dev, MMC_IVAR_MEDIA_SIZE,
 			 &media_size)) {
 		device_printf(dev, "Cannot get media size from the bus!\n");
-		return (-1);
+		return (ENXIO);
 	}
 	if (media_size > 0)
-		return(-1);
+		return(ENXIO);
 
 	if(BUS_READ_IVAR(device_get_parent(dev), dev, MMC_IVAR_SDIO_VENDOR,
 			 &sdio_vendor) ||
 	   BUS_READ_IVAR(device_get_parent(dev), dev, MMC_IVAR_SDIO_PRODUCT,
 			 &sdio_product)) {
 		device_printf(dev, "Cannot get vendor/product/function from the bus!\n");
-		return (-1);
+		return (ENXIO);
 	}
 
+	/*
+	 * XXX: Extend and make a table here.
+	 * firmware name should be determined here.
+	 */
 	if (sdio_vendor == 0x02DF && sdio_product == 0x9119)
-		return (0);
+		return (BUS_PROBE_DEFAULT);
 	else
-		return (-1);
+		return (ENXIO);
 }
 
 static int
@@ -452,6 +516,9 @@ sdiowl_attach(device_t dev)
 	sc->running = 1;
 	sc->lastseq = 0;
 	sc->bss_type = MWIFIEX_BSS_TYPE_STA;
+	sc->irqstatus = 0;
+	sc->rd_bitmap = 0;
+	sc->wr_bitmap = 0;
 
 	BUS_READ_IVAR(device_get_parent(dev), dev, MMC_IVAR_SDIO_FUNCTION,
 	    &sdiofunc);
