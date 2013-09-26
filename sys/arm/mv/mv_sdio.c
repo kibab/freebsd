@@ -873,7 +873,7 @@ mv_sdio_start_command(struct mv_sdio_softc *sc, struct mmc_command *cmd)
 	cmdreg |= MV_SDIO_CMD_INDEX(cmd->opcode);
 
 	/* Setup interrupts. */
-	sc->sc_irq_mask = MV_SDIO_IRQ_CMD;
+	sc->sc_irq_mask = MV_SDIO_IRQ_CMD | MV_SDIO_IRQ_CARD_EVENT;
 	sc->sc_eirq_mask = MV_SDIO_EIRQ_ALL;
 
 	/* Prepare data transfer. */
@@ -1024,6 +1024,9 @@ mv_sdio_start_data(struct mv_sdio_softc *sc, struct mmc_data *data)
 	} else
 		/* Set PIO transfer mode. */
 		xfer |= MV_SDIO_XFER_PIO;
+
+	/* Actually this is IntChkEn which may be useful for SDIO */
+	xfer |= MV_SDIO_XFER_PIO;
 
 	/*
 	 * Prepare Auto-CMD12. This command is automatically sent to the card
