@@ -189,6 +189,29 @@ struct sdiowl_cmd_hdr {
 	uint16_t result;
 };
 
+struct host_cmd_ds_get_hw_spec {
+	uint16_t hw_if_version;
+	uint16_t version;
+	uint16_t reserved;
+	uint16_t num_of_mcast_adr;
+	uint8_t permanent_addr[6];
+	uint16_t region_code;
+	uint16_t number_of_antenna;
+	uint32_t fw_release_number;
+	uint32_t reserved_1;
+	uint32_t reserved_2;
+	uint32_t reserved_3;
+	uint32_t fw_cap_info;
+	uint32_t dot_11n_dev_cap;
+	uint8_t dev_mcs_support;
+	uint16_t mp_end_port;     /* SDIO only, reserved for other interfacces */
+	uint16_t mgmt_buf_count;  /* mgmt IE buffer count */
+	uint32_t reserved_5;
+	uint32_t reserved_6;
+	uint32_t dot_11ac_dev_cap;
+	uint32_t dot_11ac_mcs_support;
+} __packed;
+
 /* struct host_cmd_ds_command */
 /* This is also what we receive from the firmware */
 struct sdiowl_cmd {
@@ -198,6 +221,9 @@ struct sdiowl_cmd {
 	uint16_t size;
 	uint16_t seq_num;
 	uint16_t result;
+	union {
+		struct host_cmd_ds_get_hw_spec hw_spec;
+	} params;
 } __packed;
 
 #define HDR_SIZE sizeof(struct sdiowl_cmd_hdr)
@@ -219,6 +245,7 @@ struct sdiowl_softc {
 	uint8_t cmd_pending;
 	uint32_t lastseq;
 	struct sdiowl_cmd *cmd; /* XXX: should be a FIFO-type queue */
+	struct sdiowl_cmd resp;
 };
 
 /* bus entry points */
@@ -320,6 +347,7 @@ sdiowl_check_mp_regs(struct sdiowl_softc *sc)
 	device_printf(sc->dev, "RX len: %d from port %05x\n", rx_len, rd_port);
 
 	uint8_t rcvbuf[256];
+
 	KASSERT(rx_len <= 256, ("rx_len too large"));
 
 	if (MMCBUS_IO_READ_FIFO(device_get_parent(sc->dev), sc->dev,
@@ -329,7 +357,13 @@ sdiowl_check_mp_regs(struct sdiowl_softc *sc)
 		return (-1);
 	}
 
-	hexdump(rcvbuf, rx_len, NULL, 0);
+	memcpy(&sc->resp, rcvbuf, sizeof(sc->resp));
+	hexdump(&sc->resp, rx_len, NULL, 0);
+	if (sc->resp.seq_num != sc->lastseq) {
+		device_printf(sc->dev, "Unexpected command seqnum!\n");
+		return (-1);
+	}
+	sc->cmd_pending = 0;
 
 	return (0);
 }
@@ -349,7 +383,6 @@ sdiowl_send_cmd_sync(struct sdiowl_softc *sc, struct sdiowl_cmd *cmd)
 	SDIOWL_UNLOCK(sc);
 
 	device_printf(sc->dev, "Executing command finished!\n");
-	free(cmd);
 
 	/*
 	 * XXX: I assume that interrupt status should already  be set
@@ -373,6 +406,7 @@ sdiowl_send_init(struct sdiowl_softc *sc) {
 	cmd->size = HDR_SIZE;
 
 	sdiowl_send_cmd_sync(sc, cmd);
+	device_printf(sc->dev, "Device Init completed!\n");
 
 	return 0;
 }
