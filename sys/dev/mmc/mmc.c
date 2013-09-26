@@ -78,9 +78,8 @@ struct mmc_softc {
 	struct mtx sc_mtx;
 	struct intr_config_hook config_intrhook;
 	device_t owner;
-	uint32_t last_rca;
 	uint32_t __sdio_rca; /* XXX Temp; for testng only */
-	uint32_t __sdio_cis1_info;
+	uint32_t last_rca;
 	uint8_t sdio_nfunc;
 	u_char sdio_bus_width;
 	uint8_t sdio_support_hs;
@@ -1513,11 +1512,6 @@ mmc_io_parse_cis(struct mmc_softc *sc, uint8_t func, uint32_t cisptr, struct sdi
 			sdio_func->cis1_major = mmc_io_read_1(sc, 0, maninfo_p);
 			sdio_func->cis1_minor = mmc_io_read_1(sc, 0, maninfo_p + 1);
 
-			/*
-			 * XXX Temp; use this to test if multi-byte read from
-			 * cis1_info will also return crap
-			 */
-			sc->__sdio_cis1_info = maninfo_p + 2;
 			for (count = 0, start = 0, i = 0;
 			    (count < 4) && ((i + 4) < 256); i++) {
 				ch = mmc_io_read_1(sc, 0, maninfo_p + 2 + i);
@@ -1531,7 +1525,6 @@ mmc_io_parse_cis(struct mmc_softc *sc, uint8_t func, uint32_t cisptr, struct sdi
 					count++;
 				}
 			}
-			device_printf(sc->dev, "Read from %02X using 1-byte read:\n", sc->__sdio_cis1_info);
 			hexdump(cis1_info_buf, 256, NULL, 0);
 
 			device_printf(sc->dev, "*** Info[0]: %s\n", cis1_info[0]);
@@ -2207,28 +2200,12 @@ mmc_go_discovery(struct mmc_softc *sc)
 	mmcbr_update_ios(dev);
 	mmc_calculate_clock(sc);
 
-	/* XXX TESTING RW_EXTENDED */
 	mmc_select_card(sc, sc->__sdio_rca);
 
-	/* Try to do normal CMD52 that should work correctly */
-	uint8_t hs_info;
-	err = mmc_io_rw_direct(sc, 0, 0, SD_IO_CCCR_CISPTR + 0x13, &hs_info);
-	if (err)
-		device_printf(sc->dev, "HS INFO read err %d\n", err);
-
 	/* Disable interrupts from all functions */
-	hs_info = 0;
-	err = mmc_io_rw_direct(sc, 1, 0, SD_IO_CCCR_INT_ENABLE, &hs_info);
-	if (err)
-		device_printf(sc->dev, "Interrupt disable err %d\n", err);
-
-	/* Now try actual command */
-//	mmc_debug = 10;
-	uint8_t data[100];
-	err = mmc_io_rw_extended(sc, 0, 0, sc->__sdio_cis1_info, data, 100, 0, 0);
-	if (err)
-		device_printf(sc->dev, "Ext read err %d\n", err);
-	hexdump(data, 100, NULL, 0);
+//	err = mmc_io_rw_direct(sc, 1, 0, SD_IO_CCCR_INT_ENABLE, &hs_info);
+//	if (err)
+//		device_printf(sc->dev, "Interrupt disable err %d\n", err);
 
 	bus_generic_attach(dev);
 /*	mmc_update_children_sysctl(dev);*/
