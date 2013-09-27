@@ -246,6 +246,13 @@ struct sdiowl_softc {
 	uint32_t lastseq;
 	struct sdiowl_cmd *cmd; /* XXX: should be a FIFO-type queue */
 	struct sdiowl_cmd resp;
+
+	/* Adapter HW information */
+	uint8_t bssid[6];
+	uint16_t reg_code;
+	uint16_t number_of_antenna;
+	uint16_t mp_end_port;     /* SDIO only */
+
 };
 
 /* bus entry points */
@@ -388,7 +395,7 @@ sdiowl_send_cmd_sync(struct sdiowl_softc *sc, struct sdiowl_cmd *cmd)
 	 * XXX: I assume that interrupt status should already  be set
 	 * at this point. I cannot set up an interrupt handler yet.
 	*/
-	pause("sdiowl", 1000);
+	pause("sdiowl", 100);
 	device_printf(sc->dev, "... ok, lets see what we have here...\n");
 
 	sdiowl_check_mp_regs(sc);
@@ -408,24 +415,58 @@ sdiowl_send_init(struct sdiowl_softc *sc) {
 	sdiowl_send_cmd_sync(sc, cmd);
 	device_printf(sc->dev, "Device Init completed!\n");
 
+	free(cmd, M_MVSDIOWL);
+
+	return 0;
+}
+
+static int
+sdiowl_get_hw_spec(struct sdiowl_softc *sc)
+{
+	struct sdiowl_cmd *cmd;
+
+	device_printf(sc->dev, "Try to HW params\n");
+
+	cmd = malloc(256, M_MVSDIOWL, M_WAITOK);
+	memset(cmd, 0, 256);
+
+	struct host_cmd_ds_get_hw_spec *payload = &cmd->params.hw_spec;
+
+	cmd->command = HostCmd_CMD_GET_HW_SPEC;
+	cmd->size = HDR_SIZE + sizeof(struct host_cmd_ds_get_hw_spec);
+
+	memset(payload, 0, sizeof(struct host_cmd_ds_get_hw_spec));
+	memset(payload->permanent_addr, 0xff, 6);
+
+	sdiowl_send_cmd_sync(sc, cmd);
+	payload = &sc->resp.params.hw_spec;
+
+	memcpy(sc->bssid, payload->permanent_addr, 6);
+	sc->number_of_antenna = payload->number_of_antenna;
+	sc->reg_code = payload->region_code;
+	sc->mp_end_port = payload->mp_end_port;
+
+	device_printf(sc->dev, "MAC: %02x:%02x:%02x:%02x:%02x:%02x\n",
+		      sc->bssid[0],
+		      sc->bssid[1],
+		      sc->bssid[2],
+		      sc->bssid[3],
+		      sc->bssid[4],
+		      sc->bssid[5]);
+	device_printf(sc->dev, "Antennas: %d\n", sc->number_of_antenna);
+
+	free(cmd, M_MVSDIOWL);
+
 	return 0;
 }
 
 static int
 sdiowl_probe(device_t dev)
 {
-	size_t media_size, sdio_vendor, sdio_product;
+	size_t sdio_vendor, sdio_product;
 
 //	device_quiet(dev);
 	device_set_desc(dev, "Marvell SD8787 WLAN driver");
-
-	if(BUS_READ_IVAR(device_get_parent(dev), dev, MMC_IVAR_MEDIA_SIZE,
-			 &media_size)) {
-		device_printf(dev, "Cannot get media size from the bus!\n");
-		return (ENXIO);
-	}
-	if (media_size > 0)
-		return(ENXIO);
 
 	if(BUS_READ_IVAR(device_get_parent(dev), dev, MMC_IVAR_SDIO_VENDOR,
 			 &sdio_vendor) ||
@@ -728,6 +769,7 @@ sdiowl_attach(device_t dev)
 	cv_init(&sc->sc_cmdtask_finished, "sdiowl task finish marker");
 
 	sdiowl_send_init(sc);
+	sdiowl_get_hw_spec(sc);
 
 	return (0);
 }
