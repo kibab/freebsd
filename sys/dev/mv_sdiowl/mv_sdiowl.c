@@ -170,13 +170,22 @@ enum sdiowl_bss_type {
 };
 
 /* Firmware commands */
-#define HostCmd_CMD_FUNC_INIT	0x00a9
-#define HostCmd_CMD_GET_HW_SPEC 0x0003
+#define HostCmd_CMD_FUNC_INIT		0x00a9
+#define HostCmd_CMD_GET_HW_SPEC 	0x0003
+#define HostCmd_CMD_RECONFIGURE_TX_BUFF	0x00d9
+
+#define HostCmd_RET_BIT			0x8000
+#define HostCmd_ACT_GEN_GET		0x0000
+#define HostCmd_ACT_GEN_SET		0x0001
+#define HostCmd_ACT_GEN_REMOVE		0x0004
+#define HostCmd_ACT_BITWISE_SET		0x0002
+#define HostCmd_ACT_BITWISE_CLR		0x0003
+#define HostCmd_RESULT_OK		0x0000
 
 /* SD block size can not bigger than 64 due to buf size limit in firmware */
 /* define SD block size for data Tx/Rx */
 #define SDIO_BLOCK_SIZE		256
-
+#define TX_BUF_SIZE		2048
 #define FIRMWARE_READY_SDIO	0xfedc
 
 #define BUF_ALIGN 512
@@ -204,12 +213,19 @@ struct host_cmd_ds_get_hw_spec {
 	uint32_t fw_cap_info;
 	uint32_t dot_11n_dev_cap;
 	uint8_t dev_mcs_support;
-	uint16_t mp_end_port;     /* SDIO only, reserved for other interfacces */
+	uint16_t mp_end_port;     /* SDIO only, reserved for other interfaces */
 	uint16_t mgmt_buf_count;  /* mgmt IE buffer count */
 	uint32_t reserved_5;
 	uint32_t reserved_6;
 	uint32_t dot_11ac_dev_cap;
 	uint32_t dot_11ac_mcs_support;
+} __packed;
+
+struct host_cmd_ds_txbuf_cfg {
+	uint16_t action;
+	uint16_t buff_size;
+	uint16_t mp_end_port;	/* SDIO only, reserved for other interfaces */
+	uint16_t reserved3;
 } __packed;
 
 /* struct host_cmd_ds_command */
@@ -223,6 +239,7 @@ struct sdiowl_cmd {
 	uint16_t result;
 	union {
 		struct host_cmd_ds_get_hw_spec hw_spec;
+		struct host_cmd_ds_txbuf_cfg txbuf_cfg;
 	} params;
 } __packed;
 
@@ -230,18 +247,25 @@ struct sdiowl_cmd {
 
 struct sdiowl_softc {
 	device_t dev;
+	struct ifnet *sc_ifp;
+
 	struct mtx sc_mtx;
 	int running;
 	int sdio_function;
+
+	/* Low-level communication info */
 	uint32_t ioport;
+	uint16_t mp_end_port;     /* SDIO only */
 	uint8_t irqstatus;
 	uint16_t rd_bitmap;
 	uint16_t wr_bitmap;
-	struct ifnet *sc_ifp;
+
+	uint8_t bss_type;
+
+	/* Task / Queue handling */
 	struct taskqueue *sc_tq;
 	struct task sc_cmdtask;
 	struct cv sc_cmdtask_finished;
-	uint8_t bss_type;
 	uint8_t cmd_pending;
 	uint32_t lastseq;
 	struct sdiowl_cmd *cmd; /* XXX: should be a FIFO-type queue */
@@ -251,8 +275,7 @@ struct sdiowl_softc {
 	uint8_t bssid[6];
 	uint16_t reg_code;
 	uint16_t number_of_antenna;
-	uint16_t mp_end_port;     /* SDIO only */
-
+	uint16_t tx_buf_size;
 };
 
 /* bus entry points */
@@ -454,6 +477,35 @@ sdiowl_get_hw_spec(struct sdiowl_softc *sc)
 		      sc->bssid[4],
 		      sc->bssid[5]);
 	device_printf(sc->dev, "Antennas: %d\n", sc->number_of_antenna);
+
+	free(cmd, M_MVSDIOWL);
+
+	return 0;
+}
+
+static int
+sdiowl_configure(struct sdiowl_softc *sc)
+{
+	struct sdiowl_cmd *cmd;
+
+	cmd = malloc(256, M_MVSDIOWL, M_WAITOK);
+	memset(cmd, 0, 256);
+
+	cmd->command = HostCmd_CMD_RECONFIGURE_TX_BUFF;
+	cmd->size = HDR_SIZE + sizeof(struct host_cmd_ds_txbuf_cfg);
+	cmd->params.txbuf_cfg.action = HostCmd_ACT_GEN_SET;
+	cmd->params.txbuf_cfg.buff_size = TX_BUF_SIZE;
+
+	sdiowl_send_cmd_sync(sc, cmd);
+
+	sc->tx_buf_size = (sc->resp.params.txbuf_cfg.buff_size / SDIO_BLOCK_SIZE)
+		* SDIO_BLOCK_SIZE;
+	sc->mp_end_port = sc->resp.params.txbuf_cfg.mp_end_port;
+
+	device_printf(sc->dev, "Buff size from FW: %d -> %d\n",
+		      sc->resp.params.txbuf_cfg.buff_size, sc->tx_buf_size);
+	device_printf(sc->dev, "MP end port from FW: 0x%x\n",
+		      sc->resp.params.txbuf_cfg.mp_end_port);
 
 	free(cmd, M_MVSDIOWL);
 
@@ -770,6 +822,7 @@ sdiowl_attach(device_t dev)
 
 	sdiowl_send_init(sc);
 	sdiowl_get_hw_spec(sc);
+	sdiowl_configure(sc);
 
 	return (0);
 }
