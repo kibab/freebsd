@@ -170,9 +170,11 @@ enum sdiowl_bss_type {
 };
 
 /* Firmware commands */
-#define HostCmd_CMD_FUNC_INIT		0x00a9
-#define HostCmd_CMD_GET_HW_SPEC 	0x0003
-#define HostCmd_CMD_RECONFIGURE_TX_BUFF	0x00d9
+#define HostCmd_CMD_FUNC_INIT				0x00a9
+#define HostCmd_CMD_GET_HW_SPEC		 		0x0003
+#define HostCmd_CMD_RECONFIGURE_TX_BUFF			0x00d9
+#define HostCmd_CMD_802_11_IBSS_COALESCING_STATUS	0x0083
+#define HostCmd_CMD_MAC_CONTROL				0x0028
 
 #define HostCmd_RET_BIT			0x8000
 #define HostCmd_ACT_GEN_GET		0x0000
@@ -181,6 +183,14 @@ enum sdiowl_bss_type {
 #define HostCmd_ACT_BITWISE_SET		0x0002
 #define HostCmd_ACT_BITWISE_CLR		0x0003
 #define HostCmd_RESULT_OK		0x0000
+
+#define HostCmd_ACT_MAC_RX_ON			0x0001
+#define HostCmd_ACT_MAC_TX_ON			0x0002
+#define HostCmd_ACT_MAC_WEP_ENABLE		0x0008
+#define HostCmd_ACT_MAC_ETHERNETII_ENABLE	0x0010
+#define HostCmd_ACT_MAC_PROMISCUOUS_ENABLE	0x0080
+#define HostCmd_ACT_MAC_ALL_MULTICAST_ENABLE	0x0100
+#define HostCmd_ACT_MAC_ADHOC_G_PROTECTION_ON	0x2000
 
 /* SD block size can not bigger than 64 due to buf size limit in firmware */
 /* define SD block size for data Tx/Rx */
@@ -228,6 +238,20 @@ struct host_cmd_ds_txbuf_cfg {
 	uint16_t reserved3;
 } __packed;
 
+struct host_cmd_ds_802_11_ibss_status {
+	uint16_t action;
+	uint16_t enable;
+	uint8_t bssid[6];
+	uint16_t beacon_interval;
+	uint16_t atim_window;
+	uint16_t use_g_rate_protect;
+} __packed;
+
+struct host_cmd_ds_mac_control {
+	uint16_t action;
+	uint16_t reserved;
+} __packed;
+
 /* struct host_cmd_ds_command */
 /* This is also what we receive from the firmware */
 struct sdiowl_cmd {
@@ -240,6 +264,8 @@ struct sdiowl_cmd {
 	union {
 		struct host_cmd_ds_get_hw_spec hw_spec;
 		struct host_cmd_ds_txbuf_cfg txbuf_cfg;
+		struct host_cmd_ds_802_11_ibss_status ibss_status;
+		struct host_cmd_ds_mac_control mac_ctrl;
 	} params;
 } __packed;
 
@@ -259,6 +285,7 @@ struct sdiowl_softc {
 	uint8_t irqstatus;
 	uint16_t rd_bitmap;
 	uint16_t wr_bitmap;
+	uint16_t pkt_filter;
 
 	uint8_t bss_type;
 
@@ -393,6 +420,10 @@ sdiowl_check_mp_regs(struct sdiowl_softc *sc)
 		device_printf(sc->dev, "Unexpected command seqnum!\n");
 		return (-1);
 	}
+	if (sc->resp.result != HostCmd_RESULT_OK) {
+		device_printf(sc->dev, "Command execution failed!\n");
+		return (-1);
+	}
 	sc->cmd_pending = 0;
 
 	return (0);
@@ -421,8 +452,7 @@ sdiowl_send_cmd_sync(struct sdiowl_softc *sc, struct sdiowl_cmd *cmd)
 	pause("sdiowl", 100);
 	device_printf(sc->dev, "... ok, lets see what we have here...\n");
 
-	sdiowl_check_mp_regs(sc);
-	return 0;
+	return sdiowl_check_mp_regs(sc);
 }
 
 static int
@@ -469,13 +499,7 @@ sdiowl_get_hw_spec(struct sdiowl_softc *sc)
 	sc->reg_code = payload->region_code;
 	sc->mp_end_port = payload->mp_end_port;
 
-	device_printf(sc->dev, "MAC: %02x:%02x:%02x:%02x:%02x:%02x\n",
-		      sc->bssid[0],
-		      sc->bssid[1],
-		      sc->bssid[2],
-		      sc->bssid[3],
-		      sc->bssid[4],
-		      sc->bssid[5]);
+	device_printf(sc->dev, "MAC: %6D\n", sc->bssid, ":");
 	device_printf(sc->dev, "Antennas: %d\n", sc->number_of_antenna);
 
 	free(cmd, M_MVSDIOWL);
@@ -496,7 +520,8 @@ sdiowl_configure(struct sdiowl_softc *sc)
 	cmd->params.txbuf_cfg.action = HostCmd_ACT_GEN_SET;
 	cmd->params.txbuf_cfg.buff_size = TX_BUF_SIZE;
 
-	sdiowl_send_cmd_sync(sc, cmd);
+	if(sdiowl_send_cmd_sync(sc, cmd))
+		return (-1);
 
 	sc->tx_buf_size = (sc->resp.params.txbuf_cfg.buff_size / SDIO_BLOCK_SIZE)
 		* SDIO_BLOCK_SIZE;
@@ -506,6 +531,37 @@ sdiowl_configure(struct sdiowl_softc *sc)
 		      sc->resp.params.txbuf_cfg.buff_size, sc->tx_buf_size);
 	device_printf(sc->dev, "MP end port from FW: 0x%x\n",
 		      sc->resp.params.txbuf_cfg.mp_end_port);
+
+	/*
+	 * TODO from Linux driver:
+	 * 1. Enable power save, HostCmd_CMD_802_11_PS_MODE_ENH
+	 * 2. Get TX rate, HostCmd_CMD_TX_RATE_CFG
+	 * 3. Get TX power, HostCmd_CMD_RF_TX_PWR
+	 */
+
+	/* Set coalescing status. No idea what it is :-) */
+	memset(cmd, 0, 256);
+	cmd->command = HostCmd_CMD_802_11_IBSS_COALESCING_STATUS;
+	cmd->size = HDR_SIZE + sizeof(struct host_cmd_ds_802_11_ibss_status);
+	cmd->params.ibss_status.action = HostCmd_ACT_GEN_SET;
+	cmd->params.ibss_status.enable = 1;
+	if (sdiowl_send_cmd_sync(sc, cmd))
+		return (-1);
+
+	/*
+	 * Linux then enables "amsdu_aggr_ctrl", not sure if I need this
+	 */
+
+	/* Let's enable MAC control now. */
+	sc->pkt_filter = HostCmd_ACT_MAC_RX_ON | HostCmd_ACT_MAC_TX_ON
+		| HostCmd_ACT_MAC_ETHERNETII_ENABLE;
+
+	memset(cmd, 0, 256);
+	cmd->command = HostCmd_CMD_MAC_CONTROL;
+	cmd->size = HDR_SIZE + sizeof(struct host_cmd_ds_mac_control);
+	cmd->params.mac_ctrl.action = sc->pkt_filter;
+	if (sdiowl_send_cmd_sync(sc, cmd))
+		return (-1);
 
 	free(cmd, M_MVSDIOWL);
 
