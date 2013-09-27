@@ -136,7 +136,6 @@ mmcsd_probe(device_t dev)
 		device_printf(dev, "Cannot get media size from bus!\n");
 		return (-1);
 	}
-	device_printf(dev, "Media size: %zu\n", media_size);
 	if (media_size == 0)
 		return (ENXIO);
 	device_set_desc(dev, "MMC/SD Memory Card");
