@@ -880,6 +880,7 @@ sdiowl_attach(device_t dev)
 	sdiowl_get_hw_spec(sc);
 	sdiowl_configure(sc);
 
+	/* At this point the card initialization is complete */
 	return (0);
 }
 
