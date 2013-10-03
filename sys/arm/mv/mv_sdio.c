@@ -887,12 +887,12 @@ mv_sdio_start_command(struct mv_sdio_softc *sc, struct mmc_command *cmd)
 		}
 	}
 
-	/* Write command register. */
-	MV_SDIO_WR4(sc, MV_SDIO_CMD, cmdreg);
-
 	/* Clear interrupt status. */
 	MV_SDIO_WR4(sc, MV_SDIO_IRQ_SR, ~MV_SDIO_IRQ_CARD_EVENT /*MV_SDIO_IRQ_ALL*/);
 	MV_SDIO_WR4(sc, MV_SDIO_EIRQ_SR, 0xffff /*MV_SDIO_EIRQ_ALL*/);
+
+	/* Write command register. */
+	MV_SDIO_WR4(sc, MV_SDIO_CMD, cmdreg);
 
 	/* Update interrupt/error interrupt enable registers. */
 	MV_SDIO_WR4(sc, MV_SDIO_IRQ_EN, sc->sc_irq_mask);
@@ -1025,8 +1025,7 @@ mv_sdio_start_data(struct mv_sdio_softc *sc, struct mmc_data *data)
 		/* Set PIO transfer mode. */
 		xfer |= MV_SDIO_XFER_PIO;
 
-	/* Actually this is IntChkEn which may be useful for SDIO */
-	xfer |= MV_SDIO_XFER_PIO;
+	xfer |= MV_SDIO_XFER_MODE_INT_CHK_EN;
 
 	/*
 	 * Prepare Auto-CMD12. This command is automatically sent to the card
