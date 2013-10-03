@@ -2392,7 +2392,7 @@ mmcb_io_write_1(device_t dev, device_t child, uint32_t adr, uint8_t val)
 	int err;
 	struct mmc_ivars *ivar = device_get_ivars(child);
 
-	err = mmc_io_rw_direct(device_get_softc(dev), 0, ivar->sdiof->number,
+	err = mmc_io_rw_direct(device_get_softc(dev), 1, ivar->sdiof->number,
 	    adr, &val);
 	if (err)
 		device_printf(dev, "mmc_io_write_1: Err %d", err);
