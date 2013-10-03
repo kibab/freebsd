@@ -212,6 +212,7 @@ static void mv_sdio_handle_48bit_resp(struct mv_sdio_softc *,
 static void mv_sdio_intr(void *);
 static void mv_sdio_cmd_intr(struct mv_sdio_softc *, uint32_t, uint32_t);
 static void mv_sdio_data_intr(struct mv_sdio_softc *, uint32_t, uint32_t);
+static void mv_sdio_card_intr(struct mv_sdio_softc *);
 static void mv_sdio_disable_intr(struct mv_sdio_softc *);
 
 /* Used after card detect interrupt has been handled. */
@@ -1184,6 +1185,13 @@ mv_sdio_intr(void *arg)
 		eirq_stat &= ~MV_SDIO_EIRQS_DATA;
 	}
 
+	/* Handle interrupt from the card */
+	if (irq_stat & MV_SDIO_IRQ_CARD_EVENT) {
+		MV_SDIO_WR4(sc, MV_SDIO_IRQ_SR, irq_stat);
+		irq_stat &= ~MV_SDIO_IRQ_CARD_EVENT;
+		mv_sdio_card_intr(sc);
+	}
+
 	/* Handle unexpected interrupts. */
 	if (irq_stat) {
 		device_printf(sc->sc_dev, "Unexpected interrupt(s)! "
@@ -1345,6 +1353,14 @@ mv_sdio_data_intr(struct mv_sdio_softc *sc, uint32_t irq, uint32_t eirq)
 		mv_sdio_disable_intr(sc);
 		mv_sdio_finalize_request(sc);
 	}
+}
+
+
+static void
+mv_sdio_card_intr(struct mv_sdio_softc *sc)
+{
+	/* XXX: Actual implementation follows... */
+	device_printf(sc->sc_dev, "CARD INTERRUPT RECEIVED, WHAT'S NEXT?!\n");
 }
 
 static void
