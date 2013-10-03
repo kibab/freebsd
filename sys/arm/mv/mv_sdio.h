@@ -81,11 +81,13 @@
 /*
  * SDIO_XFER_MODE
  */
-#define MV_SDIO_XFER_STOP_CLK			(1 << 5)
+#define MV_SDIO_XFER_SW_WR_EN			(1 << 1)
+#define MV_SDIO_XFER_AUTOCMD12			(1 << 2)
+#define MV_SDIO_XFER_MODE_INT_CHK_EN		(1 << 3)
 #define MV_SDIO_XFER_TO_HOST			(1 << 4)
-#define MV_SDIO_XFER_PIO          (1 << 3)
-#define MV_SDIO_XFER_AUTOCMD12		(1 << 2)
-#define MV_SDIO_XFER_SW_WR_EN     (1 << 1)
+#define MV_SDIO_XFER_STOP_CLK			(1 << 5)
+#define MV_SDIO_XFER_PIO			(1 << 6)
+
 
 /*
  * SDIO_HOST_CTRL
