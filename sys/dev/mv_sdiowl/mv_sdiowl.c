@@ -98,9 +98,6 @@ __FBSDID("$FreeBSD$");
 #include <dev/mmc/mmcioreg.h>
 #include <dev/mmc/mmciovar.h>
 
-MALLOC_DECLARE(M_MVSDIOWL);
-MALLOC_DEFINE(M_MVSDIOWL, "mv_sdiowl", "Buffers of Marvell SDIO WLAN Driver");
-
 #include "mmcbus_if.h"
 
 #define DN_LD_CARD_RDY		(1u << 0)
@@ -313,13 +310,26 @@ struct sdiowl_softc {
 };
 
 /* bus entry points */
+static int sdiowl_probe(device_t dev);
 static int sdiowl_attach(device_t dev);
 static int sdiowl_detach(device_t dev);
-static int sdiowl_probe(device_t dev);
 static void sdiowl_intr(void *xsc);
 
 static int sdiowl_read_1(struct sdiowl_softc *sc, uint32_t reg, uint8_t *val);
 static int sdiowl_write_1(struct sdiowl_softc *sc, uint32_t reg, uint8_t val);
+
+static void sdiowl_send_cmd(void *arg, int npending);
+static int sdiowl_boot_firmware(struct sdiowl_softc *sc);
+static int sdiowl_check_mp_regs(struct sdiowl_softc *sc);
+static int sdiowl_send_cmd_sync(struct sdiowl_softc *sc, struct sdiowl_cmd *cmd);
+static int sdiowl_send_init(struct sdiowl_softc *sc);
+static int sdiowl_get_hw_spec(struct sdiowl_softc *sc);
+static int sdiowl_configure(struct sdiowl_softc *sc);
+static int sdiowl_disable_host_int(struct sdiowl_softc *sc);
+static int sdiowl_enable_host_int(struct sdiowl_softc *sc);
+
+MALLOC_DECLARE(M_MVSDIOWL);
+MALLOC_DEFINE(M_MVSDIOWL, "mv_sdiowl", "Buffers of Marvell SDIO WLAN Driver");
 
 #define SDIOWL_LOCK(_sc)		mtx_lock(&(_sc)->sc_mtx)
 #define	SDIOWL_UNLOCK(_sc)	mtx_unlock(&(_sc)->sc_mtx)
@@ -456,7 +466,8 @@ sdiowl_send_cmd_sync(struct sdiowl_softc *sc, struct sdiowl_cmd *cmd)
 }
 
 static int
-sdiowl_send_init(struct sdiowl_softc *sc) {
+sdiowl_send_init(struct sdiowl_softc *sc)
+{
 	struct sdiowl_cmd *cmd;
 
 	cmd = malloc(256, M_MVSDIOWL, M_WAITOK);
@@ -645,7 +656,8 @@ sdiowl_check_fw_status(struct sdiowl_softc *sc) {
 }
 
 static int
-sdiowl_disable_host_int(struct sdiowl_softc *sc) {
+sdiowl_disable_host_int(struct sdiowl_softc *sc)
+{
 	uint8_t host_int_mask;
 
 	if (sdiowl_read_1(sc, HOST_INT_MASK_REG, &host_int_mask))
@@ -665,7 +677,8 @@ sdiowl_disable_host_int(struct sdiowl_softc *sc) {
 }
 
 static int
-sdiowl_enable_host_int(struct sdiowl_softc *sc) {
+sdiowl_enable_host_int(struct sdiowl_softc *sc)
+{
 	int irq_id = 0;
 
 	sc->sc_irq_res = bus_alloc_resource_any(sc->dev, SYS_RES_IRQ, &irq_id,
@@ -686,95 +699,20 @@ sdiowl_enable_host_int(struct sdiowl_softc *sc) {
 	return 0;
 }
 
+/* Upload FW to the card */
 static int
-sdiowl_attach(device_t dev)
+sdiowl_boot_firmware(struct sdiowl_softc *sc)
 {
-	struct sdiowl_softc *sc;
-	struct ifnet *ifp;
-	struct ieee80211com *ic;
-
 	const struct firmware *fw;
-	uint8_t funcs_enabled;
-	uint8_t sdio_irq;
-	size_t sdiofunc;
-
-	sc = device_get_softc(dev);
-	sc->dev = dev;
-	SDIOWL_LOCK_INIT(sc);
-	sc->running = 1;
-	sc->lastseq = 0;
-	sc->bss_type = MWIFIEX_BSS_TYPE_STA;
-	sc->irqstatus = 0;
-	sc->rd_bitmap = 0;
-	sc->wr_bitmap = 0;
-
-	BUS_READ_IVAR(device_get_parent(dev), dev, MMC_IVAR_SDIO_FUNCTION,
-	    &sdiofunc);
-	sc->sdio_function = sdiofunc;
+	uint8_t status, base0, base1, tries;
+	uint32_t len, txlen, tx_blocks, offset;
 
 	/* Call FW loader from FreeBSD firmware framework */
 	fw = firmware_get("sdiowl_fw");
 	if (!fw) {
-		device_printf(dev, "Firmware request failed!\n");
+		device_printf(sc->dev, "Firmware request failed!\n");
 		return (-1);
 	}
-
-	if (MMCBUS_IO_F0_READ_1(device_get_parent(dev), dev,
-	    SD_IO_CCCR_FN_ENABLE, &funcs_enabled))
-		return (-1);
-
-	/*
-	 * XXX: We probably should just enable function from the driver code
-	 * and not rely on MMC/SDIO stack to do this!
-	 */
-	if (funcs_enabled & (1 << sc->sdio_function))
-		device_printf(dev, "My function is enabled, good!\n");
-	else {
-		device_printf(dev, "My func is NOT enabled, bad (mask = %d, func=%d)!\n", funcs_enabled, sc->sdio_function);
-		return (-1);
-	}
-
-	/* Set block size */
-	device_printf(dev, "Setting block size to %d bytes\n", SDIO_BLOCK_SIZE);
-	if(MMCBUS_IO_SET_BLOCK_SIZE(device_get_parent(dev), dev, SDIO_BLOCK_SIZE))
-		return (-1);
-
-	/* ACK the first interrupt from bootloader, disable host intr mask */
-	sdio_irq = 0;
-	if(sdiowl_read_1(sc, HOST_INTSTATUS_REG, &sdio_irq))
-		return (-1);
-
-	/* Disable host interrupts */
-	sdiowl_disable_host_int(sc);
-
-	/* Get IO Port */
-	uint8_t reg;
-	if (sdiowl_read_1(sc, IO_PORT_0_REG, &reg))
-		return (-1);
-	sc->ioport = reg;
-	if (sdiowl_read_1(sc, IO_PORT_1_REG, &reg))
-		return (-1);
-	sc->ioport |= reg << 8;
-	if (sdiowl_read_1(sc, IO_PORT_2_REG, &reg))
-		return (-1);
-	sc->ioport |= reg << 16;
-	device_printf(dev, "IO Port: 0x%08X\n", sc->ioport);
-
-	/* Set Host interrupt reset to read to clear */
-	if (!sdiowl_read_1(sc, HOST_INT_RSR_REG, &reg))
-		sdiowl_write_1(sc, HOST_INT_RSR_REG, reg | SDIO_INT_MASK);
-	else
-		return (-1);
-
-	/* Dnld/Upld ready set to auto reset */
-	if (!sdiowl_read_1(sc, CARD_MISC_CFG_REG, &reg))
-		sdiowl_write_1(sc, CARD_MISC_CFG_REG, reg | AUTO_RE_ENABLE_INT);
-	else
-		return (-1);
-
-	/* Now upload FW to the card */
-	uint8_t status, base0, base1, tries;
-	uint32_t len, txlen, tx_blocks, offset;
 
 	uint8_t *fwbuf_ = malloc(2048 + BUF_ALIGN, M_MVSDIOWL, M_WAITOK);
 
@@ -790,15 +728,15 @@ sdiowl_attach(device_t dev)
 			if (sdiowl_read_1(sc, CARD_STATUS_REG, &status))
 				return (-1);
 			if (!(status | CARD_IO_READY | DN_LD_CARD_RDY)) {
-				device_printf(dev,
-				    "Card NOT ready to accept FW (status %d)\n",
-				    status);
+				device_printf(sc->dev,
+					      "Card NOT ready to accept FW (status %d)\n",
+					      status);
 				return (-1);
 			}
 
 			if (sdiowl_read_1(sc, HOST_F1_RD_BASE_0, &base0) > 0 ||
 			    sdiowl_read_1(sc, HOST_F1_RD_BASE_1, &base1) > 0) {
-				device_printf(dev, "Err while reading BASEx\n");
+				device_printf(sc->dev, "Err while reading BASEx\n");
 				return (-1);
 			}
 
@@ -826,10 +764,10 @@ sdiowl_attach(device_t dev)
 		memset(fwbuf_, 0, 2048 + BUF_ALIGN);
 		memmove(fwbuf, (uint8_t *)((size_t)fw->data + offset), txlen);
 
-		if (MMCBUS_IO_WRITE_FIFO(device_get_parent(dev), dev, sc->ioport,
-		    (uint8_t *) fwbuf,
-		    tx_blocks * SDIO_BLOCK_SIZE)) {
-			device_printf(dev, "Cannot write-fifo\n");
+		if (MMCBUS_IO_WRITE_FIFO(device_get_parent(sc->dev), sc->dev,
+					 sc->ioport, (uint8_t *) fwbuf,
+					 tx_blocks * SDIO_BLOCK_SIZE)) {
+			device_printf(sc->dev, "Cannot write-fifo\n");
 			break;
 		}
 
@@ -849,29 +787,98 @@ sdiowl_attach(device_t dev)
 		return (-1);
 	} else device_printf(sc->dev, "FW READY\n");
 
-	/* Enable host interrupts */
-	sdiowl_enable_host_int(sc);
+	return (0);
+}
 
-	/* Now create the interface */
-	ifp = sc->sc_ifp = if_alloc(IFT_IEEE80211);
-	if (ifp == NULL) {
-		device_printf(sc->dev, "cannot if_alloc()\n");
-		return ENOSPC;
+static int
+sdiowl_attach(device_t dev)
+{
+	struct sdiowl_softc *sc;
+	uint8_t funcs_enabled;
+	uint8_t sdio_irq;
+	size_t sdiofunc;
+
+	sc = device_get_softc(dev);
+	sc->dev = dev;
+	SDIOWL_LOCK_INIT(sc);
+	sc->running = 1;
+	sc->lastseq = 0;
+	sc->bss_type = MWIFIEX_BSS_TYPE_STA;
+	sc->irqstatus = 0;
+	sc->rd_bitmap = 0;
+	sc->wr_bitmap = 0;
+
+	BUS_READ_IVAR(device_get_parent(dev), dev, MMC_IVAR_SDIO_FUNCTION,
+	    &sdiofunc);
+	sc->sdio_function = sdiofunc;
+
+	if (MMCBUS_IO_F0_READ_1(device_get_parent(dev), dev,
+	    SD_IO_CCCR_FN_ENABLE, &funcs_enabled))
+		return (-1);
+
+	/*
+	 * XXX: We probably should just enable function from the driver code
+	 * and not rely on MMC/SDIO stack to do this!
+	 */
+	if (! (funcs_enabled & (1 << sc->sdio_function))) {
+		device_printf(dev, "My func is NOT enabled, bad (mask = %d, func=%d)!\n", funcs_enabled, sc->sdio_function);
+		return (-1);
 	}
-	ic = ifp->if_l2com;
 
-	/* set these up early for if_printf use */
-	if_initname(ifp, device_get_name(sc->dev),
-		    device_get_unit(sc->dev));
+	/* Set block size */
+	if(MMCBUS_IO_SET_BLOCK_SIZE(device_get_parent(dev), dev, SDIO_BLOCK_SIZE))
+		return (-1);
 
+	/* ACK the first interrupt from bootloader, disable host intr mask */
+	sdio_irq = 0;
+	if(sdiowl_read_1(sc, HOST_INTSTATUS_REG, &sdio_irq))
+		return (-1);
+
+	/* Disable host interrupts */
+	sdiowl_disable_host_int(sc);
+
+	/* Get IO Port */
+	uint8_t reg;
+	if (sdiowl_read_1(sc, IO_PORT_0_REG, &reg))
+		return (-1);
+	sc->ioport = reg;
+	if (sdiowl_read_1(sc, IO_PORT_1_REG, &reg))
+		return (-1);
+	sc->ioport |= reg << 8;
+	if (sdiowl_read_1(sc, IO_PORT_2_REG, &reg))
+		return (-1);
+	sc->ioport |= reg << 16;
+	if (bootverbose)
+		device_printf(dev, "IO Port: 0x%08X\n", sc->ioport);
+
+	/* Set Host interrupt reset to read to clear */
+	if (!sdiowl_read_1(sc, HOST_INT_RSR_REG, &reg))
+		sdiowl_write_1(sc, HOST_INT_RSR_REG, reg | SDIO_INT_MASK);
+	else
+		return (-1);
+
+	/* Dnld/Upld ready set to auto reset */
+	if (!sdiowl_read_1(sc, CARD_MISC_CFG_REG, &reg))
+		sdiowl_write_1(sc, CARD_MISC_CFG_REG, reg | AUTO_RE_ENABLE_INT);
+	else
+		return (-1);
+
+	/* Download the firmware to the card and wait until it starts */
+	sdiowl_boot_firmware(sc);
+
+	/* Create different control structures */
 	sc->sc_tq = taskqueue_create("mv_sdiowl_taskq", M_NOWAIT,
 		taskqueue_thread_enqueue, &sc->sc_tq);
 	taskqueue_start_threads(&sc->sc_tq, 1, PI_NET,
-		"%s taskq", ifp->if_xname);
+		"sdiowl taskq");
 
 	TASK_INIT(&sc->sc_cmdtask, 0, sdiowl_send_cmd, sc);
 	cv_init(&sc->sc_cmdtask_finished, "sdiowl task finish marker");
 
+	/* Enable host interrupts */
+	sdiowl_enable_host_int(sc);
+
+	/* Send some additional commands to finish initalization */
 	sdiowl_send_init(sc);
 	sdiowl_get_hw_spec(sc);
 	sdiowl_configure(sc);
