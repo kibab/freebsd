@@ -67,6 +67,7 @@
 #define SD_IO_CCCR_FN_ENABLE		0x02
 #define SD_IO_CCCR_FN_READY		0x03
 #define SD_IO_CCCR_INT_ENABLE		0x04
+#define SD_IO_CCCR_INT_PENDING		0x05
 #define SD_IO_CCCR_CTL			0x06
 #define  CCCR_CTL_RES			(1<<3)
 #define SD_IO_CCCR_BUS_WIDTH		0x07

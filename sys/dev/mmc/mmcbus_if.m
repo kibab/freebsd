@@ -157,15 +157,6 @@ METHOD int io_write_fifo {
 };
 
 #
-# SDIO: set the interrupt handler
-# Return: error or 0
-METHOD int io_set_intr {
-	device_t	brdev;
-	device_t	reqdev;
-	size_t		*handler;
-};
-
-#
 # Claim the current bridge, blocking the current thread until the host
 # is no longer busy.
 #

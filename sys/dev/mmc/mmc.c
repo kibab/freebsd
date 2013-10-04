@@ -87,6 +87,8 @@ struct mmc_softc {
 	uint8_t sdio_support_hs;
 	struct resource	*sdio_irq_res;
 	void *sdio_irq_cookiep;
+	driver_intr_t *sdio_isrs[7];
+	void *sdio_isr_args[7];
 	struct sdio_function sdio_func0;
 	STAILQ_HEAD(, sdio_function) sdiof_head;
 };
@@ -143,6 +145,16 @@ static int mmc_wait_for_request(device_t brdev, device_t reqdev,
     struct mmc_request *req);
 static int mmc_write_ivar(device_t bus, device_t child, int which,
     uintptr_t value);
+
+static struct resource * mmc_alloc_resource(device_t dev, device_t child,
+					    int type, int *rid,
+					    u_long start, u_long end,
+					    u_long count, u_int flags);
+
+static int mmc_setup_intr(device_t dev, device_t child, struct resource *irq,
+			  int flags, driver_filter_t *filt,
+			  driver_intr_t *function, void *argument,
+			  void **cookiep);
 
 #define MMC_LOCK(_sc)		mtx_lock(&(_sc)->sc_mtx)
 #define	MMC_UNLOCK(_sc)		mtx_unlock(&(_sc)->sc_mtx)
@@ -2345,13 +2357,36 @@ mmc_sdio_intr(void *xsc)
 {
 	struct mmc_softc *sc;
 	sc = xsc;
+
+	/* XXX This is a hack. See below */
+	if (sc->sdio_isrs[1])
+		(sc->sdio_isrs[1])(sc->sdio_isr_args[1]);
+
 	/*
 	 * TODO: we should read "Int pending" register in CCCR to figure out
 	 * which function did the interrupt, then call its interrupt handler.
 	 * Linux has some nice optimization -- if there was only one function
-	 * that set up the interrupt, call the handler without looking into CCCR
+	 * that set up the interrupt, call the handler without looking into CCCR.
+	 *
+	 * Currently, reading SDIO register here results in kernel panic.
+	 panic: _mtx_lock_sleep: recursed on non-recursive mutex sdio0 @ /usr/home/kibab/repos/fbsd-dreamplug/freebsd/sys/arm/mv/mv_sdio.c:579
 	 */
-	device_printf(sc->dev, "mmc_sdio_intr(): got interrupt!\n");
+/*	uint8_t irqs_pending = mmc_io_read_1(sc, 0, SD_IO_CCCR_INT_PENDING);
+	uint8_t i;
+
+	for (i=1; i<= 7; i++) {
+		if (irqs_pending & (1 << i)) {
+			if (sc->sdio_isrs[i])
+				(sc->sdio_isrs[i])(sc->sdio_isr_args[i]);
+			else
+				device_printf(sc->dev,
+					      "Stray SDIO interrupt for func %d",
+					      i);
+
+		}
+	}
+
+*/
 }
 
 static void
@@ -2387,6 +2422,50 @@ mmc_child_location_str(device_t dev, device_t child, char *buf,
 {
 
 	snprintf(buf, buflen, "rca=0x%04x", mmc_get_rca(child));
+	return (0);
+}
+
+static struct resource *
+mmc_alloc_resource(device_t dev, device_t child, int type, int *rid,
+    u_long start, u_long end, u_long count, u_int flags)
+{
+	struct mmc_softc *sc;
+
+	sc = device_get_softc(dev);
+
+	KASSERT(type == SYS_RES_IRQ,
+	    ("illegal resource request (type %u).", type));
+	return (sc->sdio_irq_res);
+}
+
+
+static int
+mmc_setup_intr(device_t dev, device_t child, struct resource *irq, int flags,
+    driver_filter_t *filt, driver_intr_t *function, void *argument,
+    void **cookiep)
+{
+	struct mmc_softc *sc;
+	struct mmc_ivars *ivar = device_get_ivars(child);
+
+	device_printf(dev, "mmc_setup_intr() called\n");
+	sc = device_get_softc(dev);
+
+	if (filt != NULL) {
+		device_printf(dev, "filter interrupts are not supported.\n");
+		return (EINVAL);
+	}
+
+	sc->sdio_isrs[ivar->sdiof->number] = function;
+	sc->sdio_isr_args[ivar->sdiof->number] = argument;
+	*cookiep = sc;
+
+	/* Now enable interrupts on the card */
+	if (mmc_io_set_intr(device_get_softc(dev), ivar->sdiof->number, 1)) {
+		device_printf(dev,
+			      "Cannot enable interruppts for the function %d\n",
+			      ivar->sdiof->number);
+	}
+
 	return (0);
 }
 
@@ -2544,18 +2623,6 @@ mmcb_io_read_fifo(device_t dev, device_t child, uint32_t adr,
 	return (err);
 }
 
-static int
-mmcb_io_set_intr(device_t dev, device_t child, size_t *handler)
-{
-	int err;
-	struct mmc_ivars *ivar = device_get_ivars(child);
-
-	/* TODO: actually set the interrupt handler! */
-	err = mmc_io_set_intr(device_get_softc(dev), ivar->sdiof->number,
-		handler == NULL ? 0 : 1);
-	return (err);
-}
-
 static device_method_t mmc_methods[] = {
 	/* device_if */
 	DEVMETHOD(device_probe, mmc_probe),
@@ -2568,6 +2635,8 @@ static device_method_t mmc_methods[] = {
 	DEVMETHOD(bus_read_ivar, mmc_read_ivar),
 	DEVMETHOD(bus_write_ivar, mmc_write_ivar),
 	DEVMETHOD(bus_child_location_str, mmc_child_location_str),
+	DEVMETHOD(bus_alloc_resource, mmc_alloc_resource),
+	DEVMETHOD(bus_setup_intr, mmc_setup_intr),
 
 	/* MMC Bus interface */
 	DEVMETHOD(mmcbus_wait_for_request, mmc_wait_for_request),
@@ -2579,7 +2648,6 @@ static device_method_t mmc_methods[] = {
 	DEVMETHOD(mmcbus_io_write_multi, mmcb_io_write_multi),
 	DEVMETHOD(mmcbus_io_read_fifo, mmcb_io_read_fifo),
 	DEVMETHOD(mmcbus_io_write_fifo, mmcb_io_write_fifo),
-	DEVMETHOD(mmcbus_io_set_intr, mmcb_io_set_intr),
 	DEVMETHOD(mmcbus_acquire_bus, mmc_acquire_bus),
 	DEVMETHOD(mmcbus_release_bus, mmc_release_bus),
 
