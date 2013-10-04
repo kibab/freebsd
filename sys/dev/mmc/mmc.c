@@ -63,6 +63,8 @@ __FBSDID("$FreeBSD$");
 #include <sys/bus.h>
 #include <sys/endian.h>
 #include <sys/sysctl.h>
+#include <sys/rman.h>
+#include <machine/resource.h>
 
 #include <dev/mmc/mmcreg.h>
 #include <dev/mmc/mmcbrvar.h>
@@ -83,6 +85,8 @@ struct mmc_softc {
 	uint8_t sdio_nfunc;
 	u_char sdio_bus_width;
 	uint8_t sdio_support_hs;
+	struct resource	*sdio_irq_res;
+	void *sdio_irq_cookiep;
 	struct sdio_function sdio_func0;
 	STAILQ_HEAD(, sdio_function) sdiof_head;
 };
@@ -2337,10 +2341,42 @@ mmc_write_ivar(device_t bus, device_t child, int which, uintptr_t value)
 }
 
 static void
+mmc_sdio_intr(void *xsc)
+{
+	struct mmc_softc *sc;
+	sc = xsc;
+	/*
+	 * TODO: we should read "Int pending" register in CCCR to figure out
+	 * which function did the interrupt, then call its interrupt handler.
+	 * Linux has some nice optimization -- if there was only one function
+	 * that set up the interrupt, call the handler without looking into CCCR
+	 */
+	device_printf(sc->dev, "mmc_sdio_intr(): got interrupt!\n");
+}
+
+static void
 mmc_delayed_attach(void *xsc)
 {
 	struct mmc_softc *sc = xsc;
-	
+	int irq_id = 0;
+
+	/*
+	 * TODO: Implement a new read-only ivar for mmcbr, to be able to ask
+	 * the SDIO controller if it supports SDIO interrupts.
+	 * If not, then don't even try to request IRQ resource.
+	 * If yes, then failure to allocate resource and setup the interrupt
+	 * handler will be fatal.
+	 */
+	sc->sdio_irq_res = bus_alloc_resource_any(sc->dev, SYS_RES_IRQ, &irq_id,
+	    RF_ACTIVE);
+	if (sc->sdio_irq_res == NULL) {
+		device_printf(sc->dev, "could not allocate IRQ for SDIO\n");
+	} else if (bus_setup_intr(sc->dev, sc->sdio_irq_res,
+	    INTR_MPSAFE | INTR_ENTROPY,
+	    NULL, mmc_sdio_intr, sc, &sc->sdio_irq_cookiep)) {
+		device_printf(sc->dev, "could not setup SDIO interrupt\n");
+	}
+
 	mmc_scan(sc);
 	config_intrhook_disestablish(&sc->config_intrhook);
 }

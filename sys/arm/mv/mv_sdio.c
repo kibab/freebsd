@@ -157,6 +157,11 @@ struct mv_sdio_softc {
 	struct mmc_command	*sc_curcmd;
 
 	uint32_t		sc_data_offset;
+
+	/* SDIO card interrupt handling */
+	uint8_t			sc_sdio_isr_call_req;
+	driver_intr_t		*sc_sdio_isr;
+	void			*sc_sdio_isr_arg;
 };
 
 /* Read/write data from/to registers.*/
@@ -168,6 +173,16 @@ static int mv_sdio_attach(device_t);
 
 static int mv_sdio_read_ivar(device_t, device_t, int, uintptr_t *);
 static int mv_sdio_write_ivar(device_t, device_t, int, uintptr_t);
+
+static struct resource * mv_sdio_alloc_resource(device_t dev, device_t child,
+						int type, int *rid,
+						u_long start, u_long end,
+						u_long count, u_int flags);
+
+static int mv_sdio_setup_intr(device_t dev, device_t child,
+			      struct resource *irq, int flags,
+			      driver_filter_t *filt, driver_intr_t *function,
+			      void *argument, void **cookiep);
 
 static int mv_sdio_update_ios(device_t, device_t);
 static int mv_sdio_request(device_t, device_t, struct mmc_request *);
@@ -240,6 +255,8 @@ static device_method_t mv_sdio_methods[] = {
 	/* Bus interface */
 	DEVMETHOD(bus_read_ivar, mv_sdio_read_ivar),
 	DEVMETHOD(bus_write_ivar, mv_sdio_write_ivar),
+	DEVMETHOD(bus_alloc_resource, mv_sdio_alloc_resource),
+	DEVMETHOD(bus_setup_intr, mv_sdio_setup_intr),
 
 	/* mmcbr_if */
 	DEVMETHOD(mmcbr_update_ios, mv_sdio_update_ios),
@@ -406,6 +423,11 @@ mv_sdio_attach(device_t dev)
 		device_set_ivars(sc->sc_child, &sc->sc_host);
 	}
 
+	/* Init SDIO-related parameters */
+	sc->sc_sdio_isr_call_req = 0;
+	sc->sc_sdio_isr = NULL;
+	sc->sc_sdio_isr_arg = NULL;
+
 	return (bus_generic_attach(dev));
 
 fail:
@@ -508,6 +530,43 @@ mv_sdio_update_ios(device_t brdev, device_t reqdev)
 	return (0);
 }
 
+static struct resource *
+mv_sdio_alloc_resource(device_t dev, device_t child, int type, int *rid,
+    u_long start, u_long end, u_long count, u_int flags)
+{
+	struct mv_sdio_softc *sc;
+
+	sc = device_get_softc(dev);
+
+	KASSERT(type == SYS_RES_IRQ,
+	    ("illegal resource request (type %u).", type));
+
+	return (sc->sc_irq_res);
+}
+
+
+static int
+mv_sdio_setup_intr(device_t dev, device_t child, struct resource *irq, int flags,
+    driver_filter_t *filt, driver_intr_t *function, void *argument,
+    void **cookiep)
+{
+	struct mv_sdio_softc *sc;
+
+	device_printf(dev, "mv_sdio_setup_intr() called\n");
+	sc = device_get_softc(dev);
+
+	if (filt != NULL) {
+		device_printf(dev, "filter interrupts are not supported.\n");
+		return (EINVAL);
+	}
+
+	sc->sc_sdio_isr = function;
+	sc->sc_sdio_isr_arg = argument;
+	*cookiep = sc;
+
+	return (0);
+}
+
 static int
 mv_sdio_request(device_t brdev, device_t reqdev, struct mmc_request *req)
 {
@@ -603,7 +662,19 @@ mv_sdio_finalize_request(struct mv_sdio_softc *sc)
 		sc->sc_curcmd = NULL;
 		req->done(req);
     
-    
+		/*
+		 * If there was an SDIO interrupt, invoke the handler now.
+		 * Earlier it is not desirable because the caller is blocked
+		 * waiting on request completion, possibly with the mutex held.
+		 */
+		if (sc->sc_sdio_isr_call_req) {
+			device_printf(sc->sc_dev, "Calling SDIO ISR\n");
+			sc->sc_sdio_isr_call_req = 0;
+			if (sc->sc_sdio_isr)
+				sc->sc_sdio_isr(sc->sc_sdio_isr_arg);
+			else
+				device_printf(sc->sc_dev, "Stray SDIO IRQ\n");
+		}
 	} else
 		device_printf(sc->sc_dev, "No active request to finalize!\n");
 }
@@ -1359,8 +1430,8 @@ mv_sdio_data_intr(struct mv_sdio_softc *sc, uint32_t irq, uint32_t eirq)
 static void
 mv_sdio_card_intr(struct mv_sdio_softc *sc)
 {
-	/* XXX: Actual implementation follows... */
-	device_printf(sc->sc_dev, "CARD INTERRUPT RECEIVED, WHAT'S NEXT?!\n");
+	device_printf(sc->sc_dev, "CARD INTERRUPT RECEIVED\n");
+	sc->sc_sdio_isr_call_req = 1;
 }
 
 static void
