@@ -1546,7 +1546,7 @@ mmc_io_parse_cis(struct mmc_softc *sc, uint8_t func, uint32_t cisptr, struct sdi
 					device_printf(sc->dev,
 						      "%s ",
 						      cis1_info[i]);
-			device_printf("\n");
+			device_printf(sc->dev, "\n");
 			break;
 
 		case SD_IO_CISTPL_MANFID:
