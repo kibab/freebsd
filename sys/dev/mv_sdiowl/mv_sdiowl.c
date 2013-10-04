@@ -70,6 +70,10 @@ __FBSDID("$FreeBSD$");
 #include <sys/taskqueue.h>
 #include <sys/socket.h>
 
+#include <machine/bus.h>
+#include <sys/rman.h>
+#include <machine/resource.h>
+
 #include <net/if.h>
 #include <net/if_dl.h>
 #include <net/if_media.h>
@@ -276,6 +280,9 @@ struct sdiowl_softc {
 	struct ifnet *sc_ifp;
 
 	struct mtx sc_mtx;
+	struct resource * sc_irq_res;
+	void *sc_irq_cookiep;
+
 	int running;
 	int sdio_function;
 
@@ -309,6 +316,7 @@ struct sdiowl_softc {
 static int sdiowl_attach(device_t dev);
 static int sdiowl_detach(device_t dev);
 static int sdiowl_probe(device_t dev);
+static void sdiowl_intr(void *xsc);
 
 static int sdiowl_read_1(struct sdiowl_softc *sc, uint32_t reg, uint8_t *val);
 static int sdiowl_write_1(struct sdiowl_softc *sc, uint32_t reg, uint8_t val);
@@ -352,12 +360,11 @@ sdiowl_send_cmd(void *arg, int npending)
 	hexdump(cmd, blockcnt * SDIO_BLOCK_SIZE, NULL, 0);
 	ret = MMCBUS_IO_WRITE_FIFO(device_get_parent(sc->dev), sc->dev,
 				   sc->ioport /* CTRL_PORT */, (uint8_t *) cmd, blockcnt * SDIO_BLOCK_SIZE);
+	device_printf(sc->dev, "MMCBUS_IO_WRITE_FIFO() finished!\n");
 	if (ret) {
 		device_printf(sc->dev, "Error when writing to FIFO!\n");
 		/* XXX Think about handling errors in the main thread... */
 	}
-
-	cv_signal(&sc->sc_cmdtask_finished);
 	SDIOWL_UNLOCK(sc);
 }
 
@@ -444,13 +451,6 @@ sdiowl_send_cmd_sync(struct sdiowl_softc *sc, struct sdiowl_cmd *cmd)
 	SDIOWL_UNLOCK(sc);
 
 	device_printf(sc->dev, "Executing command finished!\n");
-
-	/*
-	 * XXX: I assume that interrupt status should already  be set
-	 * at this point. I cannot set up an interrupt handler yet.
-	*/
-	pause("sdiowl", 100);
-	device_printf(sc->dev, "... ok, lets see what we have here...\n");
 
 	return sdiowl_check_mp_regs(sc);
 }
@@ -656,21 +656,26 @@ sdiowl_disable_host_int(struct sdiowl_softc *sc) {
 		return (-1);
 	}
 
-	if (MMCBUS_IO_SET_INTR(device_get_parent(sc->dev), sc->dev, NULL)) {
+/*	if (MMCBUS_IO_SET_INTR(device_get_parent(sc->dev), sc->dev, NULL)) {
 		device_printf(sc->dev, "Bus call to disable interrupt!\n");
 		return (-1);
 	}
-
+*/
 	return 0;
 }
 
 static int
 sdiowl_enable_host_int(struct sdiowl_softc *sc) {
-	size_t handler = 0xdeadbeef;
+	int irq_id = 0;
 
-	if (MMCBUS_IO_SET_INTR(device_get_parent(sc->dev), sc->dev, &handler)) {
-		device_printf(sc->dev, "Bus call to enable interrupt!\n");
-		return (-1);
+	sc->sc_irq_res = bus_alloc_resource_any(sc->dev, SYS_RES_IRQ, &irq_id,
+	    RF_ACTIVE);
+	if (sc->sc_irq_res == NULL) {
+		device_printf(sc->dev, "could not allocate IRQ for SDIO\n");
+	} else if (bus_setup_intr(sc->dev, sc->sc_irq_res,
+	    INTR_MPSAFE | INTR_ENTROPY,
+	    NULL, sdiowl_intr, sc, &sc->sc_irq_cookiep)) {
+		device_printf(sc->dev, "could not setup SDIO interrupt\n");
 	}
 
 	if (sdiowl_write_1(sc, HOST_INT_MASK_REG, HOST_INT_ENABLE)) {
@@ -766,15 +771,6 @@ sdiowl_attach(device_t dev)
 		sdiowl_write_1(sc, CARD_MISC_CFG_REG, reg | AUTO_RE_ENABLE_INT);
 	else
 		return (-1);
-
-
-	/* XXX No idea but without this FW upload doesn't work :-( */
-	char data[256];
-	memset(data, 0, 256);
-	if (MMCBUS_IO_READ_MULTI(device_get_parent(dev), dev, 0,
-				 data, 256, 1)) {
-		device_printf(dev, "Cannot read-multi\n");
-	}
 
 	/* Now upload FW to the card */
 	uint8_t status, base0, base1, tries;
@@ -889,6 +885,18 @@ sdiowl_detach(device_t dev)
 {
 	/* Not implemented yet */
 	return (-1);
+}
+
+static void
+sdiowl_intr(void *xsc)
+{
+	struct sdiowl_softc *sc;
+	sc = xsc;
+	device_printf(sc->dev, "mv_sdiowl_intr(): got interrupt!\n");
+
+	SDIOWL_LOCK(sc);
+	cv_signal(&sc->sc_cmdtask_finished);
+	SDIOWL_UNLOCK(sc);
 }
 
 static device_method_t sdiowl_methods[] = {
