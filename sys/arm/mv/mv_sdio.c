@@ -1430,8 +1430,17 @@ mv_sdio_data_intr(struct mv_sdio_softc *sc, uint32_t irq, uint32_t eirq)
 static void
 mv_sdio_card_intr(struct mv_sdio_softc *sc)
 {
-	device_printf(sc->sc_dev, "CARD INTERRUPT RECEIVED\n");
 	sc->sc_sdio_isr_call_req = 1;
+	/*
+	 * If there is no active command, invoke the handler now.
+	 */
+	if (!sc->sc_curcmd) {
+		sc->sc_sdio_isr_call_req = 0;
+		if (sc->sc_sdio_isr)
+			sc->sc_sdio_isr(sc->sc_sdio_isr_arg);
+		else
+			device_printf(sc->sc_dev, "Stray SDIO IRQ\n");
+	}
 }
 
 static void
@@ -1441,6 +1450,8 @@ mv_sdio_disable_intr(struct mv_sdio_softc *sc)
 	/* Disable interrupts that were enabled. */
 	sc->sc_irq_mask &= ~(sc->sc_irq_mask);
 	sc->sc_eirq_mask &= ~(sc->sc_eirq_mask);
+
+	sc->sc_irq_mask |= MV_SDIO_IRQ_CARD_EVENT;
 	MV_SDIO_WR4(sc, MV_SDIO_IRQ_EN, sc->sc_irq_mask);
 	MV_SDIO_WR4(sc, MV_SDIO_EIRQ_EN, sc->sc_eirq_mask);
 }
