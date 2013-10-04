@@ -1541,12 +1541,12 @@ mmc_io_parse_cis(struct mmc_softc *sc, uint8_t func, uint32_t cisptr, struct sdi
 					count++;
 				}
 			}
-			hexdump(cis1_info_buf, 256, NULL, 0);
-
-			device_printf(sc->dev, "*** Info[0]: %s\n", cis1_info[0]);
-			device_printf(sc->dev, "*** Info[1]: %s\n", cis1_info[1]);
-			device_printf(sc->dev, "*** Info[2]: %s\n", cis1_info[2]);
-			device_printf(sc->dev, "*** Info[3]: %s\n", cis1_info[3]);
+			for (i=0; i<4; i++)
+				if (cis1_info[i])
+					device_printf(sc->dev,
+						      "%s ",
+						      cis1_info[i]);
+			device_printf("\n");
 			break;
 
 		case SD_IO_CISTPL_MANFID:
@@ -1596,7 +1596,7 @@ mmc_io_parse_cis(struct mmc_softc *sc, uint8_t func, uint32_t cisptr, struct sdi
 				    (sdio_func->max_tran_speed >> 3) & 0xF;
 
 				device_printf(sc->dev,
-				    "*** Max tran speed: %02X (unit %d, time value code %d\n",
+				    "*** Max tran speed: %02X (unit %d, time value code %d)\n",
 				    sdio_func->max_tran_speed, max_tran_rate, timecode);
 			} else {
 				if (ext_data_type != 0x1)
@@ -2218,11 +2218,6 @@ mmc_go_discovery(struct mmc_softc *sc)
 
 	mmc_select_card(sc, sc->__sdio_rca);
 
-	/* Disable interrupts from all functions */
-//	err = mmc_io_rw_direct(sc, 1, 0, SD_IO_CCCR_INT_ENABLE, &hs_info);
-//	if (err)
-//		device_printf(sc->dev, "Interrupt disable err %d\n", err);
-
 	bus_generic_attach(dev);
 /*	mmc_update_children_sysctl(dev);*/
 }
@@ -2370,6 +2365,8 @@ mmc_sdio_intr(void *xsc)
 	 *
 	 * Currently, reading SDIO register here results in kernel panic.
 	 panic: _mtx_lock_sleep: recursed on non-recursive mutex sdio0 @ /usr/home/kibab/repos/fbsd-dreamplug/freebsd/sys/arm/mv/mv_sdio.c:579
+	 * It would be better to create a new kernel thread to handle
+	 * interrupts.
 	 */
 /*	uint8_t irqs_pending = mmc_io_read_1(sc, 0, SD_IO_CCCR_INT_PENDING);
 	uint8_t i;
@@ -2462,7 +2459,7 @@ mmc_setup_intr(device_t dev, device_t child, struct resource *irq, int flags,
 	/* Now enable interrupts on the card */
 	if (mmc_io_set_intr(device_get_softc(dev), ivar->sdiof->number, 1)) {
 		device_printf(dev,
-			      "Cannot enable interruppts for the function %d\n",
+			      "Cannot enable interrupts for the function %d\n",
 			      ivar->sdiof->number);
 	}
 
