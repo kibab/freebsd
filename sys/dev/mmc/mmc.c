@@ -1541,12 +1541,11 @@ mmc_io_parse_cis(struct mmc_softc *sc, uint8_t func, uint32_t cisptr, struct sdi
 					count++;
 				}
 			}
+			device_printf(sc->dev, "Card info:");
 			for (i=0; i<4; i++)
 				if (cis1_info[i])
-					device_printf(sc->dev,
-						      "%s ",
-						      cis1_info[i]);
-			device_printf(sc->dev, "\n");
+					printf(" %s", cis1_info[i]);
+			printf("\n");
 			break;
 
 		case SD_IO_CISTPL_MANFID:
@@ -1777,23 +1776,16 @@ mmc_discover_cards(struct mmc_softc *sc)
 				break;
 			}
 
-			device_printf(sc->dev, "Get card info\n");
 			mmc_io_parse_cccr(sc);
 			mmc_io_get_info(sc);
 			for(i=1; i <= nfunc; i++) {
-				device_printf(sc->dev,
-				    "Get info for function %d\n", i);
 				mmc_io_parse_fbr(sc, i);
+				/*
+				 * XXX Don't enable functions here.
+				 * It may be better to make a bus method for that.
+				 */
 				mmc_io_func_enable(sc, i);
 			}
-
-			device_printf(sc->dev, "=== Functions ===\n");
-			struct sdio_function *f;
-
-			STAILQ_FOREACH(f, &sc->sdiof_head, sdiof_list)
-				device_printf(sc->dev,
-				    "FN %d, vendor %04X, product %04X; blksize %02X\n",
-				    f->number, f->manufacturer, f->product, f->max_blksize);
 
 			/*
 			 * Only set 4-bit width if both the host and the card
@@ -1827,6 +1819,7 @@ mmc_discover_cards(struct mmc_softc *sc)
 			}
 
 			/* Attach children */
+			struct sdio_function *f;
 			STAILQ_FOREACH(f, &sc->sdiof_head, sdiof_list) {
 				ivar = malloc(sizeof(struct mmc_ivars), M_DEVBUF,
 				    M_WAITOK | M_ZERO);
