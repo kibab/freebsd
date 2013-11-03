@@ -267,6 +267,7 @@ typedef enum {
 	PROTO_SATAPM,	/* SATA Port Multiplier */
 	PROTO_SEMB,	/* SATA Enclosure Management Bridge */
 	PROTO_NVME,	/* NVME */
+	PROTO_MMCSD,	/* MMC, SD, SDIO */
 } cam_proto;
 
 typedef enum {
@@ -283,6 +284,7 @@ typedef enum {
 	XPORT_ISCSI,	/* iSCSI */
 	XPORT_SRP,	/* SCSI RDMA Protocol */
 	XPORT_NVME,	/* NVMe over PCIe */
+	XPORT_MMCSD,	/* MMC, SD, SDIO card */
 } cam_xport;
 
 #define XPORT_IS_NVME(t)	((t) == XPORT_NVME)
