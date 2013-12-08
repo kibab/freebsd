@@ -866,6 +866,7 @@ sdhci_start_data(struct sdhci_slot *slot, struct mmc_data *data)
 {
 	uint32_t target_timeout, current_timeout;
 	uint8_t div;
+	size_t blk_size, blk_count;
 
 	if (data == NULL && (slot->curcmd->flags & MMC_RSP_BUSY) == 0) {
 		slot->data_done = 1;
@@ -932,10 +933,19 @@ sdhci_start_data(struct sdhci_slot *slot, struct mmc_data *data)
 	/* Current data offset for both PIO and DMA. */
 	slot->offset = 0;
 	/* Set block size and request IRQ on 4K border. */
-	WR2(slot, SDHCI_BLOCK_SIZE,
-	    SDHCI_MAKE_BLKSZ(DMA_BOUNDARY, (data->len < 512)?data->len:512));
+	blk_size = (data->len < 512)?data->len:512;
+	if (data->flags & MMC_DATA_MULTI)
+		blk_size = data->blocksz > 512 ?
+			512 : data->blocksz;
+	blk_size = SDHCI_MAKE_BLKSZ(DMA_BOUNDARY, blk_size);
+		WR2(slot, SDHCI_BLOCK_SIZE, blk_size);
 	/* Set block count. */
-	WR2(slot, SDHCI_BLOCK_COUNT, (data->len + 511) / 512);
+	blk_count = (data->len + 511) / 512;
+	if (data->flags & MMC_DATA_MULTI)
+		blk_count = data->len / blk_size;
+	WR2(slot, SDHCI_BLOCK_COUNT, blk_count);
+	if (data->flags & MMC_DATA_MULTI)
+		device_printf(slot->bus, "BLK SIZE: %d, COUNT: %d\n", blk_size, blk_count);
 }
 
 void
