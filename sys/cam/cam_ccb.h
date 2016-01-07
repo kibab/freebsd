@@ -501,6 +501,7 @@ struct device_match_result {
 	cam_proto			protocol;
 	struct scsi_inquiry_data	inq_data;
 	struct ata_params		ident_data;
+        struct mmc_params               mmc_ident_data;
 	dev_result_flags		flags;
 };
 
