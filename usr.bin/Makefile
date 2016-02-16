@@ -136,6 +136,7 @@ SUBDIR=	alias \
 	rwall \
 	script \
 	sdiff \
+	sdiotool \
 	sed \
 	send-pr \
 	seq \
