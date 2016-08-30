@@ -7412,7 +7412,7 @@ mmcsdcmd(struct cam_device *device, int argc, char **argv, char *combinedopt,
                     || ((ccb->ccb_h.status & CAM_STATUS_MASK) != CAM_REQ_CMP)) {
                         warn("Error sending command");
                 } else {
-                        printf("Parameters set OK\n");
+                        printf("Speed set OK (HS: %d)\n", is_highspeed);
                 }
                 cam_freeccb(ccb);
                 return (retval);
