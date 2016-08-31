@@ -1038,6 +1038,8 @@ struct ccb_trans_settings_mmc {
 
 /* The folowing is used only for GET_TRAN_SETTINGS */
 	uint32_t	host_ocr;
+	int host_f_min;
+	int host_f_max;
 };
 
 /* Get/Set transfer rate/width/disconnection/tag queueing settings */

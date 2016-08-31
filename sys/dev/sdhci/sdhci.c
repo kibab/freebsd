@@ -1769,6 +1769,8 @@ sdhci_cam_action(struct cam_sim *sim, union ccb *ccb)
 		cts->transport_version = 0;
 		cts->xport_specific.valid = 0;
 		cts->proto_specific.mmc.host_ocr = slot->host.host_ocr;
+		cts->proto_specific.mmc.host_f_min = slot->host.f_min;
+		cts->proto_specific.mmc.host_f_max = slot->host.f_max;
 		ccb->ccb_h.status = CAM_REQ_CMP;
 		break;
 	}
