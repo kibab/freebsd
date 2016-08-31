@@ -881,76 +881,37 @@ sdda_start_init(struct cam_periph *periph, union ccb *start_ccb) {
         strlcpy(device->device_id, softc->card_id_string, device->device_id_len);
 
         strlcpy(mmcp->model, softc->card_id_string, sizeof(mmcp->model));
-        sdda_hook_into_geom(periph);
-        return;
 
-/*        switch (softc->state) {
-        case SDDA_STATE_INIT:
-        {
-                start_ccb->ccb_h.func_code = XPT_MMC_IO;
-                start_ccb->ccb_h.flags = CAM_DIR_IN;
-                start_ccb->ccb_h.retry_count = 0;
-                start_ccb->ccb_h.timeout = 15 * 1000;
-                start_ccb->ccb_h.cbfcnp = sdda_done_init;
+	/* Set the clock frequency that the card can handle */
+	struct ccb_trans_settings_mmc *cts;
+	cts = &start_ccb->cts.proto_specific.mmc;
 
-                mmcio->cmd.opcode = MMC_SEND_CSD;
-                mmcio->cmd.arg = mmcp->card_rca << 16;
-                mmcio->cmd.flags = MMC_RSP_R2 | MMC_CMD_BCR;
-                mmcio->cmd.data = NULL;
-                break;
-        }
-        case SDDA_STATE_INVALID:
-                return;
-        default:
-                panic("Wrong state in sdda_start_init");
-        }
-
-	start_ccb->ccb_h.flags |= CAM_DEV_QFREEZE;
+	/* First, get the host's max freq */
+	start_ccb->ccb_h.func_code = XPT_GET_TRAN_SETTINGS;
+	start_ccb->ccb_h.flags = CAM_DIR_NONE;
+	start_ccb->ccb_h.retry_count = 0;
+	start_ccb->ccb_h.timeout = 100;
+	start_ccb->ccb_h.cbfcnp = NULL;
 	xpt_action(start_ccb);
-*/
+
+	if (start_ccb->ccb_h.status != CAM_REQ_CMP)
+		panic("Cannot get max host freq");
+
+	int f_max = min(cts->host_f_max, softc->csd.tran_speed);
+	CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH, ("Set SD freq to %d MHz (min out of host f=%d MHz and card f=%d MHz)\n", f_max  / 1000000, cts->host_f_max / 1000000, softc->csd.tran_speed / 1000000));
+
+	start_ccb->ccb_h.func_code = XPT_SET_TRAN_SETTINGS;
+	start_ccb->ccb_h.flags = CAM_DIR_NONE;
+	start_ccb->ccb_h.retry_count = 0;
+	start_ccb->ccb_h.timeout = 100;
+	start_ccb->ccb_h.cbfcnp = NULL;
+	cts->ios.clock = f_max;
+	cts->ios_valid = MMC_CLK;
+	xpt_action(start_ccb);
+
+	sdda_hook_into_geom(periph);
 }
 
-/*static void
-sdda_done_init(struct cam_periph *periph, union ccb *done_ccb) {
-	struct sdda_softc *softc = (struct sdda_softc *)periph->softc;
-        struct ccb_mmcio *mmcio = &done_ccb->mmcio;
-//        struct mmc_params *mmcp = &periph->path->device->mmc_ident_data;
-        struct cam_path *path = done_ccb->ccb_h.path;
-        int err = mmcio->cmd.error;
-	int priority = done_ccb->ccb_h.pinfo.priority;
-
-        switch (softc->state) {
-        case SDDA_STATE_INIT:
-        {
-                if (err != MMC_ERR_NONE) {
-                        CAM_DEBUG(done_ccb->ccb_h.path, CAM_DEBUG_PERIPH,
-                                  ("Failed to get CSD\n"));
-                        break;
-                }
-                memcpy(softc->raw_csd, mmcio->cmd.resp, 4 * sizeof(uint32_t));
-                CAM_DEBUG(done_ccb->ccb_h.path, CAM_DEBUG_PERIPH,
-                          ("CSD: %08x %08x %08x %08x\n",
-                           softc->raw_csd[0],
-                           softc->raw_csd[1],
-                           softc->raw_csd[2],
-                           softc->raw_csd[3]));
-                mmc_decode_csd_sd(softc->raw_csd, &softc->csd);
-                CAM_DEBUG(done_ccb->ccb_h.path, CAM_DEBUG_PERIPH,
-                          ("Capacity: %llu, sectors: %llu\n",
-                           softc->csd.capacity,
-                           softc->csd.capacity / 512));
-                softc->state = SDDA_STATE_INVALID;
-                break;
-        }
-        default:
-                panic("Wrong state in sdda_done_init");
-        }
-
-	xpt_release_ccb(done_ccb);
-	xpt_schedule(periph, priority);
-	cam_release_devq(path, 0, 0, 0, FALSE);
-}
-*/
 /* Called with periph lock held! */
 static void
 sddastart(struct cam_periph *periph, union ccb *start_ccb)
