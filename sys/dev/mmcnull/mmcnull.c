@@ -44,6 +44,8 @@ __FBSDID("$FreeBSD$");
 #include <cam/cam_xpt_sim.h>
 #include <cam/scsi/scsi_all.h>
 
+static int is_sdio_mode = 0;
+
 struct mmcnull_softc {
 	device_t dev;
 	struct mtx sc_mtx;
@@ -60,18 +62,11 @@ static void mmcnull_identify(driver_t *, device_t);
 static int  mmcnull_probe(device_t);
 static int  mmcnull_attach(device_t);
 static int  mmcnull_detach(device_t);
-static void mmcnull_action(struct cam_sim *, union ccb *);
+static void mmcnull_action_sd(struct cam_sim *, union ccb *);
+static void mmcnull_action_sdio(struct cam_sim *, union ccb *);
+static void mmcnull_intr_sd(void *xsc);
+static void mmcnull_intr_sdio(void *xsc);
 static void mmcnull_poll(struct cam_sim *);
-
-static void
-mmcnull_callout(void *arg)
-{
-	struct mmcnull_softc *sc;
-
-	sc = (struct mmcnull_softc *)arg;
-
-	callout_reset(&sc->tick, 1, mmcnull_callout, sc);
-}
 
 static void
 mmcnull_identify(driver_t *driver, device_t parent)
@@ -107,6 +102,7 @@ static int
 mmcnull_attach(device_t dev)
 {
 	struct mmcnull_softc *sc;
+	sim_action_func action_func;
 
 	sc = device_get_softc(dev);
 	sc->dev = dev;
@@ -116,7 +112,11 @@ mmcnull_attach(device_t dev)
 	if ((sc->devq = cam_simq_alloc(1)) == NULL)
 		return (ENOMEM);
 
-	sc->sim = cam_sim_alloc(mmcnull_action, mmcnull_poll, "mmcnull", sc,
+	if (is_sdio_mode)
+		action_func = mmcnull_action_sdio;
+	else
+		action_func = mmcnull_action_sd;
+	sc->sim = cam_sim_alloc(action_func, mmcnull_poll, "mmcnull", sc,
 				device_get_unit(dev), &sc->sc_mtx, 1, 1,
 				sc->devq);
 
@@ -177,8 +177,7 @@ mmcnull_detach(device_t dev)
  * with the mutex already taken
  */
 static void
-mmcnull_intr(void *xsc)
-{
+mmcnull_intr_sd(void *xsc) {
 	struct mmcnull_softc *sc;
 	union ccb *ccb;
 	struct ccb_mmcio *mmcio;
@@ -191,42 +190,102 @@ mmcnull_intr(void *xsc)
 	device_printf(sc->dev, "mmcnull_intr: MMC command = %d\n",
 		      mmcio->cmd.opcode);
 
-        switch (mmcio->cmd.opcode) {
-        case MMC_GO_IDLE_STATE:
-                device_printf(sc->dev, "Reset device\n");
-                break;
-        case SD_SEND_IF_COND:
-                mmcio->cmd.resp[0] = 0x1AA; // To match mmc_xpt expectations :-)
-                break;
-        case MMC_APP_CMD:
-                mmcio->cmd.resp[0] = R1_APP_CMD;
-                break;
-        case IO_SEND_OP_COND:
-                mmcio->cmd.resp[0] = 0x12345678;
-                mmcio->cmd.resp[0] |= ~ R4_IO_MEM_PRESENT;
-                break;
-        case SD_SEND_RELATIVE_ADDR:
-        case MMC_SELECT_CARD:
-                mmcio->cmd.resp[0] = 0x1 << 16;
-                break;
-        case ACMD_SD_SEND_OP_COND:
-                /* TODO: steal valid OCR from somewhere :-) */
-                mmcio->cmd.resp[0] = 0x123;
-                mmcio->cmd.resp[0] |= MMC_OCR_CARD_BUSY;
-                break;
-        case MMC_ALL_SEND_CID:
-                mmcio->cmd.resp[0] = 0x1234;
-                mmcio->cmd.resp[1] = 0x5678;
-                mmcio->cmd.resp[2] = 0x9ABC;
-                mmcio->cmd.resp[3] = 0xDEF0;
-                break;
-        case MMC_READ_SINGLE_BLOCK:
-        case MMC_READ_MULTIPLE_BLOCK:
-                strcpy(mmcio->cmd.data->data, "WTF?!");
-                break;
-        default:
-                device_printf(sc->dev, "mmcnull_intr: unknown command\n");
-        }
+	switch (mmcio->cmd.opcode) {
+	case MMC_GO_IDLE_STATE:
+		device_printf(sc->dev, "Reset device\n");
+		break;
+	case SD_SEND_IF_COND:
+		mmcio->cmd.resp[0] = 0x1AA; // To match mmc_xpt expectations :-)
+		break;
+	case MMC_APP_CMD:
+		mmcio->cmd.resp[0] = R1_APP_CMD;
+		break;
+	case SD_SEND_RELATIVE_ADDR:
+	case MMC_SELECT_CARD:
+		mmcio->cmd.resp[0] = 0x1 << 16;
+		break;
+	case ACMD_SD_SEND_OP_COND:
+		mmcio->cmd.resp[0] = 0xc0ff8000;
+		mmcio->cmd.resp[0] |= MMC_OCR_CARD_BUSY;
+		break;
+	case MMC_ALL_SEND_CID:
+		/* Note: this is a real CID from Wandboard int mmc */
+		mmcio->cmd.resp[0] = 0x1b534d30;
+		mmcio->cmd.resp[1] = 0x30303030;
+		mmcio->cmd.resp[2] = 0x10842806;
+		mmcio->cmd.resp[3] = 0x5700e900;
+		break;
+	case MMC_SEND_CSD:
+		/* Note: this is a real CSD from Wandboard int mmc */
+		mmcio->cmd.resp[0] = 0x400e0032;
+		mmcio->cmd.resp[1] = 0x5b590000;
+		mmcio->cmd.resp[2] = 0x751f7f80;
+		mmcio->cmd.resp[3] = 0x0a404000;
+		break;
+	case MMC_READ_SINGLE_BLOCK:
+	case MMC_READ_MULTIPLE_BLOCK:
+		strcpy(mmcio->cmd.data->data, "WTF?!");
+		break;
+	default:
+		device_printf(sc->dev, "mmcnull_intr_sd: unknown command\n");
+		mmcio->cmd.error = 1;
+	}
+	ccb->ccb_h.status = CAM_REQ_CMP;
+
+	sc->cur_ccb = NULL;
+	xpt_done(ccb);
+}
+
+static void
+mmcnull_intr_sdio(void *xsc) {
+	struct mmcnull_softc *sc;
+	union ccb *ccb;
+	struct ccb_mmcio *mmcio;
+
+	sc = (struct mmcnull_softc *) xsc;
+	mtx_assert(&sc->sc_mtx, MA_OWNED);
+
+	ccb = sc->cur_ccb;
+	mmcio = &ccb->mmcio;
+	device_printf(sc->dev, "mmcnull_intr: MMC command = %d\n",
+		      mmcio->cmd.opcode);
+
+	switch (mmcio->cmd.opcode) {
+	case MMC_GO_IDLE_STATE:
+		device_printf(sc->dev, "Reset device\n");
+		break;
+	case SD_SEND_IF_COND:
+		mmcio->cmd.resp[0] = 0x1AA; // To match mmc_xpt expectations :-)
+		break;
+	case MMC_APP_CMD:
+		mmcio->cmd.resp[0] = R1_APP_CMD;
+		break;
+	case IO_SEND_OP_COND:
+		mmcio->cmd.resp[0] = 0x12345678;
+		mmcio->cmd.resp[0] |= ~ R4_IO_MEM_PRESENT;
+		break;
+	case SD_SEND_RELATIVE_ADDR:
+	case MMC_SELECT_CARD:
+		mmcio->cmd.resp[0] = 0x1 << 16;
+		break;
+	case ACMD_SD_SEND_OP_COND:
+		/* TODO: steal valid OCR from somewhere :-) */
+		mmcio->cmd.resp[0] = 0x123;
+		mmcio->cmd.resp[0] |= MMC_OCR_CARD_BUSY;
+		break;
+	case MMC_ALL_SEND_CID:
+		mmcio->cmd.resp[0] = 0x1234;
+		mmcio->cmd.resp[1] = 0x5678;
+		mmcio->cmd.resp[2] = 0x9ABC;
+		mmcio->cmd.resp[3] = 0xDEF0;
+		break;
+	case MMC_READ_SINGLE_BLOCK:
+	case MMC_READ_MULTIPLE_BLOCK:
+		strcpy(mmcio->cmd.data->data, "WTF?!");
+		break;
+	default:
+		device_printf(sc->dev, "mmcnull_intr: unknown command\n");
+	}
 	ccb->ccb_h.status = CAM_REQ_CMP;
 
 	sc->cur_ccb = NULL;
@@ -250,11 +309,14 @@ mmcnull_handle_mmcio(struct cam_sim *sim, union ccb *ccb)
 	sc->cur_ccb = ccb;
 
 	/* Real h/w will wait for the interrupt */
-	callout_reset(&sc->tick, hz * 1, mmcnull_intr, sc);
+	if (is_sdio_mode)
+		callout_reset(&sc->tick, hz / 10, mmcnull_intr_sdio, sc);
+	else
+		callout_reset(&sc->tick, hz / 10, mmcnull_intr_sd, sc);
 }
 
 static void
-mmcnull_action(struct cam_sim *sim, union ccb *ccb)
+mmcnull_action_sd(struct cam_sim *sim, union ccb *ccb)
 {
 	struct mmcnull_softc *sc;
 
@@ -298,8 +360,10 @@ mmcnull_action(struct cam_sim *sim, union ccb *ccb)
 		break;
 	}
 	case XPT_GET_TRAN_SETTINGS:
-        {
-                struct ccb_trans_settings *cts = &ccb->cts;
+	{
+		struct ccb_trans_settings *cts = &ccb->cts;
+		struct ccb_trans_settings_mmc *mcts;
+		mcts = &ccb->cts.proto_specific.mmc;
 
                 device_printf(sc->dev, "Got XPT_GET_TRAN_SETTINGS\n");
 
@@ -308,7 +372,10 @@ mmcnull_action(struct cam_sim *sim, union ccb *ccb)
                 cts->transport = XPORT_MMCSD;
                 cts->transport_version = 0;
                 cts->xport_specific.valid = 0;
-
+// Pending full merge: the following two fields are not here yet..
+//		mcts->host_f_max = 12000000;
+//		mcts->host_f_min = 200000;
+		mcts->host_ocr = 1; /* Fix this */
                 ccb->ccb_h.status = CAM_REQ_CMP;
                 break;
         }
@@ -343,6 +410,11 @@ mmcnull_action(struct cam_sim *sim, union ccb *ccb)
 	}
 	xpt_done(ccb);
 	return;
+}
+
+static void
+mmcnull_action_sdio(struct cam_sim *sim, union ccb *ccb) {
+	mmcnull_action_sd(sim, ccb);
 }
 
 static void
