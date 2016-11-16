@@ -326,7 +326,6 @@ static xpt_devicefunc_t	xptsetasyncfunc;
 static xpt_busfunc_t	xptsetasyncbusfunc;
 static cam_status	xptregister(struct cam_periph *periph,
 				    void *arg);
-static const char *	xpt_action_name(uint32_t action);
 static __inline int device_is_queued(struct cam_ed *device);
 
 static __inline int
@@ -5439,7 +5438,7 @@ static struct kv map[] = {
 	{ 0, 0 }
 };
 
-static const char *
+const char *
 xpt_action_name(uint32_t action) 
 {
 	static char buffer[32];	/* Only for unknown messages -- racy */

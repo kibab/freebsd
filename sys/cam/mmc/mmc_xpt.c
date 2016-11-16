@@ -90,8 +90,6 @@ static void mmc_proto_announce(struct cam_ed *device);
 static void mmc_proto_denounce(struct cam_ed *device);
 static void mmc_proto_debug_out(union ccb *ccb);
 
-static const char * get_action_desc(int action);
-
 typedef enum {
 	PROBE_RESET,
 	PROBE_IDENTIFY,
@@ -324,7 +322,7 @@ mmc_action(union ccb *start_ccb)
 {
 	CAM_DEBUG(start_ccb->ccb_h.path, CAM_DEBUG_INFO,
 		  ("mmc_action! func_code=%x, action %s\n", start_ccb->ccb_h.func_code,
-                   get_action_desc(start_ccb->ccb_h.func_code)));
+                   xpt_action_name(start_ccb->ccb_h.func_code)));
 	switch (start_ccb->ccb_h.func_code) {
 
 	case XPT_SCAN_BUS:
@@ -1135,148 +1133,5 @@ mmcprobe_done(struct cam_periph *periph, union ccb *done_ccb)
         if (softc->action == PROBE_DONE || softc->action == PROBE_INVALID) {
                 cam_periph_invalidate(periph);
                 cam_periph_release_locked(periph);
-        }
-}
-
-
-/* Helper stuff */
-static const char *
-get_action_desc(int action)
-{
-        switch (action) {
-        case XPT_FC_QUEUED:
-                return "XPT_FC_QUEUED";
-                ;break;
-        case XPT_FC_USER_CCB:
-                return "XPT_FC_USER_CCB";
-                ;break;
-       case XPT_FC_XPT_ONLY:
-                return "XPT_FC_XPT_ONLY";
-                ;break;
-        case XPT_FC_DEV_QUEUED:
-                return "XPT_FC_DEV_QUEUED";
-                ;break;
-        case XPT_NOOP:
-                return "XPT_NOOP";
-                ;break;
-        case XPT_SCSI_IO:
-                return "XPT_SCSI_IO";
-                ;break;
-        case XPT_GDEV_TYPE:
-                return "XPT_GDEV_TYPE";
-                ;break;
-        case XPT_GDEVLIST:
-                return "XPT_GDEVLIST";
-                ;break;
-        case XPT_PATH_INQ:
-                return "XPT_PATH_INQ";
-                ;break;
-        case XPT_REL_SIMQ:
-                return "XPT_REL_SIMQ";
-                ;break;
-        case XPT_SASYNC_CB:
-                return "XPT_SASYNC_CB";
-                ;break;
-        case XPT_SDEV_TYPE:
-                return "XPT_SDEV_TYPE";
-                ;break;
-        case XPT_SCAN_BUS:
-                return "XPT_SCAN_BUS";
-                ;break;
-        case XPT_DEV_MATCH:
-                return "XPT_DEV_MATCH";
-                ;break;
-        case XPT_DEBUG:
-                return "XPT_DEBUG";
-                ;break;
-        case XPT_PATH_STATS:
-                return "XPT_PATH_STATS";
-                ;break;
-        case XPT_GDEV_STATS:
-                return "XPT_GDEV_STATS";
-                ;break;
-        case XPT_DEV_ADVINFO:
-                return "XPT_DEV_ADVINFO";
-                ;break;
-        case XPT_ASYNC:
-                return "XPT_ASYNC";
-                ;break;
-        case XPT_ABORT:
-                return "XPT_ABORT";
-                ;break;
-        case XPT_RESET_BUS:
-                return "XPT_RESET_BUS";
-                ;break;
-        case XPT_RESET_DEV:
-                return "XPT_RESET_DEV";
-                ;break;
-        case XPT_TERM_IO:
-                return "XPT_TERM_IO";
-                ;break;
-        case XPT_SCAN_LUN:
-                return "XPT_SCAN_LUN";
-                ;break;
-        case XPT_GET_TRAN_SETTINGS:
-                return "XPT_GET_TRAN_SETTINGS";
-                ;break;
-        case XPT_SET_TRAN_SETTINGS:
-                return "XPT_SET_TRAN_SETTINGS";
-                ;break;
-        case XPT_CALC_GEOMETRY:
-                return "XPT_CALC_GEOMETRY";
-                ;break;
-        case XPT_ATA_IO:
-                return "XPT_ATA_IO";
-                ;break;
-        case XPT_GET_SIM_KNOB:
-                return "XPT_GET_SIM_KNOB";
-                ;break;
-        case XPT_SET_SIM_KNOB:
-                return "XPT_SET_SIM_KNOB";
-                ;break;
-        case XPT_SMP_IO:
-                return "XPT_SMP_IO";
-                ;break;
-        case XPT_SCAN_TGT:
-                return "XPT_SCAN_TGT";
-                ;break;
-        case XPT_ENG_INQ:
-                return "XPT_ENG_INQ";
-                ;break;
-        case XPT_ENG_EXEC:
-                return "XPT_ENG_EXEC";
-                ;break;
-        case XPT_EN_LUN:
-                return "XPT_EN_LUN";
-                ;break;
-        case XPT_TARGET_IO:
-                return "XPT_TARGET_IO";
-                ;break;
-        case XPT_ACCEPT_TARGET_IO:
-                return "XPT_ACCEPT_TARGET_IO";
-                ;break;
-        case XPT_CONT_TARGET_IO:
-                return "XPT_CONT_TARGET_IO";
-                ;break;
-        case XPT_IMMED_NOTIFY:
-                return "XPT_IMMED_NOTIFY";
-                ;break;
-        case XPT_NOTIFY_ACK:
-                return "XPT_NOTIFY_ACK";
-                ;break;
-        case XPT_IMMEDIATE_NOTIFY:
-                return "XPT_IMMEDIATE_NOTIFY";
-                ;break;
-        case XPT_NOTIFY_ACKNOWLEDGE:
-                return "XPT_NOTIFY_ACKNOWLEDGE";
-                ;break;
-        case XPT_MMC_IO:
-                return "XPT_MMC_IO";
-                ;break;
-        case XPT_VUNIQUE:
-                return "XPT_VUNIQUE";
-                ;break;
-        default:
-                return "<Unknown>";
         }
 }
