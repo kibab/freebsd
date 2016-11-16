@@ -41,6 +41,7 @@ options CAM_DEBUG_FLAGS=(CAM_DEBUG_INFO|CAM_DEBUG_PROBE|CAM_DEBUG_PERIPH|CAM_DEB
 
 # pass(4) device
 device pass
+device		mmccam
 
 nodevice		mmc
 nodevice		mmcsd

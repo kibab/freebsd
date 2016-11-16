@@ -27,6 +27,7 @@ device		virtio_balloon		# VirtIO Memory Balloon device
 device		pass
 device		scbus
 device		da
+device		mmccam
 
 # Add CAMDEBUG stuff
 options CAMDEBUG
