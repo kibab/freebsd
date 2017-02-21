@@ -2221,10 +2221,10 @@ dev/mlx/mlx.c			optional mlx
 dev/mlx/mlx_disk.c		optional mlx
 dev/mlx/mlx_pci.c		optional mlx pci
 dev/mly/mly.c			optional mly
-dev/mmc/mmc.c			optional mmc
+dev/mmc/mmc.c			optional mmc !mmccam
 dev/mmc/mmcbr_if.m		standard
 dev/mmc/mmcbus_if.m		standard
-dev/mmc/mmcsd.c			optional mmcsd
+dev/mmc/mmcsd.c			optional mmcsd !mmccam
 dev/mmcnull/mmcnull.c		optional mmcnull
 dev/mn/if_mn.c			optional mn pci
 dev/mpr/mpr.c			optional mpr
