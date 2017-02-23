@@ -53,7 +53,7 @@
 # $FreeBSD$
 #
 
-#include <cam/mmc/mmcreg.h>
+#include <dev/mmc/mmcreg.h>
 #include <dev/mmc/bridge.h>
 
 #

@@ -63,7 +63,7 @@
 #define CAM_MMC_ALL_H
 
 #include <cam/mmc/mmc.h>
-#include <cam/mmc/mmcreg.h>
+#include <dev/mmc/mmcreg.h>
 
 void	mmc_print_ident(struct mmc_params *ident_data);
 

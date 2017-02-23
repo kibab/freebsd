@@ -57,7 +57,7 @@
 #ifndef CAM_MMC_H
 #define CAM_MMC_H
 
-#include <cam/mmc/mmcreg.h>
+#include <dev/mmc/mmcreg.h>
 /*
  * This structure describes an MMC/SD card
  */

@@ -45,7 +45,7 @@ __FBSDID("$FreeBSD$");
 #include <machine/stdarg.h>
 
 #include <dev/mmc/bridge.h>
-#include <cam/mmc/mmcreg.h>
+#include <dev/mmc/mmcreg.h>
 #include <dev/mmc/mmcbrvar.h>
 
 #include <cam/cam.h>
