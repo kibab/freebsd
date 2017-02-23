@@ -634,7 +634,6 @@ mmcprobe_start(struct cam_periph *periph, union ccb *start_ccb)
 		mmcio->cmd.opcode = MMC_GO_IDLE_STATE; /* CMD 0 */
 		mmcio->cmd.arg = 0;
 		mmcio->cmd.flags = MMC_RSP_NONE | MMC_CMD_BC;
-		mmcio->cmd.data->len = 0;
                 mmcio->stop.opcode = 0;
 
                 /* XXX Reset I/O portion as well */
@@ -661,7 +660,6 @@ mmcprobe_start(struct cam_periph *periph, union ccb *start_ccb)
 		mmcio->cmd.opcode = SD_SEND_IF_COND; /* CMD 8 */
 		mmcio->cmd.arg = (1 << 8) + 0xAA;
                 mmcio->cmd.flags = MMC_RSP_R7 | MMC_CMD_BCR;
-		mmcio->cmd.data->len = 0;
                 mmcio->stop.opcode = 0;
 		break;
 
@@ -672,7 +670,6 @@ mmcprobe_start(struct cam_periph *periph, union ccb *start_ccb)
                 mmcio->cmd.opcode = IO_SEND_OP_COND; /* CMD 5 */
                 mmcio->cmd.arg = mmcp->io_ocr;
                 mmcio->cmd.flags = MMC_RSP_R4;
-                mmcio->cmd.data->len = 0; mmcio->cmd.data->data = NULL;
                 mmcio->stop.opcode = 0;
                 break;
 
@@ -683,7 +680,6 @@ mmcprobe_start(struct cam_periph *periph, union ccb *start_ccb)
                 mmcio->cmd.opcode = MMC_SEND_OP_COND; /* CMD 1 */
                 mmcio->cmd.arg = MMC_OCR_HCS | mmcp->card_ocr; /* HCS + ocr */;
                 mmcio->cmd.flags = MMC_RSP_R3 | MMC_CMD_BCR;
-                mmcio->cmd.data->len = 0; mmcio->cmd.data->data = NULL;
                 mmcio->stop.opcode = 0;
                 break;
 
@@ -702,7 +698,6 @@ mmcprobe_start(struct cam_periph *periph, union ccb *start_ccb)
                         mmcio->cmd.arg = 0; /* rca << 16 */
                         mmcio->cmd.flags = MMC_RSP_R1 | MMC_CMD_AC;
                 }
-		mmcio->cmd.data->len = 0; mmcio->cmd.data->data = NULL;
                 mmcio->stop.opcode = 0;
 		break;
 
@@ -711,7 +706,6 @@ mmcprobe_start(struct cam_periph *periph, union ccb *start_ccb)
 		mmcio->cmd.opcode = MMC_ALL_SEND_CID;
 		mmcio->cmd.arg = 0;
 		mmcio->cmd.flags = MMC_RSP_R2 | MMC_CMD_BCR;
-		mmcio->cmd.data->len = 0; mmcio->cmd.data->data = NULL;
                 mmcio->stop.opcode = 0;
                 break;
 
@@ -720,7 +714,6 @@ mmcprobe_start(struct cam_periph *periph, union ccb *start_ccb)
 		mmcio->cmd.opcode = SD_SEND_RELATIVE_ADDR;
 		mmcio->cmd.arg = 0;
 		mmcio->cmd.flags = MMC_RSP_R6 | MMC_CMD_BCR;
-		mmcio->cmd.data->len = 0; mmcio->cmd.data->data = NULL;
                 mmcio->stop.opcode = 0;
                 break;
         case PROBE_SELECT_CARD:
@@ -728,7 +721,6 @@ mmcprobe_start(struct cam_periph *periph, union ccb *start_ccb)
 		mmcio->cmd.opcode = MMC_SELECT_CARD;
 		mmcio->cmd.arg = (uint32_t)path->device->mmc_ident_data.card_rca << 16;
 		mmcio->cmd.flags = MMC_RSP_R1B | MMC_CMD_AC;
-		mmcio->cmd.data->len = 0; mmcio->cmd.data->data = NULL;
                 mmcio->stop.opcode = 0;
                 break;
         case PROBE_GET_CSD: /* XXX move to mmc_da */
@@ -736,7 +728,6 @@ mmcprobe_start(struct cam_periph *periph, union ccb *start_ccb)
 		mmcio->cmd.opcode = MMC_SEND_CSD;
 		mmcio->cmd.arg = (uint32_t)path->device->mmc_ident_data.card_rca << 16;
 		mmcio->cmd.flags = MMC_RSP_R2 | MMC_CMD_BCR;
-		mmcio->cmd.data->len = 0; mmcio->cmd.data->data = NULL;
                 mmcio->stop.opcode = 0;
                 break;
         case PROBE_SET_BUS_WIDTH:
@@ -747,13 +738,11 @@ mmcprobe_start(struct cam_periph *periph, union ccb *start_ccb)
                         mmcio->cmd.opcode = MMC_APP_CMD; /* CMD 55 */
                         mmcio->cmd.arg = (uint32_t)path->device->mmc_ident_data.card_rca << 16;
                         mmcio->cmd.flags = MMC_RSP_R1 | MMC_CMD_AC;
-                        mmcio->cmd.data->len = 0; mmcio->cmd.data->data = NULL;
                         break;
                 }
                 mmcio->cmd.opcode = ACMD_SET_BUS_WIDTH; /* ACMD 6 */
                 mmcio->cmd.arg = 0x1 << 1; /* 4-bit mode */
                 mmcio->cmd.flags = MMC_RSP_R1 | MMC_CMD_AC;
-                mmcio->cmd.data->len = 0; mmcio->cmd.data->data = NULL;
                 mmcio->stop.opcode = 0;
                 break;
         case PROBE_SET_BUS_WIDTH_HOST:

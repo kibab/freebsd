@@ -1473,12 +1473,11 @@ cam_fill_mmcio(struct ccb_mmcio *mmcio, uint32_t retries,
 	mmcio->cmd.arg = mmc_arg;
 	mmcio->cmd.flags = mmc_flags;
         if (mmc_d != NULL) {
+		panic("This cannot work yet because data is a pointer");
                 mmcio->cmd.data->len = mmc_d->len;
                 mmcio->cmd.data->data = mmc_d->data;
                 mmcio->cmd.data->flags = mmc_d->flags;
         }
-        else
-                mmcio->cmd.data->len = 0;
         mmcio->cmd.resp[0] = 0;
         mmcio->cmd.resp[1] = 0;
         mmcio->cmd.resp[2] = 0;
