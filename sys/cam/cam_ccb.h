@@ -1473,7 +1473,9 @@ cam_fill_mmcio(struct ccb_mmcio *mmcio, uint32_t retries,
 	mmcio->cmd.arg = mmc_arg;
 	mmcio->cmd.flags = mmc_flags;
         if (mmc_d != NULL) {
-		panic("This cannot work yet because data is a pointer");
+#ifdef _KERNEL
+		KASSERT(mmcio->cmd.data != NULL, ("wanted to pass data to MMC but cmd.data is NULL"));
+#endif /*_KERNEL*/
                 mmcio->cmd.data->len = mmc_d->len;
                 mmcio->cmd.data->data = mmc_d->data;
                 mmcio->cmd.data->flags = mmc_d->flags;
