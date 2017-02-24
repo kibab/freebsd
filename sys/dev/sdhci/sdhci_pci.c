@@ -369,10 +369,8 @@ sdhci_pci_attach(device_t dev)
 	pci_enable_busmaster(dev);
 	/* Process cards detection. */
 	for (i = 0; i < sc->num_slots; i++) {
-		struct sdhci_slot *slot = &sc->slots[i];
-
 #ifdef MMCCAM
-		sdhci_cam_start_slot(slot);
+		sdhci_cam_start_slot(&sc->slots[i]);
 #else
 		sdhci_start_slot(&sc->slots[i]);
 #endif
