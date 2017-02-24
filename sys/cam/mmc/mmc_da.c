@@ -2,7 +2,7 @@
  * Copyright (c) 2006 Bernd Walter <tisco@FreeBSD.org>
  * Copyright (c) 2006 M. Warner Losh <imp@FreeBSD.org>
  * Copyright (c) 2009 Alexander Motin <mav@FreeBSD.org>
- * Copyright (c) 2015-2016 Ilya Bakulin <kibab@FreeBSD.org>
+ * Copyright (c) 2015-2017 Ilya Bakulin <kibab@FreeBSD.org>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -96,6 +96,7 @@ struct sdda_softc {
 	int	 refcount;		/* Active xpt_action() calls */
 	sdda_state state;
 	sdda_flags flags;
+	struct mmc_data *mmcdata;
 //	sdda_quirks quirks;
 	struct	 disk *disk;
         uint32_t raw_csd[4];
@@ -699,6 +700,8 @@ sddaregister(struct cam_periph *periph, void *arg)
 
 	bioq_init(&softc->bio_queue);
         softc->state = SDDA_STATE_INIT;
+	softc->mmcdata =
+		(struct mmc_data *) malloc(sizeof(struct mmc_data), M_DEVBUF, M_NOWAIT|M_ZERO);
 
 /*
 	if ((cgd->ident_data.capabilities1 & ATA_SUPPORT_DMA) &&
@@ -1012,6 +1015,7 @@ sddastart(struct cam_periph *periph, union ccb *start_ccb)
                         mmcio->cmd.arg <<= 9;
 
                 mmcio->cmd.flags = MMC_RSP_R1 | MMC_CMD_ADTC;
+		mmcio->cmd.data = softc->mmcdata;
                 mmcio->cmd.data->data = bp->bio_data;
                 mmcio->cmd.data->len = 512 * count;
                 mmcio->cmd.data->flags = (bp->bio_cmd == BIO_READ ? MMC_DATA_READ : MMC_DATA_WRITE);
