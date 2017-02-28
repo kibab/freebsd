@@ -1050,28 +1050,6 @@ mmcprobe_done(struct cam_periph *periph, union ccb *done_ccb)
 			PROBE_SET_ACTION(softc, PROBE_INVALID);
                         break;
                 }
-                /* Notify the system that the device is found! */
-		if (periph->path->device->flags & CAM_DEV_UNCONFIGURED) {
-			path->device->flags &= ~CAM_DEV_UNCONFIGURED;
-			xpt_acquire_device(path->device);
-			done_ccb->ccb_h.func_code = XPT_GDEV_TYPE;
-			xpt_action(done_ccb);
-			xpt_async(AC_FOUND_DEVICE, path, done_ccb);
-		}
-
-                struct mmc_params *mmcp = &path->device->mmc_ident_data;
-
-                for (int i = 0; i < mmcp->sdio_func_count; i++) {
-                        struct cam_path *newpath;
-                        cam_status status;
-                        status = xpt_create_path(&newpath, NULL,
-                                                 done_ccb->ccb_h.path_id, 0, i + 1);
-                        if (status != CAM_REQ_CMP)
-                                printf("xpt_create_path failed"
-                                       " with status %#x\n",
-                                       status);
-                        xpt_async(AC_FOUND_DEVICE, newpath, done_ccb);
-                }
 
                 PROBE_SET_ACTION(softc, PROBE_SET_BUS_WIDTH);
                 break;
@@ -1121,6 +1099,31 @@ mmcprobe_done(struct cam_periph *periph, union ccb *done_ccb)
 	int frozen = cam_release_devq(path, 0, 0, 0, FALSE);
         printf("mmc_probedone: remaining freezecnt %d\n", frozen);
 
+	if (softc->action == PROBE_DONE) {
+                /* Notify the system that the device is found! */
+		if (periph->path->device->flags & CAM_DEV_UNCONFIGURED) {
+			path->device->flags &= ~CAM_DEV_UNCONFIGURED;
+			xpt_acquire_device(path->device);
+			done_ccb->ccb_h.func_code = XPT_GDEV_TYPE;
+			xpt_action(done_ccb);
+			xpt_async(AC_FOUND_DEVICE, path, done_ccb);
+		}
+
+		/* Also announce each SDIO function */
+		struct mmc_params *mmcp = &path->device->mmc_ident_data;
+
+		for (int i = 0; i < mmcp->sdio_func_count; i++) {
+			struct cam_path *newpath;
+			cam_status status;
+			status = xpt_create_path(&newpath, NULL,
+						 done_ccb->ccb_h.path_id, 0, i + 1);
+			if (status != CAM_REQ_CMP)
+				printf("xpt_create_path failed"
+				       " with status %#x\n",
+				       status);
+			xpt_async(AC_FOUND_DEVICE, newpath, done_ccb);
+		}
+	}
         if (softc->action == PROBE_DONE || softc->action == PROBE_INVALID) {
                 cam_periph_invalidate(periph);
                 cam_periph_release_locked(periph);
