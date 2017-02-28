@@ -881,8 +881,8 @@ static void
 sdhci_req_done(struct sdhci_slot *slot)
 {
         union ccb *ccb;
-
-        slot_printf(slot, "sdhci_req_done()\n");
+	if (sdhci_debug > 1)
+		slot_printf(slot, "sdhci_req_done()\n");
 	if (slot->ccb != NULL && slot->curcmd != NULL) {
 		callout_stop(&slot->timeout_callout);
                 ccb = slot->ccb;
@@ -1037,7 +1037,8 @@ sdhci_start_command(struct sdhci_slot *slot, struct mmc_command *cmd)
 	WR4(slot, SDHCI_ARGUMENT, cmd->arg);
 	/* Set data transfer mode. */
 	sdhci_set_transfer_mode(slot, cmd->data);
-	slot_printf(slot, "Starting command!\n");
+	if (sdhci_debug > 1)
+		slot_printf(slot, "Starting command!\n");
 	/* Start command. */
 	WR2(slot, SDHCI_COMMAND_FLAGS, (cmd->opcode << 8) | (flags & 0xff));
 	/* Start timeout callout. */
@@ -1052,8 +1053,9 @@ sdhci_finish_command(struct sdhci_slot *slot)
 	uint32_t val;
 	uint8_t extra;
 
-	slot_printf(slot, "%s: called, err %d flags %d\n",
-		    __func__, slot->curcmd->error, slot->curcmd->flags);
+	if (sdhci_debug > 1)
+		slot_printf(slot, "%s: called, err %d flags %d\n",
+			    __func__, slot->curcmd->error, slot->curcmd->flags);
 	slot->cmd_done = 1;
 	/* Interrupt aggregation: Restore command interrupt.
 	 * Main restore point for the case when command interrupt
@@ -1085,9 +1087,10 @@ sdhci_finish_command(struct sdhci_slot *slot)
 		} else
 			slot->curcmd->resp[0] = RD4(slot, SDHCI_RESPONSE);
 	}
-	printf("Resp: %02x %02x %02x %02x\n",
-	       slot->curcmd->resp[0], slot->curcmd->resp[1],
-	       slot->curcmd->resp[2], slot->curcmd->resp[3]);
+	if (sdhci_debug > 1)
+		printf("Resp: %02x %02x %02x %02x\n",
+		       slot->curcmd->resp[0], slot->curcmd->resp[1],
+		       slot->curcmd->resp[2], slot->curcmd->resp[3]);
 
 	/* If data ready - finish. */
 	if (slot->data_done)
@@ -1170,9 +1173,10 @@ sdhci_start_data(struct sdhci_slot *slot, struct mmc_data *data)
 	/* Set block count. */
 	WR2(slot, SDHCI_BLOCK_COUNT, (data->len + 511) / 512);
 
-        slot_printf(slot, "Block size: %02x, count %d\n",
-                    SDHCI_MAKE_BLKSZ(DMA_BOUNDARY, (data->len < 512)?data->len:512),
-                (data->len + 511) / 512);
+if (sdhci_debug > 1)
+	slot_printf(slot, "Block size: %02x, count %d\n",
+		    SDHCI_MAKE_BLKSZ(DMA_BOUNDARY, (data->len < 512)?data->len:512),
+		    (data->len + 511) / 512);
 }
 
 void
@@ -1727,8 +1731,6 @@ sdhci_cam_action(struct cam_sim *sim, union ccb *ccb)
 
 	mtx_assert(&slot->sim_mtx, MA_OWNED);
 
-	slot_printf(slot, "action: func_code %0x\n", ccb->ccb_h.func_code);
-
 	switch (ccb->ccb_h.func_code) {
 	case XPT_PATH_INQ:
 	{
@@ -1761,7 +1763,8 @@ sdhci_cam_action(struct cam_sim *sim, union ccb *ccb)
 	{
 		struct ccb_trans_settings *cts = &ccb->cts;
 
-		slot_printf(slot, "Got XPT_GET_TRAN_SETTINGS\n");
+		if (sdhci_debug > 1)
+			slot_printf(slot, "Got XPT_GET_TRAN_SETTINGS\n");
 
 		cts->protocol = PROTO_MMCSD;
 		cts->protocol_version = 0;
@@ -1775,12 +1778,14 @@ sdhci_cam_action(struct cam_sim *sim, union ccb *ccb)
 		break;
 	}
 	case XPT_SET_TRAN_SETTINGS:
-                slot_printf(slot, "Got XPT_SET_TRAN_SETTINGS, should update IOS...\n");
+		if (sdhci_debug > 1)
+			slot_printf(slot, "Got XPT_SET_TRAN_SETTINGS, should update IOS...\n");
                 sdhci_cam_settran_settings(slot, ccb); /* ah wtf with ti_sdhci ?!*/
 		ccb->ccb_h.status = CAM_REQ_CMP;
 		break;
 	case XPT_RESET_BUS:
-		slot_printf(slot, "Got XPT_RESET_BUS, ACK it...\n");
+		if (sdhci_debug > 1)
+			slot_printf(slot, "Got XPT_RESET_BUS, ACK it...\n");
 		ccb->ccb_h.status = CAM_REQ_CMP;
 		break;
 	case XPT_MMC_IO:
@@ -1790,7 +1795,8 @@ sdhci_cam_action(struct cam_sim *sim, union ccb *ccb)
 		 * At some point in the future an interrupt comes.
 		 * Then the request will be marked as completed.
 		 */
-                slot_printf(slot, "Got XPT_MMC_IO\n");
+		if (sdhci_debug > 1)
+			slot_printf(slot, "Got XPT_MMC_IO\n");
 		ccb->ccb_h.status = CAM_REQ_INPROG;
 
 		sdhci_cam_handle_mmcio(sim, ccb);
