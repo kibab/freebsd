@@ -372,9 +372,8 @@ mmcnull_action_sd(struct cam_sim *sim, union ccb *ccb)
                 cts->transport = XPORT_MMCSD;
                 cts->transport_version = 0;
                 cts->xport_specific.valid = 0;
-// Pending full merge: the following two fields are not here yet..
-//		mcts->host_f_max = 12000000;
-//		mcts->host_f_min = 200000;
+		mcts->host_f_max = 12000000;
+		mcts->host_f_min = 200000;
 		mcts->host_ocr = 1; /* Fix this */
                 ccb->ccb_h.status = CAM_REQ_CMP;
                 break;
