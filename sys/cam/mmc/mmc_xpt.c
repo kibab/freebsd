@@ -630,10 +630,12 @@ mmcprobe_start(struct cam_periph *periph, union ccb *start_ccb)
 		xpt_action(start_ccb);
 		mtx_sleep(periph, p_mtx, 0, "mmcios", 1);
 
+		CAM_DEBUG(start_ccb->ccb_h.path, CAM_DEBUG_PROBE, ("Send first XPT_MMC_IO\n"));
 		init_standard_ccb(start_ccb, XPT_MMC_IO);
 		mmcio->cmd.opcode = MMC_GO_IDLE_STATE; /* CMD 0 */
 		mmcio->cmd.arg = 0;
 		mmcio->cmd.flags = MMC_RSP_NONE | MMC_CMD_BC;
+		mmcio->cmd.data = NULL;
                 mmcio->stop.opcode = 0;
 
                 /* XXX Reset I/O portion as well */
