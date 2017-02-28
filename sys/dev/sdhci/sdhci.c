@@ -974,7 +974,7 @@ sdhci_start_command(struct sdhci_slot *slot, struct mmc_command *cmd)
 	/* Always wait for free CMD bus. */
 	mask = SDHCI_CMD_INHIBIT;
 	/* Wait for free DAT if we have data or busy signal. */
-	if (cmd->data->len > 0 || (cmd->flags & MMC_RSP_BUSY))
+	if (cmd->data != NULL || (cmd->flags & MMC_RSP_BUSY))
 		mask |= SDHCI_DAT_INHIBIT;
 	/* We shouldn't wait for DAT for stop commands. */
         struct ccb_mmcio *mmcio = &slot->ccb->mmcio;
@@ -1018,7 +1018,7 @@ sdhci_start_command(struct sdhci_slot *slot, struct mmc_command *cmd)
 		flags |= SDHCI_CMD_CRC;
 	if (cmd->flags & MMC_RSP_OPCODE)
 		flags |= SDHCI_CMD_INDEX;
-	if (cmd->data->len > 0)
+	if (cmd->data != NULL)
 		flags |= SDHCI_CMD_DATA;
 	if (cmd->opcode == MMC_STOP_TRANSMISSION)
 		flags |= SDHCI_CMD_TYPE_ABORT;
@@ -1100,7 +1100,7 @@ sdhci_start_data(struct sdhci_slot *slot, struct mmc_data *data)
 	uint32_t target_timeout, current_timeout;
 	uint8_t div;
 
-	if (data->len == 0 && (slot->curcmd->flags & MMC_RSP_BUSY) == 0) {
+	if (data == NULL && (slot->curcmd->flags & MMC_RSP_BUSY) == 0) {
 		slot->data_done = 1;
 		return;
 	}
@@ -1352,7 +1352,7 @@ sdhci_data_irq(struct sdhci_slot *slot, uint32_t intmask)
 		sdhci_dumpregs(slot);
 		return;
 	}
-	if (slot->curcmd->data->len == 0 &&
+	if (slot->curcmd->data == NULL &&
 	    (slot->curcmd->flags & MMC_RSP_BUSY) == 0) {
 		slot_printf(slot, "Got data interrupt 0x%08x, but "
 		    "there is no active data operation.\n",
@@ -1364,7 +1364,7 @@ sdhci_data_irq(struct sdhci_slot *slot, uint32_t intmask)
 		slot->curcmd->error = MMC_ERR_TIMEOUT;
 	else if (intmask & (SDHCI_INT_DATA_CRC | SDHCI_INT_DATA_END_BIT))
 		slot->curcmd->error = MMC_ERR_BADCRC;
-	if (slot->curcmd->data->len == 0 &&
+	if (slot->curcmd->data == NULL &&
 	    (intmask & (SDHCI_INT_DATA_AVAIL | SDHCI_INT_SPACE_AVAIL |
 	    SDHCI_INT_DMA_END))) {
 		slot_printf(slot, "Got data interrupt 0x%08x, but "
@@ -1900,8 +1900,8 @@ sdhci_cam_request(struct sdhci_slot *slot, union ccb *ccb)
 	if (sdhci_debug > 1) {
 		slot_printf(slot, "CMD%u arg %#x flags %#x dlen %u dflags %#x\n",
                             mmcio->cmd.opcode, mmcio->cmd.arg, mmcio->cmd.flags,
-                            mmcio->cmd.data->len,
-                            mmcio->cmd.data->flags);
+                            mmcio->cmd.data != NULL ? mmcio->cmd.data->len : 0,
+                            mmcio->cmd.data != NULL ? mmcio->cmd.data->flags: 0);
 	}
 	slot->ccb = ccb;
 	slot->flags = 0;
