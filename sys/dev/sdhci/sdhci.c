@@ -58,6 +58,8 @@ __FBSDID("$FreeBSD$");
 #include "sdhci.h"
 #include "sdhci_if.h"
 
+#include "opt_mmccam.h"
+
 SYSCTL_NODE(_hw, OID_AUTO, sdhci, CTLFLAG_RD, 0, "sdhci driver");
 
 static int sdhci_debug = 10;
