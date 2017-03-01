@@ -877,6 +877,7 @@ sdhci_generic_update_ios(device_t brdev, device_t reqdev)
 	return (0);
 }
 
+#ifdef MMCCAM
 static void
 sdhci_req_done(struct sdhci_slot *slot)
 {
@@ -898,6 +899,21 @@ sdhci_req_done(struct sdhci_slot *slot)
                 xpt_done(ccb);
 	}
 }
+#else
+static void 
+sdhci_req_done(struct sdhci_slot *slot)
+{
+	struct mmc_request *req;
+
+	if (slot->req != NULL && slot->curcmd != NULL) {
+		callout_stop(&slot->timeout_callout);
+		req = slot->req;
+		slot->req = NULL;
+		slot->curcmd = NULL;
+		req->done(req);
+	}
+}
+#endif
 
 static void
 sdhci_timeout(void *arg)
@@ -919,19 +935,24 @@ static void
 sdhci_set_transfer_mode(struct sdhci_slot *slot, struct mmc_data *data)
 {
 	uint16_t mode;
-        struct ccb_mmcio *mmcio;
 
 	if (data == NULL)
 		return;
 
-        mmcio = &slot->ccb->mmcio;
 	mode = SDHCI_TRNS_BLK_CNT_EN;
 	if (data->len > 512)
 		mode |= SDHCI_TRNS_MULTI;
 	if (data->flags & MMC_DATA_READ)
 		mode |= SDHCI_TRNS_READ;
+#ifdef MMCCAM
+	struct ccb_mmcio *mmcio;
+	mmcio = &slot->ccb->mmcio;
 	if (mmcio->stop.opcode == MMC_STOP_TRANSMISSION)
 		mode |= SDHCI_TRNS_ACMD12;
+#else
+	if (slot->req->stop)
+		mode |= SDHCI_TRNS_ACMD12;
+#endif
 	if (slot->flags & SDHCI_USE_DMA)
 		mode |= SDHCI_TRNS_DMA;
 
@@ -977,10 +998,14 @@ sdhci_start_command(struct sdhci_slot *slot, struct mmc_command *cmd)
 	if (cmd->data != NULL || (cmd->flags & MMC_RSP_BUSY))
 		mask |= SDHCI_DAT_INHIBIT;
 	/* We shouldn't wait for DAT for stop commands. */
-        struct ccb_mmcio *mmcio = &slot->ccb->mmcio;
+#ifdef MMCCAM
+	struct ccb_mmcio *mmcio = &slot->ccb->mmcio;
 	if (cmd == &mmcio->stop)
 		mask &= ~SDHCI_DAT_INHIBIT;
-
+#else
+	if (cmd == slot->req->stop)
+		mask &= ~SDHCI_DAT_INHIBIT;
+#endif
 	/*
 	 *  Wait for bus no more then 250 ms.  Typically there will be no wait
 	 *  here at all, but when writing a crash dump we may be bypassing the
@@ -1217,6 +1242,7 @@ sdhci_finish_data(struct sdhci_slot *slot)
 		sdhci_start(slot);
 }
 
+#ifdef MMCCAM
 static void
 sdhci_start(struct sdhci_slot *slot)
 {
@@ -1251,6 +1277,39 @@ sdhci_start(struct sdhci_slot *slot)
 
 	sdhci_req_done(slot);
 }
+#else
+static void
+sdhci_start(struct sdhci_slot *slot)
+{
+	struct mmc_request *req;
+
+	req = slot->req;
+	if (req == NULL)
+		return;
+
+	if (!(slot->flags & CMD_STARTED)) {
+		slot->flags |= CMD_STARTED;
+		sdhci_start_command(slot, req->cmd);
+		return;
+	}
+/* 	We don't need this until using Auto-CMD12 feature
+	if (!(slot->flags & STOP_STARTED) && req->stop) {
+		slot->flags |= STOP_STARTED;
+		sdhci_start_command(slot, req->stop);
+		return;
+	}
+*/
+	if (sdhci_debug > 1)
+		slot_printf(slot, "result: %d\n", req->cmd->error);
+	if (!req->cmd->error &&
+	    (slot->quirks & SDHCI_QUIRK_RESET_AFTER_REQUEST)) {
+		sdhci_reset(slot, SDHCI_RESET_CMD);
+		sdhci_reset(slot, SDHCI_RESET_DATA);
+	}
+
+	sdhci_req_done(slot);
+}
+#endif
 
 int
 sdhci_generic_request(device_t brdev __unused, device_t reqdev,
