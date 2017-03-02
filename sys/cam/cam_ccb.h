@@ -1478,6 +1478,9 @@ cam_fill_mmcio(struct ccb_mmcio *mmcio, uint32_t retries,
 	mmcio->cmd.opcode = mmc_opcode;
 	mmcio->cmd.arg = mmc_arg;
 	mmcio->cmd.flags = mmc_flags;
+	mmcio->stop.opcode = 0;
+	mmcio->stop.arg = 0;
+	mmcio->stop.flags = 0;
         if (mmc_d != NULL) {
 #ifdef _KERNEL
 		KASSERT(mmcio->cmd.data != NULL, ("wanted to pass data to MMC but cmd.data is NULL"));
