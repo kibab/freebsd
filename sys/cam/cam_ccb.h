@@ -1040,6 +1040,10 @@ struct ccb_trans_settings_mmc {
 	uint32_t	host_ocr;
 	int host_f_min;
 	int host_f_max;
+#define MMC_CAP_4_BIT_DATA	(1 << 0) /* Can do 4-bit data transfers */
+#define MMC_CAP_8_BIT_DATA	(1 << 1) /* Can do 8-bit data transfers */
+#define MMC_CAP_HSPEED		(1 << 2) /* Can do High Speed transfers */
+	uint32_t host_caps;
 };
 
 /* Get/Set transfer rate/width/disconnection/tag queueing settings */
