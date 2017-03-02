@@ -7427,7 +7427,7 @@ mmcsdcmd(struct cam_device *device, int argc, char **argv, char *combinedopt,
                 mmc_d.len = mmc_data_len;
                 mmc_d.data = mmc_data;
                 mmc_d.flags = MMC_DATA_READ;
-        }
+        } else flags |= CAM_DIR_NONE;
 
 	cam_fill_mmcio(&ccb->mmcio,
 		       /*retries*/ retry_count,
