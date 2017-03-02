@@ -102,8 +102,6 @@ typedef enum {
         PROBE_GET_CSD,
         PROBE_SEND_RELATIVE_ADDR,
         PROBE_SELECT_CARD,
-        PROBE_SET_BUS_WIDTH,
-        PROBE_SET_BUS_WIDTH_HOST,
 	PROBE_DONE,
 	PROBE_INVALID
 } probe_action;
@@ -120,8 +118,6 @@ static char *probe_action_text[] = {
         "PROBE_GET_CSD",
         "PROBE_SEND_RELATIVE_ADDR",
         "PROBE_SELECT_CARD",
-        "PROBE_SET_BUS_WIDTH",
-        "PROBE_SET_BUS_WIDTH_HOST",
 	"PROBE_DONE",
 	"PROBE_INVALID"
 };
@@ -732,28 +728,6 @@ mmcprobe_start(struct cam_periph *periph, union ccb *start_ccb)
 		mmcio->cmd.flags = MMC_RSP_R2 | MMC_CMD_BCR;
                 mmcio->stop.opcode = 0;
                 break;
-        case PROBE_SET_BUS_WIDTH:
-                /* This only works for SD cards, for MMC see mmc.c:725 */
-                /* TODO: need to reset CD bit, does it work at all w/o that??? */
-		init_standard_ccb(start_ccb, XPT_MMC_IO);
-                if (!(softc->flags & PROBE_FLAG_ACMD_SENT)) {
-                        mmcio->cmd.opcode = MMC_APP_CMD; /* CMD 55 */
-                        mmcio->cmd.arg = (uint32_t)path->device->mmc_ident_data.card_rca << 16;
-                        mmcio->cmd.flags = MMC_RSP_R1 | MMC_CMD_AC;
-                        break;
-                }
-                mmcio->cmd.opcode = ACMD_SET_BUS_WIDTH; /* ACMD 6 */
-                mmcio->cmd.arg = 0x1 << 1; /* 4-bit mode */
-                mmcio->cmd.flags = MMC_RSP_R1 | MMC_CMD_AC;
-                mmcio->stop.opcode = 0;
-                break;
-        case PROBE_SET_BUS_WIDTH_HOST:
-                        init_standard_ccb(start_ccb, XPT_SET_TRAN_SETTINGS);
-                        cts->ios.bus_width = bus_width_4;
-                        cts->ios_valid = MMC_BW;
-                        xpt_action(start_ccb);
-                        PROBE_SET_ACTION(softc, PROBE_DONE);
-                        /* ... and proceed to PROBE_DONE */
 	case PROBE_DONE:
 		CAM_DEBUG(start_ccb->ccb_h.path, CAM_DEBUG_PROBE, ("Start with PROBE_DONE\n"));
 		init_standard_ccb(start_ccb, XPT_SET_TRAN_SETTINGS);
@@ -1051,32 +1025,7 @@ mmcprobe_done(struct cam_periph *periph, union ccb *done_ccb)
                         break;
                 }
 
-                PROBE_SET_ACTION(softc, PROBE_SET_BUS_WIDTH);
-                break;
-        }
-        case PROBE_SET_BUS_WIDTH: {
-		mmcio = &done_ccb->mmcio;
-		err = mmcio->cmd.error;
-
-		if (err != MMC_ERR_NONE) {
-			CAM_DEBUG(done_ccb->ccb_h.path, CAM_DEBUG_PROBE,
-				  ("APP_BUS_WIDTH: error %d, resp %08x\n",
-				   err, mmcio->cmd.resp[0]));
-			PROBE_SET_ACTION(softc, PROBE_DONE);
-                        break;
-                }
-
-                if (!(softc->flags & PROBE_FLAG_ACMD_SENT)) {
-                        /* Don't change the state */
-                        softc->flags |= PROBE_FLAG_ACMD_SENT;
-                        break;
-                }
-
-                softc->flags &= ~PROBE_FLAG_ACMD_SENT;
-
-                CAM_DEBUG(done_ccb->ccb_h.path, CAM_DEBUG_PROBE,
-                          ("Bus width set to 4 bit: resp %08x\n",  mmcio->cmd.resp[0]));
-                PROBE_SET_ACTION(softc, PROBE_SET_BUS_WIDTH_HOST);
+		PROBE_SET_ACTION(softc, PROBE_DONE);
                 break;
         }
 	default:
