@@ -860,10 +860,10 @@ mmc_exec_app_cmd(struct cam_periph *periph, union ccb *ccb,
 	struct mmc_command *cmd) {
 //	struct sdda_softc* softc = (struct sdda_softc*) periph->softc;
 	int err;
-	struct mmc_data d;
 
 	/* Send APP_CMD first */
 	memset(&ccb->mmcio.cmd, 0, sizeof(struct mmc_command));
+	memset(&ccb->mmcio.stop, 0, sizeof(struct mmc_command));
 	cam_fill_mmcio(&ccb->mmcio,
 		       /*retries*/ 0,
 		       /*cbfcnp*/ NULL,
@@ -883,7 +883,7 @@ mmc_exec_app_cmd(struct cam_periph *periph, union ccb *ccb,
 	/* Now exec actual command */
 	int flags = 0;
 	if (cmd->data != NULL) {
-		ccb->mmcio.cmd.data = &d;
+		ccb->mmcio.cmd.data = cmd->data;
 		if (cmd->data->flags & MMC_DATA_READ)
 			flags |= CAM_DIR_IN;
 		if (cmd->data->flags & MMC_DATA_WRITE)
