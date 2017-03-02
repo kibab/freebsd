@@ -1836,6 +1836,9 @@ sdhci_cam_action(struct cam_sim *sim, union ccb *ccb)
 		cts->proto_specific.mmc.host_ocr = slot->host.host_ocr;
 		cts->proto_specific.mmc.host_f_min = slot->host.f_min;
 		cts->proto_specific.mmc.host_f_max = slot->host.f_max;
+		cts->proto_specific.mmc.host_caps = slot->host.caps;
+		slot_printf(slot, "width=%d, timing=%d\n", slot->host.ios.bus_width, slot->host.ios.timing);
+		memcpy(&cts->proto_specific.mmc.ios, &slot->host.ios, sizeof(struct mmc_ios));
 		ccb->ccb_h.status = CAM_REQ_CMP;
 		break;
 	}
@@ -1892,22 +1895,34 @@ sdhci_cam_settran_settings(struct sdhci_slot *slot, union ccb *ccb)
 	new_ios = &cts->ios;
 
 	/* Update only requested fields */
-	if (cts->ios_valid & MMC_CLK)
+	if (cts->ios_valid & MMC_CLK) {
 		ios->clock = new_ios->clock;
+		slot_printf(slot, "Clock => %d\n", ios->clock);
+	}
 	if (cts->ios_valid & MMC_VDD) {
 		ios->vdd = new_ios->vdd;
 		slot_printf(slot, "VDD => %d\n", ios->vdd);
 	}
-	if (cts->ios_valid & MMC_CS)
+	if (cts->ios_valid & MMC_CS) {
 		ios->chip_select = new_ios->chip_select;
-	if (cts->ios_valid & MMC_BW)
+		slot_printf(slot, "CS => %d\n", ios->chip_select);
+	}
+	if (cts->ios_valid & MMC_BW) {
 		ios->bus_width = new_ios->bus_width;
-	if (cts->ios_valid & MMC_PM)
+		slot_printf(slot, "Bus width => %d\n", ios->bus_width);
+	}
+	if (cts->ios_valid & MMC_PM) {
 		ios->power_mode = new_ios->power_mode;
-	if (cts->ios_valid & MMC_BT)
+		slot_printf(slot, "Power mode => %d\n", ios->power_mode);
+	}
+	if (cts->ios_valid & MMC_BT) {
 		ios->timing = new_ios->timing;
-	if (cts->ios_valid & MMC_BM)
+		slot_printf(slot, "Timing => %d\n", ios->timing);
+	}
+	if (cts->ios_valid & MMC_BM) {
 		ios->bus_mode = new_ios->bus_mode;
+		slot_printf(slot, "Bus mode => %d\n", ios->bus_mode);
+	}
 
         /* XXX Provide a way to call a chip-specific IOS update, required for TI */
 	return (sdhci_cam_update_ios(slot));
