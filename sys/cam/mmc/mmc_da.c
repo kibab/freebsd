@@ -863,6 +863,7 @@ mmc_exec_app_cmd(struct cam_periph *periph, union ccb *ccb,
 	struct mmc_data d;
 
 	/* Send APP_CMD first */
+	memset(&ccb->mmcio.cmd, 0, sizeof(struct mmc_command));
 	cam_fill_mmcio(&ccb->mmcio,
 		       /*retries*/ 0,
 		       /*cbfcnp*/ NULL,
