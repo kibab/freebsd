@@ -1988,6 +1988,11 @@ sdhci_cam_request(struct sdhci_slot *slot, union ccb *ccb)
                             mmcio->cmd.data != NULL ? mmcio->cmd.data->len : 0,
                             mmcio->cmd.data != NULL ? mmcio->cmd.data->flags: 0);
 	}
+	if (mmcio->cmd.data != NULL) {
+		if (mmcio->cmd.data->len == 0 || mmcio->cmd.data->flags == 0)
+			panic("data->len = %d, data->flags = %d -- something is b0rked",
+			      mmcio->cmd.data->len, mmcio->cmd.data->flags);
+	}
 	slot->ccb = ccb;
 	slot->flags = 0;
 	sdhci_start(slot);
