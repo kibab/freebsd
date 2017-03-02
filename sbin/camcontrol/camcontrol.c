@@ -60,6 +60,7 @@ __FBSDID("$FreeBSD$");
 #include <cam/scsi/scsi_message.h>
 #include <cam/scsi/smp_all.h>
 #include <cam/ata/ata_all.h>
+#include <cam/mmc/mmc_all.h>
 #include <camlib.h>
 #include "camcontrol.h"
 
@@ -206,7 +207,7 @@ static struct camcontrol_opts option_table[] = {
 	{"reset", CAM_CMD_RESET, CAM_ARG_NONE, NULL},
 #ifndef MINIMALISTIC
 	{"cmd", CAM_CMD_SCSI_CMD, CAM_ARG_NONE, scsicmd_opts},
-	{"mmcsdcmd", CAM_CMD_MMCSD_CMD, CAM_ARG_NONE, "c:a:f:Wb:l:41S:"},
+	{"mmcsdcmd", CAM_CMD_MMCSD_CMD, CAM_ARG_NONE, "c:a:f:Wb:l:41S:I"},
 	{"command", CAM_CMD_SCSI_CMD, CAM_ARG_NONE, scsicmd_opts},
 	{"smpcmd", CAM_CMD_SMP_CMD, CAM_ARG_NONE, "r:R:"},
 	{"smprg", CAM_CMD_SMP_RG, CAM_ARG_NONE, smprg_opts},
@@ -7260,6 +7261,7 @@ mmcsdcmd(struct cam_device *device, int argc, char **argv, char *combinedopt,
         int is_write = 0;
         int is_bw_4 = 0, is_bw_1 = 0;
         int is_highspeed = 0, is_stdspeed = 0;
+	int is_info_request = 0;
 	int flags = 0;
         uint8_t mmc_data_byte;
 
@@ -7295,6 +7297,9 @@ mmcsdcmd(struct cam_device *device, int argc, char **argv, char *combinedopt,
                         else
                                 is_stdspeed = 1;
                         break;
+		case 'I':
+			is_info_request = 1;
+			break;
                 case 'c':
                         mmc_opcode = strtol(optarg, NULL, 0);
 			if (mmc_opcode < 0) {
@@ -7417,6 +7422,46 @@ mmcsdcmd(struct cam_device *device, int argc, char **argv, char *combinedopt,
                 cam_freeccb(ccb);
                 return (retval);
         }
+
+	// Get information about controller and its settings
+	if (is_info_request) {
+		ccb->ccb_h.func_code = XPT_GET_TRAN_SETTINGS;
+		ccb->ccb_h.flags = 0;
+		struct ccb_trans_settings_mmc *cts;
+		cts = &ccb->cts.proto_specific.mmc;
+		if (((retval = cam_send_ccb(device, ccb)) < 0)
+		    || ((ccb->ccb_h.status & CAM_STATUS_MASK) != CAM_REQ_CMP)) {
+			warn("Error sending command");
+			return (retval);
+		}
+		printf("Host controller information\n");
+		printf("Host OCR: 0x%x\n", cts->host_ocr);
+		printf("Min frequency: %u KHz\n", cts->host_f_min / 1000);
+		printf("Max frequency: %u MHz\n", cts->host_f_max / 1000000);
+		printf("Supported bus width: ");
+		if (cts->host_caps & MMC_CAP_4_BIT_DATA)
+			printf(" 4 bit\n");
+		if (cts->host_caps & MMC_CAP_8_BIT_DATA)
+			printf(" 8 bit\n");
+		printf("\nCurrent settings:\n");
+		printf("Bus width: ");
+		switch (cts->ios.bus_width) {
+		case bus_width_1:
+			printf("1 bit\n");
+			break;
+		case bus_width_4:
+			printf("4 bit\n");
+			break;
+		case bus_width_8:
+			printf("8 bit\n");
+			break;
+		}
+		printf("Freq: %d.%03d MHz%s\n",
+		       cts->ios.clock / 1000000,
+		       (cts->ios.clock / 1000) % 1000,
+		       cts->ios.timing == bus_timing_hs ? "(high-speed timing)" : "");
+		return (0);
+	}
 
         printf("CMD %d arg %d flags %02x\n", mmc_opcode, mmc_arg, mmc_flags);
 
