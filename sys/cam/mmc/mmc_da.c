@@ -982,7 +982,7 @@ mmc_sd_switch(struct cam_periph *periph, union ccb *ccb,
 		return 0; /* Normal return */
 	} else {
 		CAM_DEBUG(ccb->ccb_h.path, CAM_DEBUG_PERIPH,
-			  ("%s: CAM request failed", __func__));
+			  ("%s: CAM request failed\n", __func__));
 		return EIO;
 	}
 }
@@ -1002,6 +1002,44 @@ sdda_start_init_task(void *context, int pending) {
 	sdda_start_init(context, new_ccb);
 	cam_periph_unlock(periph);
 	xpt_free_ccb(new_ccb);
+}
+
+static void
+sdda_set_bus_width(struct cam_periph *periph, union ccb *ccb, int width) {
+	struct mmc_params *mmcp = &periph->path->device->mmc_ident_data;
+	int err;
+
+	CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("sdda_set_bus_width\n"));
+
+	/* First set for the card, then for the host */
+	if (mmcp->card_features & CARD_FEATURE_MMC) {
+		CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH, ("Not implemented for MMC\n"));
+		return;
+	} else {
+		/* For SD cards we send ACMD6 with the required bus width in arg */
+		struct mmc_command cmd;
+		memset(&cmd, 0, sizeof(struct mmc_command));
+		cmd.opcode = ACMD_SET_BUS_WIDTH;
+		cmd.arg = width;
+		cmd.flags = MMC_RSP_R1 | MMC_CMD_AC;
+		err = mmc_exec_app_cmd(periph, ccb, &cmd);
+		if (err != MMC_ERR_NONE) {
+			CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH, ("Error %d when setting bus width on the card\n", err));
+			return;
+		}
+	}
+
+	/* Now card is done, set the host to the same width */
+	struct ccb_trans_settings_mmc *cts;
+	cts = &ccb->cts.proto_specific.mmc;
+	ccb->ccb_h.func_code = XPT_SET_TRAN_SETTINGS;
+	ccb->ccb_h.flags = CAM_DIR_NONE;
+	ccb->ccb_h.retry_count = 0;
+	ccb->ccb_h.timeout = 100;
+	ccb->ccb_h.cbfcnp = NULL;
+	cts->ios.bus_width = width;
+	cts->ios_valid = MMC_BW;
+	xpt_action(ccb);
 }
 
 static void
@@ -1069,6 +1107,9 @@ sdda_start_init(void *context, union ccb *start_ccb) {
 
 	if (start_ccb->ccb_h.status != CAM_REQ_CMP)
 		panic("Cannot get max host freq");
+	int host_f_max = cts->host_f_max;
+	if (cts->ios.bus_width != bus_width_1)
+		panic("Bus width in ios is not 1-bit");
 
 	/* Now check if the card supports High-speed */
 	softc->card_f_max = softc->csd.tran_speed;
@@ -1093,8 +1134,8 @@ sdda_start_init(void *context, union ccb *start_ccb) {
 			CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH, ("Not trying the switch\n"));
 	}
 
-	int f_max = min(cts->host_f_max, softc->card_f_max);
-	CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH, ("Set SD freq to %d MHz (min out of host f=%d MHz and card f=%d MHz)\n", f_max  / 1000000, cts->host_f_max / 1000000, softc->card_f_max / 1000000));
+	int f_max = min(host_f_max, softc->card_f_max);
+	CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH, ("Set SD freq to %d MHz (min out of host f=%d MHz and card f=%d MHz)\n", f_max  / 1000000, host_f_max / 1000000, softc->card_f_max / 1000000));
 
 	start_ccb->ccb_h.func_code = XPT_SET_TRAN_SETTINGS;
 	start_ccb->ccb_h.flags = CAM_DIR_NONE;
@@ -1105,6 +1146,9 @@ sdda_start_init(void *context, union ccb *start_ccb) {
 	cts->ios_valid = MMC_CLK;
 	xpt_action(start_ccb);
 
+	/* Set width to 4 bits */
+	/* TODO: figure out max supported width */
+	sdda_set_bus_width(periph, start_ccb, bus_width_4);
 	/* TODO: Implement mmc_set_timing() */
 	softc->state = SDDA_STATE_NORMAL;
 	sdda_hook_into_geom(periph);
