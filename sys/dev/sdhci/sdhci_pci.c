@@ -26,6 +26,8 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
+#include "opt_mmccam.h"
+
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/bus.h>
@@ -369,9 +371,11 @@ sdhci_pci_attach(device_t dev)
 	for (i = 0; i < sc->num_slots; i++) {
 		struct sdhci_slot *slot = &sc->slots[i];
 
-// Needed? XXXimpXXX
-//		sdhci_start_slot(&sc->slots[i]);
+#ifdef MMCCAM
 		sdhci_cam_start_slot(slot);
+#else
+		sdhci_start_slot(&sc->slots[i]);
+#endif
 	}
 
 	return (0);

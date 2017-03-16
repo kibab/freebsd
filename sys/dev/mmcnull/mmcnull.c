@@ -222,7 +222,7 @@ mmcnull_intr(void *xsc)
                 break;
         case MMC_READ_SINGLE_BLOCK:
         case MMC_READ_MULTIPLE_BLOCK:
-                strcpy(mmcio->cmd.data.data, "WTF?!");
+                strcpy(mmcio->cmd.data->data, "WTF?!");
                 break;
         default:
                 device_printf(sc->dev, "mmcnull_intr: unknown command\n");

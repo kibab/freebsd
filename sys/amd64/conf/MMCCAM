@@ -29,6 +29,7 @@ device		scbus
 device		da
 device		mmccam
 
+options	MMCCAM
 # Add CAMDEBUG stuff
 options CAMDEBUG
 options CAM_DEBUG_FLAGS=(CAM_DEBUG_INFO|CAM_DEBUG_PROBE|CAM_DEBUG_PERIPH|CAM_DEBUG_TRACE)
