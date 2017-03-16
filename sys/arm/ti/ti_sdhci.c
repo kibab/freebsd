@@ -50,7 +50,7 @@ __FBSDID("$FreeBSD$");
 #include <dev/ofw/ofw_bus_subr.h>
 
 #include <dev/mmc/bridge.h>
-#include <cam/mmc/mmcreg.h>
+#include <dev/mmc/mmcreg.h>
 #include <dev/mmc/mmcbrvar.h>
 
 #include <dev/sdhci/sdhci.h>
@@ -61,6 +61,8 @@ __FBSDID("$FreeBSD$");
 #include <arm/ti/ti_prcm.h>
 #include <arm/ti/ti_hwmods.h>
 #include "gpio_if.h"
+
+#include "opt_mmccam.h"
 
 struct ti_sdhci_softc {
 	device_t		dev;
@@ -660,8 +662,11 @@ ti_sdhci_attach(device_t dev)
 	bus_generic_probe(dev);
 	bus_generic_attach(dev);
 
+#ifdef MMCCAM
 	sdhci_cam_start_slot(&sc->slot);
-
+#else
+	sdhci_start_slot(&sc->slot);
+#endif
 	return (0);
 
 fail:
@@ -691,146 +696,7 @@ ti_sdhci_probe(device_t dev)
 }
 
 #if 0
-static void
-ti_sdhci_handle_mmcio(struct cam_sim *sim, union ccb *ccb)
-{
-	struct ti_sdhci_softc *sc;
-
-	sc = cam_sim_softc(sim);
-
-	sdhci_request_cam(&sc->slot, ccb);
-}
-
-static void
-ti_sdhci_cam_action(struct cam_sim *sim, union ccb *ccb)
-{
-	struct ti_sdhci_softc *sc;
-
-	sc = cam_sim_softc(sim);
-	if (sc == NULL) {
-		ccb->ccb_h.status = CAM_SEL_TIMEOUT;
-		xpt_done(ccb);
-		return;
-	}
-
-	mtx_assert(&sc->sc_mtx, MA_OWNED);
-
-	device_printf(sc->dev, "action: func_code %0x\n", ccb->ccb_h.func_code);
-
-	switch (ccb->ccb_h.func_code) {
-	case XPT_PATH_INQ:
-	{
-		struct ccb_pathinq *cpi;
-
-		cpi = &ccb->cpi;
-		cpi->version_num = 1;
-		cpi->hba_inquiry = PI_SDTR_ABLE | PI_TAG_ABLE | PI_WIDE_16;
-		cpi->target_sprt = 0;
-		cpi->hba_misc = PIM_NOBUSRESET | PIM_SEQSCAN;
-		cpi->hba_eng_cnt = 0;
-		cpi->max_target = 0;
-		cpi->max_lun = 0;
-		cpi->initiator_id = 1;
-		strncpy(cpi->sim_vid, "FreeBSD", SIM_IDLEN);
-		strncpy(cpi->hba_vid, "Deglitch Networks", HBA_IDLEN);
-		strncpy(cpi->dev_name, cam_sim_name(sim), DEV_IDLEN);
-		cpi->unit_number = cam_sim_unit(sim);
-		cpi->bus_id = cam_sim_bus(sim);
-		cpi->base_transfer_speed = 100; /* XXX WTF? */
-		cpi->protocol = PROTO_MMCSD;
-		cpi->protocol_version = SCSI_REV_0;
-		cpi->transport = XPORT_MMCSD;
-		cpi->transport_version = 0;
-
-		cpi->ccb_h.status = CAM_REQ_CMP;
-		break;
-	}
-	case XPT_GET_TRAN_SETTINGS:
-	{
-		struct ccb_trans_settings *cts = &ccb->cts;
-
-		device_printf(sc->dev, "Got XPT_GET_TRAN_SETTINGS\n");
-
-		cts->protocol = PROTO_MMCSD;
-		cts->protocol_version = 0;
-		cts->transport = XPORT_MMCSD;
-		cts->transport_version = 0;
-		cts->xport_specific.valid = 0;
-		cts->proto_specific.mmc.host_ocr = sc->slot.host.host_ocr;
-		ccb->ccb_h.status = CAM_REQ_CMP;
-		break;
-	}
-	case XPT_SET_TRAN_SETTINGS:
-		device_printf(sc->dev, "Got XPT_SET_TRAN_SETTINGS, should update IOS...\n");
-		ti_sdhci_cam_settran_settings(sc, ccb);
-
-		ccb->ccb_h.status = CAM_REQ_CMP;
-		break;
-	case XPT_RESET_BUS:
-		device_printf(sc->dev, "Got XPT_RESET_BUS, ACK it...\n");
-		ccb->ccb_h.status = CAM_REQ_CMP;
-		break;
-	case XPT_MMC_IO:
-		/*
-		 * Here is the HW-dependent part of
-		 * sending the command to the underlying h/w
-		 * At some point in the future an interrupt comes.
-		 * Then the request will be marked as completed.
-		 */
-		device_printf(sc->dev, "Got XPT_MMC_IO\n");
-		ccb->ccb_h.status = CAM_REQ_INPROG;
-
-		ti_sdhci_handle_mmcio(sim, ccb);
-		return;
-		/* NOTREACHED */
-		break;
-	default:
-		ccb->ccb_h.status = CAM_REQ_INVALID;
-		break;
-	}
-	xpt_done(ccb);
-	return;
-}
-
-static void
-ti_sdhci_cam_poll(struct cam_sim *sim)
-{
-	return;
-}
-
-static int
-ti_sdhci_cam_settran_settings(struct ti_sdhci_softc *sc, union ccb *ccb)
-{
-	struct sdhci_slot *slot;
-	struct mmc_ios *ios;
-	struct mmc_ios *new_ios;
-	uint32_t val32;
-	struct ccb_trans_settings_mmc *cts;
-
-	slot = &sc->slot;
-	ios = &slot->host.ios;
-
-	cts = &ccb->cts.proto_specific.mmc;
-	new_ios = &cts->ios;
-
-	/* Update only requested fields */
-	if (cts->ios_valid & MMC_CLK)
-		ios->clock = new_ios->clock;
-	if (cts->ios_valid & MMC_VDD) {
-		ios->vdd = new_ios->vdd;
-		device_printf(sc->dev, "VDD => %d\n", ios->vdd);
-	}
-	if (cts->ios_valid & MMC_CS)
-		ios->chip_select = new_ios->chip_select;
-	if (cts->ios_valid & MMC_BW)
-		ios->bus_width = new_ios->bus_width;
-	if (cts->ios_valid & MMC_PM)
-		ios->power_mode = new_ios->power_mode;
-	if (cts->ios_valid & MMC_BT)
-		ios->timing = new_ios->timing;
-	if (cts->ios_valid & MMC_BM)
-		ios->bus_mode = new_ios->bus_mode;
-	/*
+/*
 	 * There is an 8-bit-bus bit in the MMCHS control register which, when
 	 * set, overrides the 1 vs 4 bit setting in the standard SDHCI
 	 * registers.  Set that bit first according to whether an 8-bit bus is
@@ -888,4 +754,7 @@ static driver_t ti_sdhci_driver = {
 DRIVER_MODULE(sdhci_ti, simplebus, ti_sdhci_driver, ti_sdhci_devclass, NULL,
     NULL);
 MODULE_DEPEND(sdhci_ti, sdhci, 1, 1, 1);
+
+#ifndef MMCCAM
 MMC_DECLARE_BRIDGE(sdhci_ti);
+#endif
