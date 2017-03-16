@@ -1466,7 +1466,7 @@ cam_fill_smpio(struct ccb_smpio *smpio, uint32_t retries,
 static __inline void
 cam_fill_mmcio(struct ccb_mmcio *mmcio, uint32_t retries,
 	       void (*cbfcnp)(struct cam_periph *, union ccb *), uint32_t flags,
-               uint32_t mmc_opcode, uint32_t mmc_arg, uint32_t mmc_flags,
+	       uint32_t mmc_opcode, uint32_t mmc_arg, uint32_t mmc_flags,
 	       struct mmc_data *mmc_d,
 	       uint32_t timeout)
 {
@@ -1481,18 +1481,14 @@ cam_fill_mmcio(struct ccb_mmcio *mmcio, uint32_t retries,
 	mmcio->stop.opcode = 0;
 	mmcio->stop.arg = 0;
 	mmcio->stop.flags = 0;
-        if (mmc_d != NULL) {
-#ifdef _KERNEL
-		KASSERT(mmcio->cmd.data != NULL, ("wanted to pass data to MMC but cmd.data is NULL"));
-#endif /*_KERNEL*/
-                mmcio->cmd.data->len = mmc_d->len;
-                mmcio->cmd.data->data = mmc_d->data;
-                mmcio->cmd.data->flags = mmc_d->flags;
-        }
-        mmcio->cmd.resp[0] = 0;
-        mmcio->cmd.resp[1] = 0;
-        mmcio->cmd.resp[2] = 0;
-        mmcio->cmd.resp[3] = 0;
+	if (mmc_d != NULL) {
+		mmcio->cmd.data = mmc_d;
+	} else
+		mmcio->cmd.data = NULL;
+	mmcio->cmd.resp[0] = 0;
+	mmcio->cmd.resp[1] = 0;
+	mmcio->cmd.resp[2] = 0;
+	mmcio->cmd.resp[3] = 0;
 }
 
 static __inline void
