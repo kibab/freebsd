@@ -45,8 +45,14 @@ __FBSDID("$FreeBSD$");
 #include <machine/stdarg.h>
 
 #include <dev/mmc/bridge.h>
-#include <dev/mmc/mmcreg.h>
+#include <cam/mmc/mmcreg.h>
 #include <dev/mmc/mmcbrvar.h>
+
+#include <cam/cam.h>
+#include <cam/cam_ccb.h>
+#include <cam/cam_debug.h>
+#include <cam/cam_sim.h>
+#include <cam/cam_xpt_sim.h>
 
 #include "mmcbr_if.h"
 #include "sdhci.h"
@@ -54,10 +60,9 @@ __FBSDID("$FreeBSD$");
 
 SYSCTL_NODE(_hw, OID_AUTO, sdhci, CTLFLAG_RD, 0, "sdhci driver");
 
-static int sdhci_debug;
+static int sdhci_debug = 10;
 SYSCTL_INT(_hw_sdhci, OID_AUTO, debug, CTLFLAG_RWTUN, &sdhci_debug, 0,
     "Debug level");
-
 #define	RD1(slot, off)	SDHCI_READ_1((slot)->bus, (slot), (off))
 #define	RD2(slot, off)	SDHCI_READ_2((slot)->bus, (slot), (off))
 #define	RD4(slot, off)	SDHCI_READ_4((slot)->bus, (slot), (off))
@@ -76,6 +81,13 @@ static void sdhci_start_data(struct sdhci_slot *slot, struct mmc_data *data);
 
 static void sdhci_card_poll(void *);
 static void sdhci_card_task(void *, int);
+
+/* CAM-related */
+static int sdhci_cam_update_ios(struct sdhci_slot *slot);
+static int sdhci_cam_request(struct sdhci_slot *slot, union ccb *ccb);
+static void sdhci_cam_action(struct cam_sim *sim, union ccb *ccb);
+static void sdhci_cam_poll(struct cam_sim *sim);
+static int sdhci_cam_settran_settings(struct sdhci_slot *slot, union ccb *ccb);
 
 /* helper routines */
 #define	SDHCI_LOCK(_slot)		mtx_lock(&(_slot)->mtx)
@@ -582,6 +594,7 @@ sdhci_init_slot(device_t dev, struct sdhci_slot *slot, int num)
 	int err;
 
 	SDHCI_LOCK_INIT(slot);
+
 	slot->num = num;
 	slot->bus = dev;
 
@@ -812,12 +825,23 @@ sdhci_generic_get_card_present(device_t brdev __unused, struct sdhci_slot *slot)
 	return (RD4(slot, SDHCI_PRESENT_STATE) & SDHCI_CARD_PRESENT);
 }
 
+/*
+ * When called from the old stack:
+ * sdhci_ti0: This is a bridge device
+ *  mmc0: This is a request device
+ *  sdhci_ti0-slot0:  <--- The locking slot is this
+ * XXX FIX ME ????
+ */
 int
 sdhci_generic_update_ios(device_t brdev, device_t reqdev)
 {
 	struct sdhci_slot *slot = device_get_ivars(reqdev);
 	struct mmc_ios *ios = &slot->host.ios;
 
+	device_printf(brdev,  "This is a bridge device\n");
+	device_printf(reqdev, "This is a request device\n");
+
+	slot_printf(slot, " <--- The locking slot is this\n");
 	SDHCI_LOCK(slot);
 	/* Do full reset on bus power down to clear from any state. */
 	if (ios->power_mode == power_off) {
@@ -856,14 +880,22 @@ sdhci_generic_update_ios(device_t brdev, device_t reqdev)
 static void
 sdhci_req_done(struct sdhci_slot *slot)
 {
-	struct mmc_request *req;
+        union ccb *ccb;
 
-	if (slot->req != NULL && slot->curcmd != NULL) {
+        slot_printf(slot, "sdhci_req_done()\n");
+	if (slot->ccb != NULL && slot->curcmd != NULL) {
 		callout_stop(&slot->timeout_callout);
-		req = slot->req;
-		slot->req = NULL;
+                ccb = slot->ccb;
+                slot->ccb = NULL;
 		slot->curcmd = NULL;
-		req->done(req);
+
+                /* Tell CAM the request is finished */
+                struct ccb_mmcio *mmcio;
+                mmcio = &ccb->mmcio;
+
+                ccb->ccb_h.status =
+                        (mmcio->cmd.error == 0 ? CAM_REQ_CMP : CAM_REQ_CMP_ERR);
+                xpt_done(ccb);
 	}
 }
 
@@ -887,16 +919,18 @@ static void
 sdhci_set_transfer_mode(struct sdhci_slot *slot, struct mmc_data *data)
 {
 	uint16_t mode;
+        struct ccb_mmcio *mmcio;
 
 	if (data == NULL)
 		return;
 
+        mmcio = &slot->ccb->mmcio;
 	mode = SDHCI_TRNS_BLK_CNT_EN;
 	if (data->len > 512)
 		mode |= SDHCI_TRNS_MULTI;
 	if (data->flags & MMC_DATA_READ)
 		mode |= SDHCI_TRNS_READ;
-	if (slot->req->stop)
+	if (mmcio->stop.opcode == MMC_STOP_TRANSMISSION)
 		mode |= SDHCI_TRNS_ACMD12;
 	if (slot->flags & SDHCI_USE_DMA)
 		mode |= SDHCI_TRNS_DMA;
@@ -930,6 +964,9 @@ sdhci_start_command(struct sdhci_slot *slot, struct mmc_command *cmd)
 	if (!SDHCI_GET_CARD_PRESENT(slot->bus, slot) ||
 	    slot->power == 0 ||
 	    slot->clock == 0) {
+		slot_printf(slot,
+			    "Cannot issue a command (power=%d clock=%d)",
+			    slot->power, slot->clock);
 		cmd->error = MMC_ERR_FAILED;
 		sdhci_req_done(slot);
 		return;
@@ -937,11 +974,13 @@ sdhci_start_command(struct sdhci_slot *slot, struct mmc_command *cmd)
 	/* Always wait for free CMD bus. */
 	mask = SDHCI_CMD_INHIBIT;
 	/* Wait for free DAT if we have data or busy signal. */
-	if (cmd->data || (cmd->flags & MMC_RSP_BUSY))
+	if (cmd->data->len > 0 || (cmd->flags & MMC_RSP_BUSY))
 		mask |= SDHCI_DAT_INHIBIT;
 	/* We shouldn't wait for DAT for stop commands. */
-	if (cmd == slot->req->stop)
+        struct ccb_mmcio *mmcio = &slot->ccb->mmcio;
+	if (cmd == &mmcio->stop)
 		mask &= ~SDHCI_DAT_INHIBIT;
+
 	/*
 	 *  Wait for bus no more then 250 ms.  Typically there will be no wait
 	 *  here at all, but when writing a crash dump we may be bypassing the
@@ -979,7 +1018,7 @@ sdhci_start_command(struct sdhci_slot *slot, struct mmc_command *cmd)
 		flags |= SDHCI_CMD_CRC;
 	if (cmd->flags & MMC_RSP_OPCODE)
 		flags |= SDHCI_CMD_INDEX;
-	if (cmd->data)
+	if (cmd->data->len > 0)
 		flags |= SDHCI_CMD_DATA;
 	if (cmd->opcode == MMC_STOP_TRANSMISSION)
 		flags |= SDHCI_CMD_TYPE_ABORT;
@@ -998,6 +1037,7 @@ sdhci_start_command(struct sdhci_slot *slot, struct mmc_command *cmd)
 	WR4(slot, SDHCI_ARGUMENT, cmd->arg);
 	/* Set data transfer mode. */
 	sdhci_set_transfer_mode(slot, cmd->data);
+	slot_printf(slot, "Starting command!\n");
 	/* Start command. */
 	WR2(slot, SDHCI_COMMAND_FLAGS, (cmd->opcode << 8) | (flags & 0xff));
 	/* Start timeout callout. */
@@ -1012,6 +1052,8 @@ sdhci_finish_command(struct sdhci_slot *slot)
 	uint32_t val;
 	uint8_t extra;
 
+	slot_printf(slot, "%s: called, err %d flags %d\n",
+		    __func__, slot->curcmd->error, slot->curcmd->flags);
 	slot->cmd_done = 1;
 	/* Interrupt aggregation: Restore command interrupt.
 	 * Main restore point for the case when command interrupt
@@ -1043,6 +1085,10 @@ sdhci_finish_command(struct sdhci_slot *slot)
 		} else
 			slot->curcmd->resp[0] = RD4(slot, SDHCI_RESPONSE);
 	}
+	printf("Resp: %02x %02x %02x %02x\n",
+	       slot->curcmd->resp[0], slot->curcmd->resp[1],
+	       slot->curcmd->resp[2], slot->curcmd->resp[3]);
+
 	/* If data ready - finish. */
 	if (slot->data_done)
 		sdhci_start(slot);
@@ -1054,7 +1100,7 @@ sdhci_start_data(struct sdhci_slot *slot, struct mmc_data *data)
 	uint32_t target_timeout, current_timeout;
 	uint8_t div;
 
-	if (data == NULL && (slot->curcmd->flags & MMC_RSP_BUSY) == 0) {
+	if (data->len == 0 && (slot->curcmd->flags & MMC_RSP_BUSY) == 0) {
 		slot->data_done = 1;
 		return;
 	}
@@ -1123,6 +1169,10 @@ sdhci_start_data(struct sdhci_slot *slot, struct mmc_data *data)
 	    (data->len < 512) ? data->len : 512));
 	/* Set block count. */
 	WR2(slot, SDHCI_BLOCK_COUNT, (data->len + 511) / 512);
+
+        slot_printf(slot, "Block size: %02x, count %d\n",
+                    SDHCI_MAKE_BLKSZ(DMA_BOUNDARY, (data->len < 512)?data->len:512),
+                (data->len + 511) / 512);
 }
 
 void
@@ -1166,27 +1216,30 @@ sdhci_finish_data(struct sdhci_slot *slot)
 static void
 sdhci_start(struct sdhci_slot *slot)
 {
-	struct mmc_request *req;
+        union ccb *ccb;
 
-	req = slot->req;
-	if (req == NULL)
+	ccb = slot->ccb;
+	if (ccb == NULL)
 		return;
+
+        struct ccb_mmcio *mmcio;
+	mmcio = &ccb->mmcio;
 
 	if (!(slot->flags & CMD_STARTED)) {
 		slot->flags |= CMD_STARTED;
-		sdhci_start_command(slot, req->cmd);
+		sdhci_start_command(slot, &mmcio->cmd);
 		return;
 	}
-/* 	We don't need this until using Auto-CMD12 feature
-	if (!(slot->flags & STOP_STARTED) && req->stop) {
+
+	if (!(slot->flags & STOP_STARTED) && mmcio->stop.opcode != 0) {
 		slot->flags |= STOP_STARTED;
-		sdhci_start_command(slot, req->stop);
+		sdhci_start_command(slot, &mmcio->stop);
 		return;
 	}
-*/
+
 	if (sdhci_debug > 1)
-		slot_printf(slot, "result: %d\n", req->cmd->error);
-	if (!req->cmd->error &&
+		slot_printf(slot, "result: %d\n", mmcio->cmd.error);
+	if (mmcio->cmd.error == 0 &&
 	    (slot->quirks & SDHCI_QUIRK_RESET_AFTER_REQUEST)) {
 		sdhci_reset(slot, SDHCI_RESET_CMD);
 		sdhci_reset(slot, SDHCI_RESET_DATA);
@@ -1292,7 +1345,6 @@ static void
 sdhci_data_irq(struct sdhci_slot *slot, uint32_t intmask)
 {
 	struct mmc_data *data;
-	size_t left;
 
 	if (!slot->curcmd) {
 		slot_printf(slot, "Got data interrupt 0x%08x, but "
@@ -1300,7 +1352,7 @@ sdhci_data_irq(struct sdhci_slot *slot, uint32_t intmask)
 		sdhci_dumpregs(slot);
 		return;
 	}
-	if (slot->curcmd->data == NULL &&
+	if (slot->curcmd->data->len == 0 &&
 	    (slot->curcmd->flags & MMC_RSP_BUSY) == 0) {
 		slot_printf(slot, "Got data interrupt 0x%08x, but "
 		    "there is no active data operation.\n",
@@ -1312,7 +1364,7 @@ sdhci_data_irq(struct sdhci_slot *slot, uint32_t intmask)
 		slot->curcmd->error = MMC_ERR_TIMEOUT;
 	else if (intmask & (SDHCI_INT_DATA_CRC | SDHCI_INT_DATA_END_BIT))
 		slot->curcmd->error = MMC_ERR_BADCRC;
-	if (slot->curcmd->data == NULL &&
+	if (slot->curcmd->data->len == 0 &&
 	    (intmask & (SDHCI_INT_DATA_AVAIL | SDHCI_INT_SPACE_AVAIL |
 	    SDHCI_INT_DMA_END))) {
 		slot_printf(slot, "Got data interrupt 0x%08x, but "
@@ -1338,6 +1390,7 @@ sdhci_data_irq(struct sdhci_slot *slot, uint32_t intmask)
 	/* Handle DMA border. */
 	if (intmask & SDHCI_INT_DMA_END) {
 		data = slot->curcmd->data;
+		size_t left;
 
 		/* Unload DMA buffer... */
 		left = data->len - slot->offset;
@@ -1535,6 +1588,7 @@ sdhci_generic_write_ivar(device_t bus, device_t child, int which,
 	uint32_t clock, max_clock;
 	int i;
 
+	slot_printf(slot, "sdhci_generic_write_ivar, var=%d\n", which);
 	switch (which) {
 	default:
 		return (EINVAL);
@@ -1593,6 +1647,271 @@ sdhci_generic_write_ivar(device_t bus, device_t child, int which,
 	case MMCBR_IVAR_F_MAX:
 	case MMCBR_IVAR_MAX_DATA:
 		return (EINVAL);
+	}
+	return (0);
+}
+
+/* CAM-related functions */
+#include <cam/cam.h>
+#include <cam/cam_ccb.h>
+#include <cam/cam_debug.h>
+#include <cam/cam_sim.h>
+#include <cam/cam_xpt_sim.h>
+
+void
+sdhci_cam_start_slot(struct sdhci_slot *slot)
+{
+//	sdhci_card_task(slot, 0);
+        if ((slot->devq = cam_simq_alloc(1)) == NULL) {
+                goto fail;
+        }
+
+        mtx_init(&slot->sim_mtx, "sdhcisim", NULL, MTX_DEF);
+        slot->sim = cam_sim_alloc(sdhci_cam_action, sdhci_cam_poll,
+                                  "sdhci_slot", slot, device_get_unit(slot->bus),
+                                  &slot->sim_mtx, 1, 1, slot->devq);
+
+        if (slot->sim == NULL) {
+                cam_simq_free(slot->devq);
+                slot_printf(slot, "cannot allocate CAM SIM\n");
+                goto fail;
+        }
+
+        mtx_lock(&slot->sim_mtx);
+        if (xpt_bus_register(slot->sim, slot->bus, 0) != 0) {
+                slot_printf(slot,
+                              "cannot register SCSI pass-through bus\n");
+                cam_sim_free(slot->sim, FALSE);
+                cam_simq_free(slot->devq);
+                mtx_unlock(&slot->sim_mtx);
+                goto fail;
+        }
+
+        mtx_unlock(&slot->sim_mtx);
+        /* End CAM-specific init */
+        return;
+
+fail:
+        if (slot->sim != NULL) {
+                mtx_lock(&slot->sim_mtx);
+                xpt_bus_deregister(cam_sim_path(slot->sim));
+                cam_sim_free(slot->sim, FALSE);
+                mtx_unlock(&slot->sim_mtx);
+        }
+
+        if (slot->devq != NULL)
+                cam_simq_free(slot->devq);
+}
+
+static void
+sdhci_cam_handle_mmcio(struct cam_sim *sim, union ccb *ccb)
+{
+	struct sdhci_slot *slot;
+
+	slot = cam_sim_softc(sim);
+
+	sdhci_cam_request(slot, ccb);
+}
+
+void
+sdhci_cam_action(struct cam_sim *sim, union ccb *ccb)
+{
+	struct sdhci_slot *slot;
+
+	slot = cam_sim_softc(sim);
+	if (slot == NULL) {
+		ccb->ccb_h.status = CAM_SEL_TIMEOUT;
+		xpt_done(ccb);
+		return;
+	}
+
+	mtx_assert(&slot->sim_mtx, MA_OWNED);
+
+	slot_printf(slot, "action: func_code %0x\n", ccb->ccb_h.func_code);
+
+	switch (ccb->ccb_h.func_code) {
+	case XPT_PATH_INQ:
+	{
+		struct ccb_pathinq *cpi;
+
+		cpi = &ccb->cpi;
+		cpi->version_num = 1;
+		cpi->hba_inquiry = 0;
+		cpi->target_sprt = 0;
+		cpi->hba_misc = PIM_NOBUSRESET | PIM_SEQSCAN;
+		cpi->hba_eng_cnt = 0;
+		cpi->max_target = 0;
+		cpi->max_lun = 0;
+		cpi->initiator_id = 1;
+		strncpy(cpi->sim_vid, "FreeBSD", SIM_IDLEN);
+		strncpy(cpi->hba_vid, "Deglitch Networks", HBA_IDLEN);
+		strncpy(cpi->dev_name, cam_sim_name(sim), DEV_IDLEN);
+		cpi->unit_number = cam_sim_unit(sim);
+		cpi->bus_id = cam_sim_bus(sim);
+		cpi->base_transfer_speed = 100; /* XXX WTF? */
+		cpi->protocol = PROTO_MMCSD;
+		cpi->protocol_version = SCSI_REV_0;
+		cpi->transport = XPORT_MMCSD;
+		cpi->transport_version = 0;
+
+		cpi->ccb_h.status = CAM_REQ_CMP;
+		break;
+	}
+	case XPT_GET_TRAN_SETTINGS:
+	{
+		struct ccb_trans_settings *cts = &ccb->cts;
+
+		slot_printf(slot, "Got XPT_GET_TRAN_SETTINGS\n");
+
+		cts->protocol = PROTO_MMCSD;
+		cts->protocol_version = 0;
+		cts->transport = XPORT_MMCSD;
+		cts->transport_version = 0;
+		cts->xport_specific.valid = 0;
+		cts->proto_specific.mmc.host_ocr = slot->host.host_ocr;
+		ccb->ccb_h.status = CAM_REQ_CMP;
+		break;
+	}
+	case XPT_SET_TRAN_SETTINGS:
+                slot_printf(slot, "Got XPT_SET_TRAN_SETTINGS, should update IOS...\n");
+                sdhci_cam_settran_settings(slot, ccb); /* ah wtf with ti_sdhci ?!*/
+		ccb->ccb_h.status = CAM_REQ_CMP;
+		break;
+	case XPT_RESET_BUS:
+		slot_printf(slot, "Got XPT_RESET_BUS, ACK it...\n");
+		ccb->ccb_h.status = CAM_REQ_CMP;
+		break;
+	case XPT_MMC_IO:
+		/*
+		 * Here is the HW-dependent part of
+		 * sending the command to the underlying h/w
+		 * At some point in the future an interrupt comes.
+		 * Then the request will be marked as completed.
+		 */
+                slot_printf(slot, "Got XPT_MMC_IO\n");
+		ccb->ccb_h.status = CAM_REQ_INPROG;
+
+		sdhci_cam_handle_mmcio(sim, ccb);
+		return;
+		/* NOTREACHED */
+		break;
+	default:
+		ccb->ccb_h.status = CAM_REQ_INVALID;
+		break;
+	}
+	xpt_done(ccb);
+	return;
+}
+
+void
+sdhci_cam_poll(struct cam_sim *sim)
+{
+	return;
+}
+
+int
+sdhci_cam_settran_settings(struct sdhci_slot *slot, union ccb *ccb)
+{
+	struct mmc_ios *ios;
+	struct mmc_ios *new_ios;
+	struct ccb_trans_settings_mmc *cts;
+
+	ios = &slot->host.ios;
+
+	cts = &ccb->cts.proto_specific.mmc;
+	new_ios = &cts->ios;
+
+	/* Update only requested fields */
+	if (cts->ios_valid & MMC_CLK)
+		ios->clock = new_ios->clock;
+	if (cts->ios_valid & MMC_VDD) {
+		ios->vdd = new_ios->vdd;
+		slot_printf(slot, "VDD => %d\n", ios->vdd);
+	}
+	if (cts->ios_valid & MMC_CS)
+		ios->chip_select = new_ios->chip_select;
+	if (cts->ios_valid & MMC_BW)
+		ios->bus_width = new_ios->bus_width;
+	if (cts->ios_valid & MMC_PM)
+		ios->power_mode = new_ios->power_mode;
+	if (cts->ios_valid & MMC_BT)
+		ios->timing = new_ios->timing;
+	if (cts->ios_valid & MMC_BM)
+		ios->bus_mode = new_ios->bus_mode;
+
+        /* XXX Provide a way to call a chip-specific IOS update, required for TI */
+	return (sdhci_cam_update_ios(slot));
+}
+
+int
+sdhci_cam_update_ios(struct sdhci_slot *slot)
+{
+	struct mmc_ios *ios = &slot->host.ios;
+
+	slot_printf(slot, " <--- The locking slot is this\n");
+	SDHCI_LOCK(slot);
+	/* Do full reset on bus power down to clear from any state. */
+	if (ios->power_mode == power_off) {
+		WR4(slot, SDHCI_SIGNAL_ENABLE, 0);
+		sdhci_init(slot);
+	}
+	/* Configure the bus. */
+	sdhci_set_clock(slot, ios->clock);
+	sdhci_set_power(slot, (ios->power_mode == power_off) ? 0 : ios->vdd);
+	if (ios->bus_width == bus_width_8) {
+		slot->hostctrl |= SDHCI_CTRL_8BITBUS;
+		slot->hostctrl &= ~SDHCI_CTRL_4BITBUS;
+	} else if (ios->bus_width == bus_width_4) {
+		slot->hostctrl &= ~SDHCI_CTRL_8BITBUS;
+		slot->hostctrl |= SDHCI_CTRL_4BITBUS;
+	} else if (ios->bus_width == bus_width_1) {
+		slot->hostctrl &= ~SDHCI_CTRL_8BITBUS;
+		slot->hostctrl &= ~SDHCI_CTRL_4BITBUS;
+	} else {
+		panic("Invalid bus width: %d", ios->bus_width);
+	}
+	if (ios->timing == bus_timing_hs &&
+	    !(slot->quirks & SDHCI_QUIRK_DONT_SET_HISPD_BIT))
+		slot->hostctrl |= SDHCI_CTRL_HISPD;
+	else
+		slot->hostctrl &= ~SDHCI_CTRL_HISPD;
+	WR1(slot, SDHCI_HOST_CONTROL, slot->hostctrl);
+	/* Some controllers like reset after bus changes. */
+	if(slot->quirks & SDHCI_QUIRK_RESET_ON_IOS)
+		sdhci_reset(slot, SDHCI_RESET_CMD | SDHCI_RESET_DATA);
+
+	SDHCI_UNLOCK(slot);
+	return (0);
+}
+
+int
+sdhci_cam_request(struct sdhci_slot *slot, union ccb *ccb)
+{
+	struct ccb_mmcio *mmcio;
+
+	mmcio = &ccb->mmcio;
+
+	SDHCI_LOCK(slot);
+/*	if (slot->req != NULL) {
+		SDHCI_UNLOCK(slot);
+		return (EBUSY);
+	}
+*/
+	if (sdhci_debug > 1) {
+		slot_printf(slot, "CMD%u arg %#x flags %#x dlen %u dflags %#x\n",
+                            mmcio->cmd.opcode, mmcio->cmd.arg, mmcio->cmd.flags,
+                            mmcio->cmd.data->len,
+                            mmcio->cmd.data->flags);
+	}
+	slot->ccb = ccb;
+	slot->flags = 0;
+	sdhci_start(slot);
+	SDHCI_UNLOCK(slot);
+	if (dumping) {
+		while (slot->ccb != NULL) {
+			sdhci_generic_intr(slot);
+			DELAY(10);
+		}
 	}
 	return (0);
 }

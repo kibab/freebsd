@@ -409,7 +409,7 @@ xptioctl(struct cdev *dev, u_long cmd, caddr_t addr, int flag, struct thread *td
 	}
 	return (error);
 }
-	
+
 static int
 xptdoioctl(struct cdev *dev, u_long cmd, caddr_t addr, int flag, struct thread *td)
 {
@@ -817,6 +817,8 @@ xpt_scanner_thread(void *dummy)
 			TAILQ_REMOVE(&xsoftc.ccb_scanq, &ccb->ccb_h, sim_links.tqe);
 			xpt_unlock_buses();
 
+                        printf("xpt_scanner_thread is firing on path ");
+                        xpt_print_path(ccb->ccb_h.path);printf("\n");
 			/*
 			 * Since lock can be dropped inside and path freed
 			 * by completion callback even before return here,
@@ -1388,7 +1390,7 @@ xptdevicematch(struct dev_match_pattern *patterns, u_int num_patterns,
 
 		cur_pattern = &patterns[i].pattern.device_pattern;
 
-		/* Error out if mutually exclusive options are specified. */ 
+		/* Error out if mutually exclusive options are specified. */
 		if ((cur_pattern->flags & (DEV_MATCH_INQUIRY|DEV_MATCH_DEVID))
 		 == (DEV_MATCH_INQUIRY|DEV_MATCH_DEVID))
 			return(DM_RET_ERROR);
@@ -2575,6 +2577,8 @@ xpt_action_default(union ccb *start_ccb)
 		if (start_ccb->ccb_h.func_code == XPT_NVME_IO)
 			start_ccb->nvmeio.resid = 0;
 		/* FALLTHROUGH */
+	case XPT_MMC_IO:
+		/* XXX just like nmve_io? */
 	case XPT_RESET_DEV:
 	case XPT_ENG_EXEC:
 	case XPT_SMP_IO:
@@ -5416,7 +5420,7 @@ static struct kv map[] = {
 	{ XPT_GET_SIM_KNOB, "XPT_GET_SIM_KNOB" },
 	{ XPT_SET_SIM_KNOB, "XPT_SET_SIM_KNOB" },
 	{ XPT_NVME_IO, "XPT_NVME_IO" },
-	{ XPT_MMCSD_IO, "XPT_MMCSD_IO" },
+	{ XPT_MMC_IO, "XPT_MMC_IO" },
 	{ XPT_SMP_IO, "XPT_SMP_IO" },
 	{ XPT_SCAN_TGT, "XPT_SCAN_TGT" },
 	{ XPT_ENG_INQ, "XPT_ENG_INQ" },

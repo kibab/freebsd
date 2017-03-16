@@ -55,7 +55,7 @@
 
 #include <sys/types.h>
 #include <dev/mmc/bridge.h>
-#include <dev/mmc/mmcreg.h>
+#include <cam/mmc/mmcreg.h>
 
 #
 # This is the interface that a mmc bridge chip gives to the mmc bus

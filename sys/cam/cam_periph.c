@@ -810,6 +810,20 @@ cam_periph_mapmem(union ccb *ccb, struct cam_periph_map_info *mapinfo,
 		dirs[0] = ccb->ccb_h.flags & CAM_DIR_MASK;
 		numbufs = 1;
 		break;
+        case XPT_MMC_IO:
+                printf("cam_periph_mapmem: MMCIO flags %02x\n", ccb->ccb_h.flags);
+		if ((ccb->ccb_h.flags & CAM_DIR_MASK) == CAM_DIR_NONE)
+			return(0);
+                if (ccb->mmcio.cmd.data->len == 0) {
+                      printf("cam_periph_mapmem: almost failed!...\n");
+                      return(0);
+                      }
+                printf("cam_periph_mapmem: Setting up memory map...\n");
+                data_ptrs[0] = (unsigned char **)&ccb->mmcio.cmd.data->data;
+		lengths[0] = ccb->mmcio.cmd.data->len;
+		dirs[0] = ccb->ccb_h.flags & CAM_DIR_MASK;
+		numbufs = 1;
+                break;
 	case XPT_SMP_IO:
 		data_ptrs[0] = &ccb->smpio.smp_request;
 		lengths[0] = ccb->smpio.smp_request_len;

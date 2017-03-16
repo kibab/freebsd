@@ -366,8 +366,13 @@ sdhci_pci_attach(device_t dev)
 		device_printf(dev, "Can't setup IRQ\n");
 	pci_enable_busmaster(dev);
 	/* Process cards detection. */
-	for (i = 0; i < sc->num_slots; i++)
-		sdhci_start_slot(&sc->slots[i]);
+	for (i = 0; i < sc->num_slots; i++) {
+		struct sdhci_slot *slot = &sc->slots[i];
+
+// Needed? XXXimpXXX
+//		sdhci_start_slot(&sc->slots[i]);
+		sdhci_cam_start_slot(slot);
+	}
 
 	return (0);
 }

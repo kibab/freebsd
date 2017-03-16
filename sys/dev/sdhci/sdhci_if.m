@@ -68,7 +68,7 @@
 #include <machine/bus.h>
 
 #include <dev/mmc/bridge.h>
-#include <dev/mmc/mmcreg.h>
+#include <cam/mmc/mmcreg.h>
 #include <dev/sdhci/sdhci.h>
 
 CODE {

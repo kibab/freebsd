@@ -247,13 +247,13 @@ bcm_sdhci_attach(device_t dev)
 	}
 
 	/* FIXME: Fix along with other BUS_SPACE_PHYSADDR instances */
-	sc->sc_sdhci_buffer_phys = rman_get_start(sc->sc_mem_res) +
-	    SDHCI_BUFFER;
+	sc->sc_sdhci_buffer_phys = BUS_SPACE_PHYSADDR(sc->sc_mem_res,
+	    SDHCI_BUFFER);
 
 	bus_generic_probe(dev);
 	bus_generic_attach(dev);
 
-	sdhci_start_slot(&sc->sc_slot);
+	sdhci_cam_start_slot(&sc->sc_slot);
 
 	return (0);
 
@@ -453,6 +453,50 @@ bcm_sdhci_start_dma_seg(struct bcm_sdhci_softc *sc)
 	KASSERT((err == 0), ("bcm2835_sdhci: failed DMA start"));
 }
 
+/* Something here */
+#if 0
+	if (slot->curcmd->data.flags & MMC_DATA_READ) {
+		bcm_dma_setup_src(sc->sc_dma_ch, BCM_DMA_DREQ_EMMC,
+		    BCM_DMA_SAME_ADDR, BCM_DMA_32BIT); 
+		bcm_dma_setup_dst(sc->sc_dma_ch, BCM_DMA_DREQ_NONE,
+		    BCM_DMA_INC_ADDR,
+		    (len & 0xf) ? BCM_DMA_32BIT : BCM_DMA_128BIT);
+		psrc = sc->sc_sdhci_buffer_phys;
+		pdst = sc->dmamap_seg_addrs[idx];
+		sync_op = BUS_DMASYNC_PREREAD;
+	} else {
+		bcm_dma_setup_src(sc->sc_dma_ch, BCM_DMA_DREQ_NONE,
+		    BCM_DMA_INC_ADDR,
+		    (len & 0xf) ? BCM_DMA_32BIT : BCM_DMA_128BIT);
+		bcm_dma_setup_dst(sc->sc_dma_ch, BCM_DMA_DREQ_EMMC,
+		    BCM_DMA_SAME_ADDR, BCM_DMA_32BIT);
+		psrc = sc->dmamap_seg_addrs[idx];
+		pdst = sc->sc_sdhci_buffer_phys;
+		sync_op = BUS_DMASYNC_PREWRITE;
+	}
+
+	/*
+	 * When starting a new DMA operation do the busdma sync operation, and
+	 * disable SDCHI data interrrupts because we'll be driven by DMA
+	 * interrupts (or SDHCI error interrupts) until the IO is done.
+	 */
+	if (idx == 0) {
+		bus_dmamap_sync(sc->sc_dma_tag, sc->sc_dma_map, sync_op);
+		slot->intmask &= ~(SDHCI_INT_DATA_AVAIL | 
+		    SDHCI_INT_SPACE_AVAIL | SDHCI_INT_DATA_END);
+		bcm_sdhci_write_4(sc->sc_dev, &sc->sc_slot, SDHCI_SIGNAL_ENABLE,
+		    slot->intmask);
+	}
+
+	/*
+	 * Start the DMA transfer.  Only programming errors (like failing to
+	 * allocate a channel) cause a non-zero return from bcm_dma_start().
+	 */
+	err = bcm_dma_start(sc->sc_dma_ch, psrc, pdst, len);
+	KASSERT((err == 0), ("bcm2835_sdhci: failed DMA start"));
+}
+#endif
+
 static void
 bcm_sdhci_dma_intr(int ch, void *arg)
 {
@@ -474,6 +518,7 @@ bcm_sdhci_dma_intr(int ch, void *arg)
 		return;
 	}
 
+	len = bcm_dma_length(sc->sc_dma_ch);
 	if (slot->curcmd->data->flags & MMC_DATA_READ) {
 		sync_op = BUS_DMASYNC_POSTREAD;
 		mask = SDHCI_INT_DATA_AVAIL;
@@ -488,7 +533,7 @@ bcm_sdhci_dma_intr(int ch, void *arg)
 	sc->dmamap_seg_index = 0;
 
 	left = min(BCM_SDHCI_BUFFER_SIZE,
-	    slot->curcmd->data->len - slot->offset);
+	    slot->curcmd->data.len - slot->offset);
 
 	/* DATA END? */
 	reg = bcm_sdhci_read_4(slot->bus, slot, SDHCI_INT_STATUS);
@@ -550,7 +595,7 @@ bcm_sdhci_read_dma(device_t dev, struct sdhci_slot *slot)
 	}
 
 	left = min(BCM_SDHCI_BUFFER_SIZE,
-	    slot->curcmd->data->len - slot->offset);
+	    slot->curcmd->data.len - slot->offset);
 
 	KASSERT((left & 3) == 0,
 	    ("%s: len = %zu, not word-aligned", __func__, left));
@@ -562,6 +607,8 @@ bcm_sdhci_read_dma(device_t dev, struct sdhci_slot *slot)
 		slot->curcmd->error = MMC_ERR_NO_MEMORY;
 		return;
 	}
+	bus_dmamap_sync(sc->sc_dma_tag, sc->sc_dma_map,
+	    BUS_DMASYNC_PREREAD);
 
 	/* DMA start */
 	bcm_sdhci_start_dma_seg(sc);
@@ -579,18 +626,26 @@ bcm_sdhci_write_dma(device_t dev, struct sdhci_slot *slot)
 	}
 
 	left = min(BCM_SDHCI_BUFFER_SIZE,
-	    slot->curcmd->data->len - slot->offset);
+	    slot->curcmd->data.len - slot->offset);
 
 	KASSERT((left & 3) == 0,
 	    ("%s: len = %zu, not word-aligned", __func__, left));
 
 	if (bus_dmamap_load(sc->sc_dma_tag, sc->sc_dma_map,
-	    (uint8_t *)slot->curcmd->data->data + slot->offset, left, 
+	    (uint8_t *)slot->curcmd->data->data + slot->offset, left,
 	    bcm_sdhci_dmacb, sc, BUS_DMA_NOWAIT) != 0 ||
 	    sc->dmamap_status != 0) {
 		slot->curcmd->error = MMC_ERR_NO_MEMORY;
 		return;
 	}
+	bcm_dma_setup_src(sc->sc_dma_ch, BCM_DMA_DREQ_NONE,
+	    BCM_DMA_INC_ADDR,
+	    (left & 0xf) ? BCM_DMA_32BIT : BCM_DMA_128BIT);
+	bcm_dma_setup_dst(sc->sc_dma_ch, BCM_DMA_DREQ_EMMC,
+	    BCM_DMA_SAME_ADDR, BCM_DMA_32BIT);
+
+	bus_dmamap_sync(sc->sc_dma_tag, sc->sc_dma_map,
+	    BUS_DMASYNC_PREWRITE);
 
 	/* DMA start */
 	bcm_sdhci_start_dma_seg(sc);
@@ -606,7 +661,7 @@ bcm_sdhci_will_handle_transfer(device_t dev, struct sdhci_slot *slot)
 	 * that is not a multiple of four.
 	 */
 	left = min(BCM_DMA_BLOCK_SIZE,
-	    slot->curcmd->data->len - slot->offset);
+	    slot->curcmd->data.len - slot->offset);
 	if (left < BCM_DMA_BLOCK_SIZE)
 		return (0);
 	if (left & 0x03)

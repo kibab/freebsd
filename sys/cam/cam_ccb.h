@@ -42,6 +42,7 @@
 #include <cam/scsi/scsi_all.h>
 #include <cam/ata/ata_all.h>
 #include <cam/nvme/nvme_all.h>
+#include <cam/mmc/mmc_all.h>
 
 /* General allocation length definitions for CCB structures */
 #define	IOCDBLEN	CAM_MAX_CDBLEN	/* Space for CDB bytes/pointer */
@@ -208,10 +209,10 @@ typedef enum {
 	XPT_NVME_IO		= 0x1c | XPT_FC_DEV_QUEUED,
 				/* Execiute the requestred NVMe I/O operation */
 
-	XPT_MMCSD_IO		= 0x1d | XPT_FC_DEV_QUEUED,
+	XPT_MMC_IO		= 0x1d | XPT_FC_DEV_QUEUED,
 				/* Placeholder for MMC / SD / SDIO I/O stuff */
 
-	XPT_SCAN_TGT		= 0x1E | XPT_FC_QUEUED | XPT_FC_USER_CCB
+	XPT_SCAN_TGT		= 0x1e | XPT_FC_QUEUED | XPT_FC_USER_CCB
 				       | XPT_FC_XPT_ONLY,
 				/* Scan Target */
 
@@ -775,6 +776,16 @@ struct ccb_ataio {
 	uint32_t   unused;
 };
 
+/*
+ * MMC I/O Request CCB used for the XPT_MMC_IO function code.
+ */
+struct ccb_mmcio {
+	struct	   ccb_hdr ccb_h;
+	union	   ccb *next_ccb;	/* Ptr for next CCB for action */
+	struct mmc_command cmd;
+        struct mmc_command stop;
+};
+
 struct ccb_accept_tio {
 	struct	   ccb_hdr ccb_h;
 	cdb_t	   cdb_io;		/* Union for CDB bytes/pointer */
@@ -1008,6 +1019,26 @@ struct ccb_trans_settings_nvme
 	u_int		caps;
 };
 	
+/*
+ * Basically, what earlier was done with updating IOS
+ * now can be done using SET_TRAN_SETTINGS
+ */
+#include <cam/mmc/mmc_bus.h>
+struct ccb_trans_settings_mmc {
+	struct mmc_ios ios;
+#define MMC_CLK		(1 << 1)
+#define MMC_VDD		(1 << 2)
+#define MMC_CS		(1 << 3)
+#define MMC_BW		(1 << 4)
+#define MMC_PM		(1 << 5)
+#define MMC_BT		(1 << 6)
+#define MMC_BM		(1 << 7)
+	uint32_t ios_valid;
+
+/* The folowing is used only for GET_TRAN_SETTINGS */
+	uint32_t	host_ocr;
+};
+
 /* Get/Set transfer rate/width/disconnection/tag queueing settings */
 struct ccb_trans_settings {
 	struct	  ccb_hdr ccb_h;
@@ -1021,6 +1052,7 @@ struct ccb_trans_settings {
 		struct ccb_trans_settings_ata ata;
 		struct ccb_trans_settings_scsi scsi;
 		struct ccb_trans_settings_nvme nvme;
+		struct ccb_trans_settings_mmc mmc;
 	} proto_specific;
 	union {
 		u_int  valid;	/* Which fields to honor */
@@ -1286,6 +1318,7 @@ union ccb {
 	struct	ccb_dev_advinfo		cdai;
 	struct	ccb_async		casync;
 	struct	ccb_nvmeio		nvmeio;
+	struct	ccb_mmcio		mmcio;
 };
 
 #define CCB_CLEAR_ALL_EXCEPT_HDR(ccbp)			\
@@ -1326,6 +1359,13 @@ cam_fill_smpio(struct ccb_smpio *smpio, uint32_t retries,
 	       void (*cbfcnp)(struct cam_periph *, union ccb *), uint32_t flags,
 	       uint8_t *smp_request, int smp_request_len,
 	       uint8_t *smp_response, int smp_response_len,
+	       uint32_t timeout);
+
+static __inline void
+cam_fill_mmcio(struct ccb_mmcio *mmcio, uint32_t retries,
+	       void (*cbfcnp)(struct cam_periph *, union ccb *), uint32_t flags,
+               uint32_t mmc_opcode, uint32_t mmc_arg, uint32_t mmc_flags,
+	       struct mmc_data *mmc_d,
 	       uint32_t timeout);
 
 static __inline void
@@ -1414,6 +1454,34 @@ cam_fill_smpio(struct ccb_smpio *smpio, uint32_t retries,
 	smpio->smp_request_len = smp_request_len;
 	smpio->smp_response = smp_response;
 	smpio->smp_response_len = smp_response_len;
+}
+
+static __inline void
+cam_fill_mmcio(struct ccb_mmcio *mmcio, uint32_t retries,
+	       void (*cbfcnp)(struct cam_periph *, union ccb *), uint32_t flags,
+               uint32_t mmc_opcode, uint32_t mmc_arg, uint32_t mmc_flags,
+	       struct mmc_data *mmc_d,
+	       uint32_t timeout)
+{
+	mmcio->ccb_h.func_code = XPT_MMC_IO;
+	mmcio->ccb_h.flags = flags;
+	mmcio->ccb_h.retry_count = retries;
+	mmcio->ccb_h.cbfcnp = cbfcnp;
+	mmcio->ccb_h.timeout = timeout;
+	mmcio->cmd.opcode = mmc_opcode;
+	mmcio->cmd.arg = mmc_arg;
+	mmcio->cmd.flags = mmc_flags;
+        if (mmc_d != NULL) {
+                mmcio->cmd.data->len = mmc_d->len;
+                mmcio->cmd.data->data = mmc_d->data;
+                mmcio->cmd.data->flags = mmc_d->flags;
+        }
+        else
+                mmcio->cmd.data->len = 0;
+        mmcio->cmd.resp[0] = 0;
+        mmcio->cmd.resp[1] = 0;
+        mmcio->cmd.resp[2] = 0;
+        mmcio->cmd.resp[3] = 0;
 }
 
 static __inline void
