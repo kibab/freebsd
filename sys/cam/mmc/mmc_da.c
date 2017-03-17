@@ -979,6 +979,35 @@ mmc_sd_switch(struct cam_periph *periph, union ccb *ccb,
 	}
 }
 
+static int
+mmc_set_timing(struct cam_periph *periph,
+	       union ccb *ccb,
+	       enum mmc_bus_timing timing)
+{
+	u_char switch_res[64];
+	int err;
+	uint8_t	value;
+	struct mmc_params *mmcp = &periph->path->device->mmc_ident_data;
+
+	switch (timing) {
+	case bus_timing_normal:
+		value = 0;
+		break;
+	case bus_timing_hs:
+		value = 1;
+		break;
+	default:
+		return (MMC_ERR_INVALID);
+	}
+	if (mmcp->card_features & CARD_FEATURE_MMC) {
+		err = mmc_switch(periph, ccb, EXT_CSD_CMD_SET_NORMAL,
+				 EXT_CSD_HS_TIMING, value);
+	} else {
+		err = mmc_sd_switch(periph, ccb, SD_SWITCH_MODE_SET, SD_SWITCH_GROUP1, value, switch_res);
+	}
+	return (err);
+}
+
 static void
 sdda_start_init_task(void *context, int pending) {
 	union ccb *new_ccb;
@@ -1221,7 +1250,12 @@ finish_hs_tests:
 		   bus_width_str(max_host_bus_width),
 		   bus_width_str(max_card_bus_width)));
 	sdda_set_bus_width(periph, start_ccb, desired_bus_width);
-	/* TODO: Implement mmc_set_timing() */
+
+	if (f_max > 25000000) {
+		err = mmc_set_timing(periph, start_ccb, bus_timing_hs);
+		if (err != MMC_ERR_NONE)
+			CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("Cannot switch card to high-speed mode"));
+	}
 	softc->state = SDDA_STATE_NORMAL;
 	sdda_hook_into_geom(periph);
 }
