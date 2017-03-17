@@ -587,45 +587,18 @@ sddaasync(void *callback_arg, u_int32_t code,
 	}
 	case AC_GETDEV_CHANGED:
 	{
-                CAM_DEBUG(path, CAM_DEBUG_TRACE, ("=> AC_GETDEV_CHANGED\n"));
+		CAM_DEBUG(path, CAM_DEBUG_TRACE, ("=> AC_GETDEV_CHANGED\n"));
 		softc = (struct sdda_softc *)periph->softc;
 		xpt_setup_ccb(&cgd.ccb_h, periph->path, CAM_PRIORITY_NORMAL);
 		cgd.ccb_h.func_code = XPT_GDEV_TYPE;
 		xpt_action((union ccb *)&cgd);
-
-                /*
-		if ((cgd.ident_data.capabilities1 & ATA_SUPPORT_DMA) &&
-		    (cgd.inq_flags & SID_DMA))
-			softc->flags |= SDDA_FLAG_CAN_DMA;
-		else
-			softc->flags &= ~SDDA_FLAG_CAN_DMA;
-		if (cgd.ident_data.support.command2 & ATA_SUPPORT_ADDRESS48) {
-			softc->flags |= SDDA_FLAG_CAN_48BIT;
-			if (cgd.inq_flags & SID_DMA48)
-				softc->flags |= SDDA_FLAG_CAN_DMA48;
-			else
-				softc->flags &= ~SDDA_FLAG_CAN_DMA48;
-		} else
-			softc->flags &= ~(SDDA_FLAG_CAN_48BIT |
-			    SDDA_FLAG_CAN_DMA48);
-		if ((cgd.ident_data.satacapabilities & ATA_SUPPORT_NCQ) &&
-		    (cgd.inq_flags & SID_DMA) && (cgd.inq_flags & SID_CmdQue))
-			softc->flags |= SDDA_FLAG_CAN_NCQ;
-		else
-			softc->flags &= ~SDDA_FLAG_CAN_NCQ;
-		if ((cgd.ident_data.support_dsm & ATA_SUPPORT_DSM_TRIM) &&
-		    (cgd.inq_flags & SID_DMA))
-			softc->flags |= SDDA_FLAG_CAN_TRIM;
-		else
-			softc->flags &= ~SDDA_FLAG_CAN_TRIM;
-                */
 		cam_periph_async(periph, code, path, arg);
 		break;
 	}
 	case AC_ADVINFO_CHANGED:
 	{
 		uintptr_t buftype;
-                CAM_DEBUG(path, CAM_DEBUG_TRACE, ("=> AC_ADVINFO_CHANGED\n"));
+		CAM_DEBUG(path, CAM_DEBUG_TRACE, ("=> AC_ADVINFO_CHANGED\n"));
 		buftype = (uintptr_t)arg;
 		if (buftype == CDAI_TYPE_PHYS_PATH) {
 			struct sdda_softc *softc;
@@ -639,30 +612,10 @@ sddaasync(void *callback_arg, u_int32_t code,
 	case AC_SENT_BDR:
 	case AC_BUS_RESET:
 	{
-                CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("AC_BUS_RESET"));
-/*		softc = (struct sdda_softc *)periph->softc;
-		cam_periph_async(periph, code, path, arg);
-		if (softc->state != SDDA_STATE_NORMAL)
-			break;
-		xpt_setup_ccb(&cgd.ccb_h, periph->path, CAM_PRIORITY_NORMAL);
-		cgd.ccb_h.func_code = XPT_GDEV_TYPE;
-		xpt_action((union ccb *)&cgd);
-		if (SDDA_RA >= 0 &&
-		    cgd.ident_data.support.command1 & ATA_SUPPORT_LOOKAHEAD)
-			softc->state = SDDA_STATE_RAHEAD;
-		else if (SDDA_WC >= 0 &&
-		    cgd.ident_data.support.command1 & ATA_SUPPORT_WRITECACHE)
-			softc->state = SDDA_STATE_WCACHE;
-		else
-		    break;
-		if (cam_periph_acquire(periph) != CAM_REQ_CMP)
-			softc->state = SDDA_STATE_NORMAL;
-		else
-			xpt_schedule(periph, CAM_PRIORITY_DEV);
-*/
+		CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("AC_BUS_RESET"));
 	}
 	default:
-                CAM_DEBUG(path, CAM_DEBUG_TRACE, ("=> default?!\n"));
+		CAM_DEBUG(path, CAM_DEBUG_TRACE, ("=> default?!\n"));
 		cam_periph_async(periph, code, path, arg);
 		break;
 	}
@@ -712,35 +665,14 @@ sddaregister(struct cam_periph *periph, void *arg)
 	}
 
 	bioq_init(&softc->bio_queue);
-        softc->state = SDDA_STATE_INIT;
+	softc->state = SDDA_STATE_INIT;
 	softc->mmcdata =
 		(struct mmc_data *) malloc(sizeof(struct mmc_data), M_DEVBUF, M_NOWAIT|M_ZERO);
-
-/*
-	if ((cgd->ident_data.capabilities1 & ATA_SUPPORT_DMA) &&
-	    (cgd->inq_flags & SID_DMA))
-		softc->flags |= SDDA_FLAG_CAN_DMA;
-	if (cgd->ident_data.support.command2 & ATA_SUPPORT_ADDRESS48) {
-		softc->flags |= SDDA_FLAG_CAN_48BIT;
-		if (cgd->inq_flags & SID_DMA48)
-			softc->flags |= SDDA_FLAG_CAN_DMA48;
-	}
-	if (cgd->ident_data.support.command2 & ATA_SUPPORT_FLUSHCACHE)
-		softc->flags |= SDDA_FLAG_CAN_FLUSHCACHE;
-	if (cgd->ident_data.support.command1 & ATA_SUPPORT_POWERMGT)
-		softc->flags |= SDDA_FLAG_CAN_POWERMGT;
-	if ((cgd->ident_data.satacapabilities & ATA_SUPPORT_NCQ) &&
-	    (cgd->inq_flags & SID_DMA) && (cgd->inq_flags & SID_CmdQue))
-		softc->flags |= SDDA_FLAG_CAN_NCQ;
-	if (cgd->ident_data.support.command2 & ATA_SUPPORT_CFA)
-		softc->flags |= SDDA_FLAG_CAN_CFA;
-*/
 	periph->softc = softc;
 
-        request_ccb = (union ccb*) arg;
+	request_ccb = (union ccb*) arg;
 	if (cam_periph_acquire(periph) != CAM_REQ_CMP) {
-		xpt_print(periph->path, "%s: lost periph during "
-			  "registration!\n", __func__);
+		xpt_print(periph->path, "%s: lost periph during registration!\n", __func__);
 		cam_periph_lock(periph);
 		return (CAM_REQ_CMP_ERR);
 	}
@@ -749,8 +681,6 @@ sddaregister(struct cam_periph *periph, void *arg)
 	taskqueue_enqueue(taskqueue_thread, &softc->start_init_task);
 
 	return (CAM_REQ_CMP);
-
-        /* NOTREACHED */
 }
 
 static cam_status
@@ -763,12 +693,12 @@ sdda_hook_into_geom(struct cam_periph *periph)
 
 	softc = (struct sdda_softc*) periph->softc;
 
-        bzero(&cpi, sizeof(cpi));
+	bzero(&cpi, sizeof(cpi));
 	xpt_setup_ccb(&cpi.ccb_h, periph->path, CAM_PRIORITY_NONE);
 	cpi.ccb_h.func_code = XPT_PATH_INQ;
 	xpt_action((union ccb *)&cpi);
 
-        bzero(&cgd, sizeof(cgd));
+	bzero(&cgd, sizeof(cgd));
 	xpt_setup_ccb(&cgd.ccb_h, periph->path, CAM_PRIORITY_NONE);
 	cpi.ccb_h.func_code = XPT_GDEV_TYPE;
 	xpt_action((union ccb *)&cgd);
@@ -814,7 +744,7 @@ sdda_hook_into_geom(struct cam_periph *periph)
 
 	softc->disk->d_sectorsize = 512;
 	softc->disk->d_mediasize = softc->mediasize;
-        softc->disk->d_stripesize = 0;
+	softc->disk->d_stripesize = 0;
 	softc->disk->d_fwsectors = 0;
 	softc->disk->d_fwheads = 0;
 
@@ -833,10 +763,10 @@ sdda_hook_into_geom(struct cam_periph *periph)
 	cam_periph_lock(periph);
 	cam_periph_unhold(periph);
 
-        xpt_announce_periph(periph, softc->card_id_string);
+	xpt_announce_periph(periph, softc->card_id_string);
 
 	if (cam_periph_acquire(periph) == CAM_REQ_CMP)
-                printf("Acquired periph Ok\n");
+		printf("Acquired periph Ok\n");
 	/*
 	 * Add async callbacks for bus reset and
 	 * bus device reset calls.  I don't bother
@@ -849,17 +779,12 @@ sdda_hook_into_geom(struct cam_periph *periph)
 	    AC_GETDEV_CHANGED | AC_ADVINFO_CHANGED,
 	    sddaasync, periph, periph->path);
 
-//	if (cam_periph_acquire(periph) != CAM_REQ_CMP)
-//                printf("wtf?!");
-//	else
-//		xpt_schedule(periph, CAM_PRIORITY_DEV);
 	return(CAM_REQ_CMP);
 }
 
 static int
 mmc_exec_app_cmd(struct cam_periph *periph, union ccb *ccb,
 	struct mmc_command *cmd) {
-//	struct sdda_softc* softc = (struct sdda_softc*) periph->softc;
 	int err;
 
 	/* Send APP_CMD first */
@@ -1148,21 +1073,21 @@ sdda_start_init(void *context, union ccb *start_ccb) {
 	}
 
 	struct sdda_softc *softc = (struct sdda_softc *)periph->softc;
-        //struct ccb_mmcio *mmcio = &start_ccb->mmcio;
-        struct mmc_params *mmcp = &periph->path->device->mmc_ident_data;
-        struct cam_ed *device = periph->path->device;
+	//struct ccb_mmcio *mmcio = &start_ccb->mmcio;
+	struct mmc_params *mmcp = &periph->path->device->mmc_ident_data;
+	struct cam_ed *device = periph->path->device;
 
-        if (mmcp->card_features & CARD_FEATURE_MMC) {
-                mmc_decode_csd_mmc(mmcp->card_csd, &softc->csd);
-                mmc_decode_cid_mmc(mmcp->card_cid, &softc->cid);
+	if (mmcp->card_features & CARD_FEATURE_MMC) {
+		mmc_decode_csd_mmc(mmcp->card_csd, &softc->csd);
+		mmc_decode_cid_mmc(mmcp->card_cid, &softc->cid);
 		if (softc->csd.spec_vers >= 4)
 			err = mmc_send_ext_csd(periph, start_ccb,
 					       (uint8_t *)&softc->raw_ext_csd,
 					       sizeof(softc->raw_ext_csd));
-        } else {
-                mmc_decode_csd_sd(mmcp->card_csd, &softc->csd);
-                mmc_decode_cid_sd(mmcp->card_cid, &softc->cid);
-        }
+	} else {
+		mmc_decode_csd_sd(mmcp->card_csd, &softc->csd);
+		mmc_decode_cid_sd(mmcp->card_cid, &softc->cid);
+	}
 
 	softc->sector_count = softc->csd.capacity / 512;
 	softc->mediasize = softc->csd.capacity;
@@ -1187,20 +1112,20 @@ sdda_start_init(void *context, union ccb *start_ccb) {
 		   softc->sector_count));
 	mmc_format_card_id_string(softc, mmcp);
 
-        /* Update info for CAM */
-        device->serial_num_len = strlen(softc->card_sn_string);
-        device->serial_num =
-                (u_int8_t *)malloc((device->serial_num_len + 1),
-                                   M_CAMXPT, M_NOWAIT);
-        strlcpy(device->serial_num, softc->card_sn_string, device->serial_num_len);
+	/* Update info for CAM */
+	device->serial_num_len = strlen(softc->card_sn_string);
+	device->serial_num =
+		(u_int8_t *)malloc((device->serial_num_len + 1),
+				   M_CAMXPT, M_NOWAIT);
+	strlcpy(device->serial_num, softc->card_sn_string, device->serial_num_len);
 
-        device->device_id_len = strlen(softc->card_id_string);
-        device->device_id =
-                (u_int8_t *)malloc((device->device_id_len + 1),
-                                   M_CAMXPT, M_NOWAIT);
-        strlcpy(device->device_id, softc->card_id_string, device->device_id_len);
+	device->device_id_len = strlen(softc->card_id_string);
+	device->device_id =
+		(u_int8_t *)malloc((device->device_id_len + 1),
+				   M_CAMXPT, M_NOWAIT);
+	strlcpy(device->device_id, softc->card_id_string, device->device_id_len);
 
-        strlcpy(mmcp->model, softc->card_id_string, sizeof(mmcp->model));
+	strlcpy(mmcp->model, softc->card_id_string, sizeof(mmcp->model));
 
 	/* Set the clock frequency that the card can handle */
 	struct ccb_trans_settings_mmc *cts;
@@ -1231,7 +1156,8 @@ sdda_start_init(void *context, union ccb *start_ccb) {
 			uint32_t rawscr;
 			uint8_t res[64];
 			if (mmc_app_get_scr(periph, start_ccb, &rawscr)) {
-				CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH, ("Cannot get SCR\n"));				goto finish_hs_tests;
+				CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH, ("Cannot get SCR\n"));
+				goto finish_hs_tests;
 			}
 			mmc_app_decode_scr(&rawscr, &softc->scr);
 
@@ -1290,7 +1216,10 @@ finish_hs_tests:
 
 	desired_bus_width = min(max_host_bus_width, max_card_bus_width);
 	CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH,
-		  ("Set bus width to %s (min of host %s and card %s)\n", bus_width_str(desired_bus_width), bus_width_str(max_host_bus_width), bus_width_str(max_card_bus_width)));
+		  ("Set bus width to %s (min of host %s and card %s)\n",
+		   bus_width_str(desired_bus_width),
+		   bus_width_str(max_host_bus_width),
+		   bus_width_str(max_card_bus_width)));
 	sdda_set_bus_width(periph, start_ccb, desired_bus_width);
 	/* TODO: Implement mmc_set_timing() */
 	softc->state = SDDA_STATE_NORMAL;
