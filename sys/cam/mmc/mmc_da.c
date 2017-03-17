@@ -136,7 +136,6 @@ static uint16_t get_rca(struct cam_periph *periph);
 static cam_status sdda_hook_into_geom(struct cam_periph *periph);
 static void sdda_start_init(void *context, union ccb *start_ccb);
 static void sdda_start_init_task(void *context, int pending);
-//static void sdda_done_init(struct cam_periph *periph, union ccb *done_ccb);
 
 static struct periph_driver sddadriver =
 {
@@ -989,6 +988,8 @@ mmc_set_timing(struct cam_periph *periph,
 	uint8_t	value;
 	struct mmc_params *mmcp = &periph->path->device->mmc_ident_data;
 
+	CAM_DEBUG(ccb->ccb_h.path, CAM_DEBUG_TRACE,
+		  ("mmc_set_timing(timing=%d)", timing));
 	switch (timing) {
 	case bus_timing_normal:
 		value = 0;
