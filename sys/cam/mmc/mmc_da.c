@@ -1006,6 +1006,19 @@ mmc_set_timing(struct cam_periph *periph,
 	} else {
 		err = mmc_sd_switch(periph, ccb, SD_SWITCH_MODE_SET, SD_SWITCH_GROUP1, value, switch_res);
 	}
+
+	/* Set high-speed timing on the host */
+	struct ccb_trans_settings_mmc *cts;
+	cts = &ccb->cts.proto_specific.mmc;
+	ccb->ccb_h.func_code = XPT_SET_TRAN_SETTINGS;
+	ccb->ccb_h.flags = CAM_DIR_NONE;
+	ccb->ccb_h.retry_count = 0;
+	ccb->ccb_h.timeout = 100;
+	ccb->ccb_h.cbfcnp = NULL;
+	cts->ios.timing = timing;
+	cts->ios_valid = MMC_BT;
+	xpt_action(ccb);
+
 	return (err);
 }
 
