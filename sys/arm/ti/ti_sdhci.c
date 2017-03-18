@@ -256,10 +256,10 @@ ti_sdhci_write_1(device_t dev, struct sdhci_slot *slot, bus_size_t off,
 		val32 = ti_mmchs_read_4(sc, MMCHS_CON);
 		newval32  = val32;
 		if (val & SDHCI_CTRL_8BITBUS) {
-			device_printf(dev, "!!!!!!!!!!!!!!!!!!1Enabling 8-bit bus!");
+			device_printf(dev, "Custom-enabling 8-bit bus\n");
 			newval32 |= MMCHS_CON_DW8;
 		} else {
-			device_printf(dev, "!!!!!!!!!!!!!!!!!!1Disabling 8-bit bus!");
+			device_printf(dev, "Custom-disabling 8-bit bus\n");
 			newval32 &= ~MMCHS_CON_DW8;
 		}
 		if (newval32 != val32)
