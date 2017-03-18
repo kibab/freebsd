@@ -62,7 +62,7 @@ __FBSDID("$FreeBSD$");
 
 SYSCTL_NODE(_hw, OID_AUTO, sdhci, CTLFLAG_RD, 0, "sdhci driver");
 
-static int sdhci_debug = 10;
+static int sdhci_debug = 0;
 SYSCTL_INT(_hw_sdhci, OID_AUTO, debug, CTLFLAG_RWTUN, &sdhci_debug, 0,
     "Debug level");
 #define	RD1(slot, off)	SDHCI_READ_1((slot)->bus, (slot), (off))
@@ -1264,12 +1264,17 @@ sdhci_start(struct sdhci_slot *slot)
 		return;
 	}
 
+	/*
+	 * Old stack doesn't use this!
+	 * Enabling this code causes significant performance degradation
+	 * and IRQ storms on BBB, Wandboard behaves fine.
+	 * Not using this code does no harm...
 	if (!(slot->flags & STOP_STARTED) && mmcio->stop.opcode != 0) {
 		slot->flags |= STOP_STARTED;
 		sdhci_start_command(slot, &mmcio->stop);
 		return;
 	}
-
+	*/
 	if (sdhci_debug > 1)
 		slot_printf(slot, "result: %d\n", mmcio->cmd.error);
 	if (mmcio->cmd.error == 0 &&
