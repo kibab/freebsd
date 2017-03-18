@@ -23,18 +23,6 @@
 
 include		BEAGLEBONE
 
-# NFS root from boopt/dhcp
-options 	BOOTP
-options 	BOOTP_NFSROOT
-options 	BOOTP_COMPAT
-options 	BOOTP_NFSV3
-options 	BOOTP_WIRED_TO=cpsw0
-
-# Flattened Device Tree
-options 	FDT			# Configure using FDT/DTB data
-options         FDT_DTB_STATIC
-makeoptions     FDT_DTS_FILE=beaglebone-black.dts
-
 # Add CAMDEBUG stuff
 options CAMDEBUG
 options CAM_DEBUG_FLAGS=(CAM_DEBUG_INFO|CAM_DEBUG_PROBE|CAM_DEBUG_PERIPH|CAM_DEBUG_TRACE)
