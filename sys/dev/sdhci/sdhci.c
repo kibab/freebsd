@@ -85,6 +85,7 @@ static void sdhci_card_poll(void *);
 static void sdhci_card_task(void *, int);
 
 /* CAM-related */
+int sdhci_cam_get_possible_host_clock(struct sdhci_slot *slot, int proposed_clock);
 static int sdhci_cam_update_ios(struct sdhci_slot *slot);
 static int sdhci_cam_request(struct sdhci_slot *slot, union ccb *ccb);
 static void sdhci_cam_action(struct cam_sim *sim, union ccb *ccb);
@@ -1882,6 +1883,32 @@ sdhci_cam_poll(struct cam_sim *sim)
 	return;
 }
 
+int sdhci_cam_get_possible_host_clock(struct sdhci_slot *slot, int proposed_clock) {
+	int max_clock, clock, i;
+
+	if (proposed_clock == 0)
+		return 0;
+	max_clock = slot->max_clk;
+	clock = max_clock;
+
+	if (slot->version < SDHCI_SPEC_300) {
+		for (i = 0; i < SDHCI_200_MAX_DIVIDER;
+		     i <<= 1) {
+			if (clock <= proposed_clock)
+				break;
+			clock >>= 1;
+		}
+	} else {
+		for (i = 0; i < SDHCI_300_MAX_DIVIDER;
+		     i += 2) {
+			if (clock <= proposed_clock)
+				break;
+			clock = max_clock / (i + 2);
+		}
+	}
+	return clock;
+}
+
 int
 sdhci_cam_settran_settings(struct sdhci_slot *slot, union ccb *ccb)
 {
@@ -1896,7 +1923,7 @@ sdhci_cam_settran_settings(struct sdhci_slot *slot, union ccb *ccb)
 
 	/* Update only requested fields */
 	if (cts->ios_valid & MMC_CLK) {
-		ios->clock = new_ios->clock;
+		ios->clock = sdhci_cam_get_possible_host_clock(slot, new_ios->clock);
 		slot_printf(slot, "Clock => %d\n", ios->clock);
 	}
 	if (cts->ios_valid & MMC_VDD) {
