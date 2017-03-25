@@ -528,7 +528,7 @@ sddacleanup(struct cam_periph *periph)
 {
 	struct sdda_softc *softc;
 
-        CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("sddacleanup\n"));
+	CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("sddacleanup\n"));
 	softc = (struct sdda_softc *)periph->softc;
 
 	cam_periph_unlock(periph);
@@ -670,11 +670,6 @@ sddaregister(struct cam_periph *periph, void *arg)
 	periph->softc = softc;
 
 	request_ccb = (union ccb*) arg;
-	if (cam_periph_acquire(periph) != CAM_REQ_CMP) {
-		xpt_print(periph->path, "%s: lost periph during registration!\n", __func__);
-		cam_periph_lock(periph);
-		return (CAM_REQ_CMP_ERR);
-	}
 	xpt_schedule(periph, CAM_PRIORITY_XPT);
 	TASK_INIT(&softc->start_init_task, 0, sdda_start_init_task, periph);
 	taskqueue_enqueue(taskqueue_thread, &softc->start_init_task);
@@ -764,8 +759,6 @@ sdda_hook_into_geom(struct cam_periph *periph)
 
 	xpt_announce_periph(periph, softc->card_id_string);
 
-	if (cam_periph_acquire(periph) == CAM_REQ_CMP)
-		printf("Acquired periph Ok\n");
 	/*
 	 * Add async callbacks for bus reset and
 	 * bus device reset calls.  I don't bother
@@ -1279,40 +1272,40 @@ static void
 sddastart(struct cam_periph *periph, union ccb *start_ccb)
 {
 	struct sdda_softc *softc = (struct sdda_softc *)periph->softc;
-        struct mmc_params *mmcp = &periph->path->device->mmc_ident_data;
+	struct mmc_params *mmcp = &periph->path->device->mmc_ident_data;
 
 	CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("sddastart\n"));
 
-        if (softc->state != SDDA_STATE_NORMAL) {
+	if (softc->state != SDDA_STATE_NORMAL) {
 		CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("device is not in SDDA_STATE_NORMAL yet"));
 		xpt_release_ccb(start_ccb);
-                return;
-        }
-        struct bio *bp;
+		return;
+	}
+	struct bio *bp;
 
-        /* Run regular command. */
-        bp = bioq_first(&softc->bio_queue);
-        if (bp == NULL) {
-                xpt_release_ccb(start_ccb);
-                return;
-        }
-        bioq_remove(&softc->bio_queue, bp);
+	/* Run regular command. */
+	bp = bioq_first(&softc->bio_queue);
+	if (bp == NULL) {
+		xpt_release_ccb(start_ccb);
+		return;
+	}
+	bioq_remove(&softc->bio_queue, bp);
 
-        switch (bp->bio_cmd) {
-        case BIO_WRITE:
-                CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("BIO_WRITE\n"));
-                softc->flags |= SDDA_FLAG_DIRTY;
-                /* FALLTHROUGH */
-        case BIO_READ:
-        {
-                CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("BIO_READ\n"));
-                uint64_t blockno = bp->bio_pblkno;
-                uint16_t count = bp->bio_bcount / 512;
-                uint16_t opcode;
+	switch (bp->bio_cmd) {
+	case BIO_WRITE:
+		CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("BIO_WRITE\n"));
+		softc->flags |= SDDA_FLAG_DIRTY;
+		/* FALLTHROUGH */
+	case BIO_READ:
+	{
+		CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("BIO_READ\n"));
+		uint64_t blockno = bp->bio_pblkno;
+		uint16_t count = bp->bio_bcount / 512;
+		uint16_t opcode;
 
-                CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("Block %"PRIu64" cnt %u\n", blockno, count));
+		CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("Block %"PRIu64" cnt %u\n", blockno, count));
 
-                /* Construct new MMC command */
+		/* Construct new MMC command */
 		if (bp->bio_cmd == BIO_READ) {
 			if (count > 1)
 				opcode = MMC_READ_MULTIPLE_BLOCK;
@@ -1325,112 +1318,110 @@ sddastart(struct cam_periph *periph, union ccb *start_ccb)
 				opcode = MMC_WRITE_BLOCK;
 		}
 
-                start_ccb->ccb_h.func_code = XPT_MMC_IO;
-                start_ccb->ccb_h.flags = (bp->bio_cmd == BIO_READ ? CAM_DIR_IN : CAM_DIR_OUT);
-                start_ccb->ccb_h.retry_count = 0;
-                start_ccb->ccb_h.timeout = 15 * 1000;
-                start_ccb->ccb_h.cbfcnp = sddadone;
-                struct ccb_mmcio *mmcio;
+		start_ccb->ccb_h.func_code = XPT_MMC_IO;
+		start_ccb->ccb_h.flags = (bp->bio_cmd == BIO_READ ? CAM_DIR_IN : CAM_DIR_OUT);
+		start_ccb->ccb_h.retry_count = 0;
+		start_ccb->ccb_h.timeout = 15 * 1000;
+		start_ccb->ccb_h.cbfcnp = sddadone;
+		struct ccb_mmcio *mmcio;
 
-                mmcio = &start_ccb->mmcio;
-                mmcio->cmd.opcode = opcode;
-                mmcio->cmd.arg = blockno;
-                if (!(mmcp->card_features & CARD_FEATURE_SDHC))
-                        mmcio->cmd.arg <<= 9;
+		mmcio = &start_ccb->mmcio;
+		mmcio->cmd.opcode = opcode;
+		mmcio->cmd.arg = blockno;
+		if (!(mmcp->card_features & CARD_FEATURE_SDHC))
+			mmcio->cmd.arg <<= 9;
 
-                mmcio->cmd.flags = MMC_RSP_R1 | MMC_CMD_ADTC;
+		mmcio->cmd.flags = MMC_RSP_R1 | MMC_CMD_ADTC;
 		mmcio->cmd.data = softc->mmcdata;
-                mmcio->cmd.data->data = bp->bio_data;
-                mmcio->cmd.data->len = 512 * count;
-                mmcio->cmd.data->flags = (bp->bio_cmd == BIO_READ ? MMC_DATA_READ : MMC_DATA_WRITE);
-                /* Direct h/w to issue CMD12 upon completion */
-                if (count > 1) {
-                        mmcio->stop.opcode = MMC_STOP_TRANSMISSION;
-                        mmcio->stop.flags = MMC_RSP_R1B | MMC_CMD_AC;
-                        mmcio->stop.arg = 0;
-                }
+		mmcio->cmd.data->data = bp->bio_data;
+		mmcio->cmd.data->len = 512 * count;
+		mmcio->cmd.data->flags = (bp->bio_cmd == BIO_READ ? MMC_DATA_READ : MMC_DATA_WRITE);
+		/* Direct h/w to issue CMD12 upon completion */
+		if (count > 1) {
+			mmcio->stop.opcode = MMC_STOP_TRANSMISSION;
+			mmcio->stop.flags = MMC_RSP_R1B | MMC_CMD_AC;
+			mmcio->stop.arg = 0;
+		}
 
-                break;
-        }
-        case BIO_FLUSH:
-                CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("BIO_FLUSH\n"));
+		break;
+	}
+	case BIO_FLUSH:
+		CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("BIO_FLUSH\n"));
 		sddaschedule(periph);
 		break;
-        case BIO_DELETE:
-                CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("BIO_DELETE\n"));
+	case BIO_DELETE:
+		CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("BIO_DELETE\n"));
 		sddaschedule(periph);
 		break;
 	}
+	start_ccb->ccb_h.ccb_bp = bp;
+	softc->outstanding_cmds++;
+	softc->refcount++;
+	cam_periph_unlock(periph);
+	xpt_action(start_ccb);
+	cam_periph_lock(periph);
+	softc->refcount--;
 
-        start_ccb->ccb_h.ccb_bp = bp;
-        softc->outstanding_cmds++;
-        softc->refcount++;
-        cam_periph_unlock(periph);
-        xpt_action(start_ccb);
-        cam_periph_lock(periph);
-        softc->refcount--;
-
-        /* May have more work to do, so ensure we stay scheduled */
-        sddaschedule(periph);
+	/* May have more work to do, so ensure we stay scheduled */
+	sddaschedule(periph);
 }
 
 static void
 sddadone(struct cam_periph *periph, union ccb *done_ccb)
 {
 	struct sdda_softc *softc;
-        struct ccb_mmcio *mmcio;
+	struct ccb_mmcio *mmcio;
 //	struct ccb_getdev *cgd;
 	struct cam_path *path;
 //	int state;
 
 	softc = (struct sdda_softc *)periph->softc;
-        mmcio = &done_ccb->mmcio;
+	mmcio = &done_ccb->mmcio;
 	path = done_ccb->ccb_h.path;
 
 	CAM_DEBUG(path, CAM_DEBUG_TRACE, ("sddadone\n"));
 
-        struct bio *bp;
-        int error = 0;
+	struct bio *bp;
+	int error = 0;
 
 //        cam_periph_lock(periph);
-        if ((done_ccb->ccb_h.status & CAM_STATUS_MASK) != CAM_REQ_CMP) {
-                CAM_DEBUG(path, CAM_DEBUG_TRACE, ("Error!!!\n"));
-                if ((done_ccb->ccb_h.status & CAM_DEV_QFRZN) != 0)
-                        cam_release_devq(path,
-                                         /*relsim_flags*/0,
-                                         /*reduction*/0,
-                                         /*timeout*/0,
-                                         /*getcount_only*/0);
-                error = 5; /* EIO */
-        } else {
-                if ((done_ccb->ccb_h.status & CAM_DEV_QFRZN) != 0)
-                        panic("REQ_CMP with QFRZN");
-                error = 0;
-        }
+	if ((done_ccb->ccb_h.status & CAM_STATUS_MASK) != CAM_REQ_CMP) {
+		CAM_DEBUG(path, CAM_DEBUG_TRACE, ("Error!!!\n"));
+		if ((done_ccb->ccb_h.status & CAM_DEV_QFRZN) != 0)
+			cam_release_devq(path,
+					 /*relsim_flags*/0,
+					 /*reduction*/0,
+					 /*timeout*/0,
+					 /*getcount_only*/0);
+		error = 5; /* EIO */
+	} else {
+		if ((done_ccb->ccb_h.status & CAM_DEV_QFRZN) != 0)
+			panic("REQ_CMP with QFRZN");
+		error = 0;
+	}
 
 
-        bp = (struct bio *)done_ccb->ccb_h.ccb_bp;
-        bp->bio_error = error;
-        if (error != 0) {
-                bp->bio_resid = bp->bio_bcount;
-                bp->bio_flags |= BIO_ERROR;
-        } else {
-                /* XXX: How many bytes remaining? */
-                bp->bio_resid = 0;
-                if (bp->bio_resid > 0)
-                        bp->bio_flags |= BIO_ERROR;
-        }
+	bp = (struct bio *)done_ccb->ccb_h.ccb_bp;
+	bp->bio_error = error;
+	if (error != 0) {
+		bp->bio_resid = bp->bio_bcount;
+		bp->bio_flags |= BIO_ERROR;
+	} else {
+		/* XXX: How many bytes remaining? */
+		bp->bio_resid = 0;
+		if (bp->bio_resid > 0)
+			bp->bio_flags |= BIO_ERROR;
+	}
 
-        uint32_t card_status = mmcio->cmd.resp[0];
-        CAM_DEBUG(path, CAM_DEBUG_TRACE,
-                  ("Card status: %08x\n", R1_STATUS(card_status)));
-        CAM_DEBUG(path, CAM_DEBUG_TRACE,
-                  ("Current state: %d\n", R1_CURRENT_STATE(card_status)));
+	uint32_t card_status = mmcio->cmd.resp[0];
+	CAM_DEBUG(path, CAM_DEBUG_TRACE,
+		  ("Card status: %08x\n", R1_STATUS(card_status)));
+	CAM_DEBUG(path, CAM_DEBUG_TRACE,
+		  ("Current state: %d\n", R1_CURRENT_STATE(card_status)));
 
-        softc->outstanding_cmds--;
-        xpt_release_ccb(done_ccb);
-//                cam_periph_unlock(periph);
-        biodone(bp);
+	softc->outstanding_cmds--;
+	xpt_release_ccb(done_ccb);
+	biodone(bp);
 }
 
 static int
@@ -1438,36 +1429,4 @@ sddaerror(union ccb *ccb, u_int32_t cam_flags, u_int32_t sense_flags)
 {
 	return(cam_periph_error(ccb, cam_flags, sense_flags, NULL));
 }
-
-/*
- * Step through all SDDA peripheral drivers, and if the device is still open,
- * sync the disk cache to physical media.
- */
-static void
-sddaflush(void)
-{
-	struct cam_periph *periph;
-//	struct sdda_softc *softc;
-//	union ccb *ccb;
-//	int error;
-
-        CAM_PERIPH_FOREACH(periph, &sddadriver) {
-		cam_periph_lock(periph);
-                xpt_print(periph->path, "flush\n");
-		cam_periph_unlock(periph);
-	}
-}
-
-static void
-sddaspindown(uint8_t cmd, int flags)
-{
-	struct cam_periph *periph;
-
-	CAM_PERIPH_FOREACH(periph, &sddadriver) {
-		cam_periph_lock(periph);
-                xpt_print(periph->path, "spin-down\n");
-		cam_periph_unlock(periph);
-	}
-}
-
 #endif /* _KERNEL */

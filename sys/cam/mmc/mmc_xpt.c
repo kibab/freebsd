@@ -223,7 +223,7 @@ mmc_dev_async(u_int32_t async_code, struct cam_eb *bus, struct cam_et *target,
                 printf("Got AC_FOUND_DEVICE -- whatever...\n");
         } else if (async_code == AC_PATH_DEREGISTERED ) {
                         printf("Got AC_PATH_DEREGISTERED -- whatever...\n");
-        } else
+	} else
 		panic("Unknown async code\n");
 }
 
@@ -235,6 +235,7 @@ mmc_scan_lun(struct cam_periph *periph, struct cam_path *path,
 	struct ccb_pathinq cpi;
 	cam_status status;
 	struct cam_periph *old_periph;
+	int lock;
 
 	CAM_DEBUG(path, CAM_DEBUG_TRACE, ("mmc_scan_lun\n"));
 
@@ -250,28 +251,16 @@ mmc_scan_lun(struct cam_periph *periph, struct cam_path *path,
 		return;
 	}
 
-        /*
-         * Unlike in other drivers like ata(4), here we're called with the wildcard
-         * path. So we need to create a new path to start a scanner on it.
-         */
-        struct cam_path *newpath;
-        status = xpt_create_path(&newpath, NULL,
-                                 request_ccb->ccb_h.path_id,
-                                 /* target */ 0 ,
-                                 /* lun */ 0);
-        if (status != CAM_REQ_CMP) {
-                printf("xpt_create_path failed"
-                       " with status %#x\n",
-                       status);
-		request_ccb->ccb_h.status = status;
+	if (xpt_path_lun_id(path) == CAM_LUN_WILDCARD) {
+		CAM_DEBUG(path, CAM_DEBUG_TRACE, ("mmd_scan_lun ignoring bus\n"));
+		request_ccb->ccb_h.status = CAM_REQ_CMP;	/* XXX signal error ? */
 		xpt_done(request_ccb);
-                return;
-        }
+		return;
+	}
 
-        CAM_DEBUG(newpath, CAM_DEBUG_INFO,
-                  ("Locking new path\n"));
-        xpt_path_unlock(path);
-        xpt_path_lock(newpath);
+	lock = (xpt_path_owned(path) == 0);
+	if (lock)
+		xpt_path_lock(path);
 
 	if ((old_periph = cam_periph_find(path, "mmcprobe")) != NULL) {
 		if ((old_periph->flags & CAM_PERIPH_INVALID) == 0) {
@@ -281,7 +270,7 @@ mmc_scan_lun(struct cam_periph *periph, struct cam_path *path,
 //			TAILQ_INSERT_TAIL(&softc->request_ccbs,
 //				&request_ccb->ccb_h, periph_links.tqe);
 //			softc->restart = 1;
-                        CAM_DEBUG(newpath, CAM_DEBUG_INFO,
+                        CAM_DEBUG(path, CAM_DEBUG_INFO,
                                   ("Got scan request, but mmcprobe already exists\n"));
 			request_ccb->ccb_h.status = CAM_REQ_CMP_ERR;
                         xpt_done(request_ccb);
@@ -297,7 +286,7 @@ mmc_scan_lun(struct cam_periph *periph, struct cam_path *path,
 					  mmcprobe_start,
 					  "mmcprobe",
 					  CAM_PERIPH_BIO,
-					  newpath, NULL, 0,
+					  path, NULL, 0,
 					  request_ccb);
                 if (status != CAM_REQ_CMP) {
 			xpt_print(path, "xpt_scan_lun: cam_alloc_periph "
@@ -307,10 +296,8 @@ mmc_scan_lun(struct cam_periph *periph, struct cam_path *path,
 		xpt_done(request_ccb);
 	}
 
-        CAM_DEBUG(newpath, CAM_DEBUG_INFO,
-                  ("Unlocking new path\n"));
-        xpt_path_unlock(newpath);
-        xpt_path_lock(path);
+	if (lock)
+		xpt_path_unlock(path);
 }
 
 static void
