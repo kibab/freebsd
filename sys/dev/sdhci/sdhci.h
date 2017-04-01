@@ -320,8 +320,8 @@ struct sdhci_slot {
 	union ccb	*ccb;
 	struct cam_devq		*devq;
 	struct cam_sim		*sim;
-	struct cam_path		*path;
-        struct mtx		sim_mtx;
+	struct mtx		sim_mtx;
+	u_char			card_present; /* XXX Maybe derive this from elsewhere? */
 };
 
 int sdhci_generic_read_ivar(device_t bus, device_t child, int which,

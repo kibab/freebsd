@@ -221,6 +221,8 @@ mmc_dev_async(u_int32_t async_code, struct cam_eb *bus, struct cam_et *target,
                 }
         } else if (async_code == AC_FOUND_DEVICE) {
                 printf("Got AC_FOUND_DEVICE -- whatever...\n");
+        } else if (async_code == AC_PATH_REGISTERED) {
+                printf("Got AC_PATH_REGISTERED -- whatever...\n");
         } else if (async_code == AC_PATH_DEREGISTERED ) {
                         printf("Got AC_PATH_DEREGISTERED -- whatever...\n");
 	} else
@@ -762,7 +764,21 @@ mmcprobe_done(struct cam_periph *periph, union ccb *done_ccb)
 	{
 		printf("Starting completion of PROBE_RESET\n");
 		CAM_DEBUG(done_ccb->ccb_h.path, CAM_DEBUG_PROBE, ("done with PROBE_RESET\n"));
-                path->device->protocol = PROTO_MMCSD;
+		mmcio = &done_ccb->mmcio;
+		err = mmcio->cmd.error;
+
+		if (err != MMC_ERR_NONE) {
+			CAM_DEBUG(done_ccb->ccb_h.path, CAM_DEBUG_PROBE,
+				  ("GO_IDLE_STATE failed with error %d\n",
+				   err));
+
+			/* There was a device there, but now it's gone... */
+			if ((path->device->flags & CAM_DEV_UNCONFIGURED) == 0) {
+				xpt_async(AC_LOST_DEVICE, path, NULL);
+				PROBE_SET_ACTION(softc, PROBE_INVALID);
+			}
+		}
+		path->device->protocol = PROTO_MMCSD;
 		PROBE_SET_ACTION(softc, PROBE_SEND_IF_COND);
  		break;
 	}
@@ -770,14 +786,14 @@ mmcprobe_done(struct cam_periph *periph, union ccb *done_ccb)
 	{
 		mmcio = &done_ccb->mmcio;
 		err = mmcio->cmd.error;
-                struct mmc_params *mmcp = &path->device->mmc_ident_data;
+		struct mmc_params *mmcp = &path->device->mmc_ident_data;
 
 		if (err != MMC_ERR_NONE || mmcio->cmd.resp[0] != 0x1AA) {
 			CAM_DEBUG(done_ccb->ccb_h.path, CAM_DEBUG_PROBE,
 				  ("IF_COND: error %d, pattern %08x\n",
 				   err, mmcio->cmd.resp[0]));
 		} else {
-                        mmcp->card_features |= CARD_FEATURE_SD20;
+			mmcp->card_features |= CARD_FEATURE_SD20;
 			CAM_DEBUG(done_ccb->ccb_h.path, CAM_DEBUG_PROBE,
 				  ("SD 2.0 interface conditions: OK\n"));
 

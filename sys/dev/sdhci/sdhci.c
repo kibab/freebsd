@@ -521,25 +521,87 @@ sdhci_card_task(void *arg, int pending __unused)
 
 	SDHCI_LOCK(slot);
 	if (SDHCI_GET_CARD_PRESENT(slot->bus, slot)) {
+#ifdef MMCCAM
+		if (slot->card_present == 0) {
+#else
 		if (slot->dev == NULL) {
+#endif
 			/* If card is present - attach mmc bus. */
 			if (bootverbose || sdhci_debug)
 				slot_printf(slot, "Card inserted\n");
+#ifdef MMCCAM
+			slot->card_present = 1;
+			union ccb *ccb;
+			uint32_t pathid;
+			pathid = cam_sim_path(slot->sim);
+			ccb = xpt_alloc_ccb_nowait();
+			if (ccb == NULL) {
+				slot_printf(slot, "Unable to alloc CCB for rescan\n");
+				SDHCI_UNLOCK(slot);
+				return;
+			}
+
+			/*
+			 * We create a rescan request for BUS:0:0, since the card
+			 * will be at lun 0.
+			 */
+			if (xpt_create_path(&ccb->ccb_h.path, NULL, pathid,
+					    /* target */ 0, /* lun */ 0) != CAM_REQ_CMP) {
+				slot_printf(slot, "Unable to create path for rescan\n");
+				SDHCI_UNLOCK(slot);
+				xpt_free_ccb(ccb);
+				return;
+			}
+			SDHCI_UNLOCK(slot);
+			xpt_rescan(ccb);
+#else
 			slot->dev = device_add_child(slot->bus, "mmc", -1);
 			device_set_ivars(slot->dev, slot);
 			SDHCI_UNLOCK(slot);
 			device_probe_and_attach(slot->dev);
+#endif
 		} else
 			SDHCI_UNLOCK(slot);
 	} else {
+#ifdef MMCCAM
+		if (slot->card_present == 1) {
+#else
 		if (slot->dev != NULL) {
+#endif
 			/* If no card present - detach mmc bus. */
 			if (bootverbose || sdhci_debug)
 				slot_printf(slot, "Card removed\n");
 			d = slot->dev;
 			slot->dev = NULL;
+#ifdef MMCCAM
+			slot->card_present = 0;
+			union ccb *ccb;
+			uint32_t pathid;
+			pathid = cam_sim_path(slot->sim);
+			ccb = xpt_alloc_ccb_nowait();
+			if (ccb == NULL) {
+				slot_printf(slot, "Unable to alloc CCB for rescan\n");
+				SDHCI_UNLOCK(slot);
+				return;
+			}
+
+			/*
+			 * We create a rescan request for BUS:0:0, since the card
+			 * will be at lun 0.
+			 */
+			if (xpt_create_path(&ccb->ccb_h.path, NULL, pathid,
+					    /* target */ 0, /* lun */ 0) != CAM_REQ_CMP) {
+				slot_printf(slot, "Unable to create path for rescan\n");
+				SDHCI_UNLOCK(slot);
+				xpt_free_ccb(ccb);
+				return;
+			}
+			SDHCI_UNLOCK(slot);
+			xpt_rescan(ccb);
+#else
 			SDHCI_UNLOCK(slot);
 			device_delete_child(slot->bus, d);
+#endif
 		} else
 			SDHCI_UNLOCK(slot);
 	}
@@ -561,7 +623,11 @@ sdhci_handle_card_present_locked(struct sdhci_slot *slot, bool is_present)
 	 * because once power is removed, a full card re-init is needed, and
 	 * that happens by deleting and recreating the child device.
 	 */
+#ifdef MMCCAM
+	was_present = slot->card_present;
+#else
 	was_present = slot->dev != NULL;
+#endif
 	if (!was_present && is_present) {
 		taskqueue_enqueue_timeout(taskqueue_swi_giant,
 		    &slot->card_delayed_task, -SDHCI_INSERT_DELAY_TICKS);
@@ -1732,7 +1798,6 @@ sdhci_generic_write_ivar(device_t bus, device_t child, int which,
 void
 sdhci_cam_start_slot(struct sdhci_slot *slot)
 {
-//	sdhci_card_task(slot, 0);
         if ((slot->devq = cam_simq_alloc(1)) == NULL) {
                 goto fail;
         }
@@ -1760,6 +1825,8 @@ sdhci_cam_start_slot(struct sdhci_slot *slot)
 
         mtx_unlock(&slot->sim_mtx);
         /* End CAM-specific init */
+	slot->card_present = 0;
+	sdhci_card_task(slot, 0);
         return;
 
 fail:
