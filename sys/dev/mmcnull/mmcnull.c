@@ -120,6 +120,14 @@ mmcnull_attach(device_t dev)
 				device_get_unit(dev), &sc->sc_mtx, 1, 1,
 				sc->devq);
 
+	/*
+	 * This is BAD and should be done another way!
+	 * Changing cam_sim_alloc() to accept device_t instead of unit
+	 * will be a good start, since it will be possible to call
+	 * device_get_parent() and device_get_unit() inside cam_sim_alloc().
+	 */
+	sc->sim->parent_dev = dev;
+
 	if (sc->sim == NULL) {
 		cam_simq_free(sc->devq);
 		device_printf(dev, "cannot allocate CAM SIM\n");
@@ -451,6 +459,11 @@ static device_method_t mmcnull_methods[] = {
 	DEVMETHOD(device_probe,         mmcnull_probe),
 	DEVMETHOD(device_attach,        mmcnull_attach),
 	DEVMETHOD(device_detach,        mmcnull_detach),
+	DEVMETHOD(device_detach,        mmcnull_detach),
+
+	/* Bus interface */
+	DEVMETHOD(bus_add_child,        bus_generic_add_child),
+	DEVMETHOD(bus_driver_added,     bus_generic_driver_added),
 	DEVMETHOD_END
 };
 
