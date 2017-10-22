@@ -115,6 +115,13 @@ struct sdda_softc {
 	char card_sn_string[16];/* Formatted serial # for disk->d_ident */
 	/* Determined from CSD + is highspeed card*/
 	uint32_t card_f_max;
+
+	/* MMC partitions support */
+	uint32_t part_time;	/* Partition switch timeout [us] */
+	off_t enh_base;		/* Enhanced user data area slice base ... */
+	off_t enh_size;		/* ... and size [bytes] */
+	int log_count;
+	struct timeval log_time;
 };
 
 #define ccb_bp		ppriv_ptr1
@@ -136,6 +143,20 @@ static uint16_t get_rca(struct cam_periph *periph);
 static cam_status sdda_hook_into_geom(struct cam_periph *periph);
 static void sdda_start_init(void *context, union ccb *start_ccb);
 static void sdda_start_init_task(void *context, int pending);
+static void sdda_process_mmc_partitions(struct cam_periph *periph, union ccb *start_ccb);
+static uint32_t sdda_get_host_caps(struct cam_periph *periph, union ccb *ccb);
+
+static inline uint32_t mmc_get_sector_size(struct cam_periph *periph) {return MMC_SECTOR_SIZE;}
+
+/* TODO: actually issue GET_TRAN_SETTINGS to get R/O status */
+static inline bool sdda_get_read_only(struct cam_periph *periph, union ccb *start_ccb) {
+	return false;
+}
+
+static uint32_t mmc_get_spec_vers(struct cam_periph *periph);
+static uint64_t mmc_get_media_size(struct cam_periph *periph);
+static void sdda_add_part(struct cam_periph *periph, u_int type,
+			  off_t media_size, bool ro);
 
 static struct periph_driver sddadriver =
 {
@@ -873,9 +894,6 @@ mmc_send_ext_csd(struct cam_periph *periph, union ccb *ccb,
 	err = cam_periph_runccb(ccb, sddaerror, CAM_FLAG_NONE, /*sense_flags*/0, NULL);
 	if (err != 0)
 		return err;
-	if (!(ccb->mmcio.cmd.resp[0] & R1_APP_CMD))
-		return MMC_ERR_FAILED;
-
 	return MMC_ERR_NONE;
 }
 
@@ -929,6 +947,18 @@ mmc_switch(struct cam_periph *periph, union ccb *ccb,
 		return EIO;
 	}
 
+}
+
+static uint32_t
+mmc_get_spec_vers(struct cam_periph *periph) {
+	struct sdda_softc *softc = (struct sdda_softc *)periph->softc;
+	return softc->csd.spec_vers;
+}
+
+static uint64_t
+mmc_get_media_size(struct cam_periph *periph) {
+	struct sdda_softc *softc = (struct sdda_softc *)periph->softc;
+	return softc->mediasize;
 }
 
 static int
@@ -1082,6 +1112,26 @@ sdda_set_bus_width(struct cam_periph *periph, union ccb *ccb, int width) {
 	xpt_action(ccb);
 }
 
+static inline const char *part_type(u_int type) {
+	switch (type) {
+	case EXT_CSD_PART_CONFIG_ACC_RPMB:
+		return "RPMB";
+	case EXT_CSD_PART_CONFIG_ACC_DEFAULT:
+		return "default";
+	case EXT_CSD_PART_CONFIG_ACC_BOOT0:
+		return "boot0";
+	case EXT_CSD_PART_CONFIG_ACC_BOOT1:
+		return "boot1";
+	case EXT_CSD_PART_CONFIG_ACC_GP0:
+	case EXT_CSD_PART_CONFIG_ACC_GP1:
+	case EXT_CSD_PART_CONFIG_ACC_GP2:
+	case EXT_CSD_PART_CONFIG_ACC_GP3:
+		return "general purpose";
+	default:
+		return "(unknown type)";
+	}
+}
+
 static inline const char *bus_width_str(enum mmc_bus_width w) {
 	switch (w) {
 	case bus_width_1:
@@ -1091,6 +1141,22 @@ static inline const char *bus_width_str(enum mmc_bus_width w) {
 	case bus_width_8:
 		return "8-bit";
 	}
+}
+
+static uint32_t sdda_get_host_caps(struct cam_periph *periph, union ccb *ccb) {
+	struct ccb_trans_settings_mmc *cts;
+	cts = &ccb->cts.proto_specific.mmc;
+
+	ccb->ccb_h.func_code = XPT_GET_TRAN_SETTINGS;
+	ccb->ccb_h.flags = CAM_DIR_NONE;
+	ccb->ccb_h.retry_count = 0;
+	ccb->ccb_h.timeout = 100;
+	ccb->ccb_h.cbfcnp = NULL;
+	xpt_action(ccb);
+
+	if (ccb->ccb_h.status != CAM_REQ_CMP)
+		panic("Cannot get host caps");
+	return cts->host_caps;
 }
 
 static void
@@ -1114,10 +1180,16 @@ sdda_start_init(void *context, union ccb *start_ccb) {
 	if (mmcp->card_features & CARD_FEATURE_MMC) {
 		mmc_decode_csd_mmc(mmcp->card_csd, &softc->csd);
 		mmc_decode_cid_mmc(mmcp->card_cid, &softc->cid);
-		if (softc->csd.spec_vers >= 4)
+		if (mmc_get_spec_vers(periph) >= 4) {
 			err = mmc_send_ext_csd(periph, start_ccb,
 					       (uint8_t *)&softc->raw_ext_csd,
 					       sizeof(softc->raw_ext_csd));
+			if (err != 0) {
+				CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH,
+					  ("Cannot read EXT_CSD, err %d", err));
+				return;
+			}
+		}
 	} else {
 		mmc_decode_csd_sd(mmcp->card_csd, &softc->csd);
 		mmc_decode_cid_sd(mmcp->card_cid, &softc->cid);
@@ -1127,7 +1199,7 @@ sdda_start_init(void *context, union ccb *start_ccb) {
 	softc->mediasize = softc->csd.capacity;
 
 	/* MMC >= 4.x have EXT_CSD that has its own opinion about capacity */
-	if (softc->csd.spec_vers >= 4) {
+	if (mmc_get_spec_vers(periph) >= 4) {
 		uint32_t sec_count = softc->raw_ext_csd[EXT_CSD_SEC_CNT] +
 			(softc->raw_ext_csd[EXT_CSD_SEC_CNT + 1] << 8) +
 			(softc->raw_ext_csd[EXT_CSD_SEC_CNT + 2] << 16) +
@@ -1208,7 +1280,7 @@ sdda_start_init(void *context, union ccb *start_ccb) {
 			}
 		}
 
-		if (mmcp->card_features & CARD_FEATURE_MMC && softc->csd.spec_vers >= 4) {
+		if (mmcp->card_features & CARD_FEATURE_MMC && mmc_get_spec_vers(periph) >= 4) {
 			if (softc->raw_ext_csd[EXT_CSD_CARD_TYPE]
 			    & EXT_CSD_CARD_TYPE_HS_52)
 				softc->card_f_max = MMC_TYPE_HS_52_MAX;
@@ -1261,8 +1333,156 @@ finish_hs_tests:
 		if (err != MMC_ERR_NONE)
 			CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("Cannot switch card to high-speed mode"));
 	}
+
 	softc->state = SDDA_STATE_NORMAL;
 	sdda_hook_into_geom(periph);
+
+	/* MMC partitions support */
+	if (mmcp->card_features & CARD_FEATURE_MMC && mmc_get_spec_vers(periph) >= 4) {
+		sdda_process_mmc_partitions(periph, start_ccb);
+	}
+}
+
+/* TODO: actually add partitions to the device tree and GEOM */
+static void
+sdda_add_part(struct cam_periph *periph, u_int type,
+	      off_t media_size, bool ro) {
+	CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH,
+		  ("Partition type '%s', size %ju %s\n",
+		   part_type(type),
+		   media_size,
+		   ro ? "(read-only)" : ""));
+
+}
+
+static void
+sdda_process_mmc_partitions(struct cam_periph *periph, union ccb *ccb) {
+	struct sdda_softc *sc = (struct sdda_softc *)periph->softc;
+	struct mmc_params *mmcp = &periph->path->device->mmc_ident_data;
+
+	const uint8_t *ext_csd;
+	off_t erase_size, sector_size, size, wp_size;
+	__unused uintmax_t bytes;
+	int i;
+	__unused uint32_t quirks;
+	uint8_t rev;
+	bool comp, ro;
+
+	ext_csd = sc->raw_ext_csd;
+
+	/*
+	 * Enhanced user data area and general purpose partitions are only
+	 * supported in revision 1.4 (EXT_CSD_REV == 4) and later, the RPMB
+	 * partition in revision 1.5 (MMC v4.41, EXT_CSD_REV == 5) and later.
+	 */
+	rev = ext_csd[EXT_CSD_REV];
+
+	/*
+	 * Ignore user-creatable enhanced user data area and general purpose
+	 * partitions partitions as long as partitioning hasn't been finished.
+	 */
+	comp = (ext_csd[EXT_CSD_PART_SET] & EXT_CSD_PART_SET_COMPLETED) != 0;
+
+	/*
+	 * Add enhanced user data area slice, unless it spans the entirety of
+	 * the user data area.  The enhanced area is of a multiple of high
+	 * capacity write protect groups ((ERASE_GRP_SIZE + HC_WP_GRP_SIZE) *
+	 * 512 KB) and its offset given in either sectors or bytes, depending
+	 * on whether it's a high capacity device or not.
+	 * NB: The slicer and its slices need to be registered before adding
+	 *     the disk for the corresponding user data area as re-tasting is
+	 *     racy.
+	 */
+	sector_size = mmc_get_sector_size(periph);
+	size = ext_csd[EXT_CSD_ENH_SIZE_MULT] +
+	    (ext_csd[EXT_CSD_ENH_SIZE_MULT + 1] << 8) +
+	    (ext_csd[EXT_CSD_ENH_SIZE_MULT + 2] << 16);
+	if (rev >= 4 && comp == TRUE && size > 0 &&
+	    (ext_csd[EXT_CSD_PART_SUPPORT] &
+	    EXT_CSD_PART_SUPPORT_ENH_ATTR_EN) != 0 &&
+	    (ext_csd[EXT_CSD_PART_ATTR] & (EXT_CSD_PART_ATTR_ENH_USR)) != 0) {
+		erase_size = ext_csd[EXT_CSD_ERASE_GRP_SIZE] * 1024 *
+		    MMC_SECTOR_SIZE;
+		wp_size = ext_csd[EXT_CSD_HC_WP_GRP_SIZE];
+		size *= erase_size * wp_size;
+		if (size != mmc_get_media_size(periph) * sector_size) {
+			sc->enh_size = size;
+			sc->enh_base = (ext_csd[EXT_CSD_ENH_START_ADDR] +
+			    (ext_csd[EXT_CSD_ENH_START_ADDR + 1] << 8) +
+			    (ext_csd[EXT_CSD_ENH_START_ADDR + 2] << 16) +
+			    (ext_csd[EXT_CSD_ENH_START_ADDR + 3] << 24)) *
+				((mmcp->card_features & CARD_FEATURE_SDHC) ? 1: MMC_SECTOR_SIZE);
+		} else
+			CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH,
+				  ("enhanced user data area spans entire device"));
+	}
+
+	/*
+	 * Add default partition.  This may be the only one or the user
+	 * data area in case partitions are supported.
+	 */
+	ro = sdda_get_read_only(periph, ccb);
+	sdda_add_part(periph, EXT_CSD_PART_CONFIG_ACC_DEFAULT,
+		      mmc_get_media_size(periph) * sector_size, ro);
+
+	if (mmc_get_spec_vers(periph) < 3)
+		return;
+
+	/* Belatedly announce enhanced user data slice. */
+	if (sc->enh_size != 0) {
+		CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH,
+			  ("enhanced user data area off 0x%jx size %ju bytes\n",
+			   sc->enh_base, sc->enh_size));
+	}
+
+
+	/*
+	 * Determine partition switch timeout (provided in units of 10 ms)
+	 * and ensure it's at least 300 ms as some eMMC chips lie.
+	 */
+	sc->part_time = max(ext_csd[EXT_CSD_PART_SWITCH_TO] * 10 * 1000,
+	    300 * 1000);
+
+	/* Add boot partitions, which are of a fixed multiple of 128 KB. */
+	size = ext_csd[EXT_CSD_BOOT_SIZE_MULT] * MMC_BOOT_RPMB_BLOCK_SIZE;
+	if (size > 0 && (sdda_get_host_caps(periph, ccb) & MMC_CAP_BOOT_NOACC) == 0) {
+		sdda_add_part(periph, EXT_CSD_PART_CONFIG_ACC_BOOT0,
+			       size,
+			       ro | ((ext_csd[EXT_CSD_BOOT_WP_STATUS] &
+				      EXT_CSD_BOOT_WP_STATUS_BOOT0_MASK) != 0));
+		sdda_add_part(periph, EXT_CSD_PART_CONFIG_ACC_BOOT1,
+			       size,
+			       ro | ((ext_csd[EXT_CSD_BOOT_WP_STATUS] &
+				      EXT_CSD_BOOT_WP_STATUS_BOOT1_MASK) != 0));
+	}
+
+	/* Add RPMB partition, which also is of a fixed multiple of 128 KB. */
+	size = ext_csd[EXT_CSD_RPMB_MULT] * MMC_BOOT_RPMB_BLOCK_SIZE;
+	if (rev >= 5 && size > 0)
+		sdda_add_part(periph, EXT_CSD_PART_CONFIG_ACC_RPMB,
+			      size, ro);
+
+	if (rev <= 3 || comp == FALSE)
+		return;
+
+	/*
+	 * Add general purpose partitions, which are of a multiple of high
+	 * capacity write protect groups, too.
+	 */
+	if ((ext_csd[EXT_CSD_PART_SUPPORT] & EXT_CSD_PART_SUPPORT_EN) != 0) {
+		erase_size = ext_csd[EXT_CSD_ERASE_GRP_SIZE] * 1024 *
+		    MMC_SECTOR_SIZE;
+		wp_size = ext_csd[EXT_CSD_HC_WP_GRP_SIZE];
+		for (i = 0; i < MMC_PART_GP_MAX; i++) {
+			size = ext_csd[EXT_CSD_GP_SIZE_MULT + i * 3] +
+			    (ext_csd[EXT_CSD_GP_SIZE_MULT + i * 3 + 1] << 8) +
+			    (ext_csd[EXT_CSD_GP_SIZE_MULT + i * 3 + 2] << 16);
+			if (size == 0)
+				continue;
+			sdda_add_part(periph, EXT_CSD_PART_CONFIG_ACC_GP0 + i,
+				      size * erase_size * wp_size, ro);
+		}
+	}
 }
 
 /* Called with periph lock held! */
