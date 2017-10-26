@@ -544,8 +544,10 @@ static void
 sddadiskgonecb(struct disk *dp)
 {
 	struct cam_periph *periph;
+	struct sdda_part *part;
 
-	periph = (struct cam_periph *)dp->d_drv1;
+	part = (struct sdda_part *)dp->d_drv1;
+	periph = part->sc->periph;
         CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("sddadiskgonecb\n"));
 
 	cam_periph_release(periph);
