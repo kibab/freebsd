@@ -86,37 +86,57 @@ typedef enum {
 } sdda_flags;
 
 typedef enum {
-        SDDA_STATE_INIT,
-        SDDA_STATE_INVALID,
-        SDDA_STATE_NORMAL
+	SDDA_STATE_INIT,
+	SDDA_STATE_INVALID,
+	SDDA_STATE_NORMAL
 } sdda_state;
 
-struct sdda_softc {
-	struct	 bio_queue_head bio_queue;
-	int	 outstanding_cmds;	/* Number of active commands */
+#define	SDDA_FMT_BOOT		"sdda%dboot"
+#define	SDDA_FMT_GP		"sdda%dgp"
+#define	SDDA_FMT_RPMB		"sdda%drpmb"
+#define	SDDA_LABEL_ENH		"enh"
+
+#define	SDDA_PART_NAMELEN	(16 + 1)
+
+struct sdda_softc;
+
+struct sdda_part {
+	struct disk *disk;
+	struct bio_queue_head bio_queue;
 	int	 refcount;		/* Active xpt_action() calls */
-	sdda_state state;
 	sdda_flags flags;
+	struct sdda_softc *sc;
+	u_int cnt;
+	u_int type;
+	bool ro;
+	char name[SDDA_PART_NAMELEN];
+};
+
+struct sdda_softc {
+	int	 outstanding_cmds;	/* Number of active commands */
+	sdda_state state;
 	struct mmc_data *mmcdata;
+	struct cam_periph *periph;
 //	sdda_quirks quirks;
 	struct task start_init_task;
-	struct	 disk *disk;
-        uint32_t raw_csd[4];
+	uint32_t raw_csd[4];
 	uint8_t raw_ext_csd[512]; /* MMC only? */
-        struct mmc_csd csd;
-        struct mmc_cid cid;
+	struct mmc_csd csd;
+	struct mmc_cid cid;
 	struct mmc_scr scr;
-        /* Calculated from CSD */
-        uint64_t sector_count;
-        uint64_t mediasize;
+	/* Calculated from CSD */
+	uint64_t sector_count;
+	uint64_t mediasize;
 
-        /* Calculated from CID */
+	/* Calculated from CID */
 	char card_id_string[64];/* Formatted CID info (serial, MFG, etc) */
 	char card_sn_string[16];/* Formatted serial # for disk->d_ident */
 	/* Determined from CSD + is highspeed card*/
 	uint32_t card_f_max;
 
 	/* MMC partitions support */
+	struct sdda_part *part[MMC_PART_MAX];
+	uint8_t part_curr;	/* Partition currently switched to */
 	uint32_t part_time;	/* Partition switch timeout [us] */
 	off_t enh_base;		/* Enhanced user data area slice base ... */
 	off_t enh_size;		/* ... and size [bytes] */
@@ -156,7 +176,7 @@ static inline bool sdda_get_read_only(struct cam_periph *periph, union ccb *star
 static uint32_t mmc_get_spec_vers(struct cam_periph *periph);
 static uint64_t mmc_get_media_size(struct cam_periph *periph);
 static void sdda_add_part(struct cam_periph *periph, u_int type,
-			  off_t media_size, bool ro);
+    const char *name, u_int cnt, off_t media_size, bool ro);
 
 static struct periph_driver sddadriver =
 {
@@ -383,11 +403,14 @@ mmc_format_card_id_string(struct sdda_softc *sc, struct mmc_params *mmcp)
 static int
 sddaopen(struct disk *dp)
 {
+	struct sdda_part *part;
 	struct cam_periph *periph;
 	struct sdda_softc *softc;
 	int error;
 
-	periph = (struct cam_periph *)dp->d_drv1;
+	part = (struct sdda_part *)dp->d_drv1;
+	softc = part->sc;
+	periph = softc->periph;
 	if (cam_periph_acquire(periph) != CAM_REQ_CMP) {
 		return(ENXIO);
 	}
@@ -401,8 +424,7 @@ sddaopen(struct disk *dp)
 
 	CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("sddaopen\n"));
 
-	softc = (struct sdda_softc *)periph->softc;
-	softc->flags |= SDDA_FLAG_OPEN;
+	part->flags |= SDDA_FLAG_OPEN;
 
 	cam_periph_unhold(periph);
 	cam_periph_unlock(periph);
@@ -412,21 +434,21 @@ sddaopen(struct disk *dp)
 static int
 sddaclose(struct disk *dp)
 {
+	struct sdda_part *part;
 	struct	cam_periph *periph;
 	struct	sdda_softc *softc;
-//	union ccb *ccb;
-//	int error;
 
-	periph = (struct cam_periph *)dp->d_drv1;
-	softc = (struct sdda_softc *)periph->softc;
-        softc->flags &= ~SDDA_FLAG_OPEN;
+	part = (struct sdda_part *)dp->d_drv1;
+	softc = part->sc;
+	periph = softc->periph;
+	part->flags &= ~SDDA_FLAG_OPEN;
 
 	cam_periph_lock(periph);
 
 	CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("sddaclose\n"));
 
-	while (softc->refcount != 0)
-		cam_periph_sleep(periph, &softc->refcount, PRIBIO, "sddaclose", 1);
+	while (part->refcount != 0)
+		cam_periph_sleep(periph, &part->refcount, PRIBIO, "sddaclose", 1);
 	cam_periph_unlock(periph);
 	cam_periph_release(periph);
 	return (0);
@@ -436,9 +458,20 @@ static void
 sddaschedule(struct cam_periph *periph)
 {
 	struct sdda_softc *softc = (struct sdda_softc *)periph->softc;
+	struct sdda_part *part;
+	struct bio *bp;
 
 	/* Check if we have more work to do. */
-	if (bioq_first(&softc->bio_queue)) {
+	/* Find partition that has outstanding commands. Prefer current partition. */
+	bp = bioq_first(&softc->part[softc->part_curr]->bio_queue);
+	if (bp == NULL) {
+		for (int i = 0; i < MMC_PART_MAX; i++) {
+			if ((part = softc->part[i]) != NULL &&
+			    (bp = bioq_first(&softc->part[i]->bio_queue)) != NULL)
+				break;
+		}
+	}
+	if (bp != NULL) {
 		xpt_schedule(periph, CAM_PRIORITY_NORMAL);
 	}
 }
@@ -452,10 +485,12 @@ static void
 sddastrategy(struct bio *bp)
 {
 	struct cam_periph *periph;
+	struct sdda_part *part;
 	struct sdda_softc *softc;
 
-	periph = (struct cam_periph *)bp->bio_disk->d_drv1;
-	softc = (struct sdda_softc *)periph->softc;
+	part = (struct sdda_part *)bp->bio_disk->d_drv1;
+	softc = part->sc;
+	periph = softc->periph;
 
 	cam_periph_lock(periph);
 
@@ -473,7 +508,7 @@ sddastrategy(struct bio *bp)
 	/*
 	 * Place it in the queue of disk activities for this disk
 	 */
-        bioq_disksort(&softc->bio_queue, bp);
+	bioq_disksort(&part->bio_queue, bp);
 
 	/*
 	 * Schedule ourselves for performing the work.
@@ -520,6 +555,7 @@ static void
 sddaoninvalidate(struct cam_periph *periph)
 {
 	struct sdda_softc *softc;
+	struct sdda_part *part;
 
 	softc = (struct sdda_softc *)periph->softc;
 
@@ -536,23 +572,34 @@ sddaoninvalidate(struct cam_periph *periph)
 	 *     with XPT_ABORT_CCB.
 	 */
         CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("bioq_flush start\n"));
-	bioq_flush(&softc->bio_queue, NULL, ENXIO);
+	for (int i = 0; i < MMC_PART_MAX; i++) {
+		if ((part = softc->part[i]) != NULL) {
+			bioq_flush(&part->bio_queue, NULL, ENXIO);
+			disk_gone(part->disk);
+		}
+	}
         CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("bioq_flush end\n"));
 
-	disk_gone(softc->disk);
 }
 
 static void
 sddacleanup(struct cam_periph *periph)
 {
 	struct sdda_softc *softc;
+	struct sdda_part *part;
 
 	CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("sddacleanup\n"));
 	softc = (struct sdda_softc *)periph->softc;
 
 	cam_periph_unlock(periph);
 
-	disk_destroy(softc->disk);
+	for (int i = 0; i < MMC_PART_MAX; i++) {
+		if ((part = softc->part[i]) != NULL) {
+			disk_destroy(part->disk);
+			free(part, M_DEVBUF);
+			softc->part[i] = NULL;
+		}
+	}
 	free(softc, M_DEVBUF);
 	cam_periph_lock(periph);
 }
@@ -620,10 +667,15 @@ sddaasync(void *callback_arg, u_int32_t code,
 		buftype = (uintptr_t)arg;
 		if (buftype == CDAI_TYPE_PHYS_PATH) {
 			struct sdda_softc *softc;
+			struct sdda_part *part;
 
 			softc = periph->softc;
-			disk_attr_changed(softc->disk, "GEOM::physpath",
-					  M_NOWAIT);
+			for (int i = 0; i < MMC_PART_MAX; i++) {
+				if ((part = softc->part[i]) != NULL) {
+					disk_attr_changed(part->disk, "GEOM::physpath",
+					    M_NOWAIT);
+				}
+			}
 		}
 		break;
 	}
@@ -644,9 +696,13 @@ static int
 sddagetattr(struct bio *bp)
 {
 	int ret;
-	struct cam_periph *periph;
+	struct sdda_part *part;
+	struct	cam_periph *periph;
+	struct	sdda_softc *softc;
 
-	periph = (struct cam_periph *)bp->bio_disk->d_drv1;
+	part = (struct sdda_part *)bp->bio_disk->d_drv1;
+	softc = part->sc;
+	periph = softc->periph;
 	cam_periph_lock(periph);
 	ret = xpt_getattr(bp->bio_data, bp->bio_length, bp->bio_attribute,
 	    periph->path);
@@ -682,11 +738,11 @@ sddaregister(struct cam_periph *periph, void *arg)
 		return(CAM_REQ_CMP_ERR);
 	}
 
-	bioq_init(&softc->bio_queue);
 	softc->state = SDDA_STATE_INIT;
 	softc->mmcdata =
 		(struct mmc_data *) malloc(sizeof(struct mmc_data), M_DEVBUF, M_NOWAIT|M_ZERO);
 	periph->softc = softc;
+	softc->periph = periph;
 
 	request_ccb = (union ccb*) arg;
 	xpt_schedule(periph, CAM_PRIORITY_XPT);
@@ -694,103 +750,6 @@ sddaregister(struct cam_periph *periph, void *arg)
 	taskqueue_enqueue(taskqueue_thread, &softc->start_init_task);
 
 	return (CAM_REQ_CMP);
-}
-
-static cam_status
-sdda_hook_into_geom(struct cam_periph *periph)
-{
-	struct sdda_softc *softc;
-	struct ccb_pathinq cpi;
-	struct ccb_getdev cgd;
-	u_int maxio;
-
-	softc = (struct sdda_softc*) periph->softc;
-
-	bzero(&cpi, sizeof(cpi));
-	xpt_setup_ccb(&cpi.ccb_h, periph->path, CAM_PRIORITY_NONE);
-	cpi.ccb_h.func_code = XPT_PATH_INQ;
-	xpt_action((union ccb *)&cpi);
-
-	bzero(&cgd, sizeof(cgd));
-	xpt_setup_ccb(&cgd.ccb_h, periph->path, CAM_PRIORITY_NONE);
-	cpi.ccb_h.func_code = XPT_GDEV_TYPE;
-	xpt_action((union ccb *)&cgd);
-
-	/*
-	 * Register this media as a disk
-	 */
-	(void)cam_periph_hold(periph, PRIBIO);
-	cam_periph_unlock(periph);
-
-	softc->disk = disk_alloc();
-	softc->disk->d_rotation_rate = 0;
-	softc->disk->d_devstat = devstat_new_entry(periph->periph_name,
-			  periph->unit_number, 512,
-			  DEVSTAT_ALL_SUPPORTED,
-			  DEVSTAT_TYPE_DIRECT |
-			  XPORT_DEVSTAT_TYPE(cpi.transport),
-			  DEVSTAT_PRIORITY_DISK);
-	softc->disk->d_open = sddaopen;
-	softc->disk->d_close = sddaclose;
-	softc->disk->d_strategy = sddastrategy;
-	softc->disk->d_getattr = sddagetattr;
-//	softc->disk->d_dump = sddadump;
-	softc->disk->d_gone = sddadiskgonecb;
-	softc->disk->d_name = "sdda";
-	softc->disk->d_drv1 = periph;
-	maxio = cpi.maxio;		/* Honor max I/O size of SIM */
-	if (maxio == 0)
-		maxio = DFLTPHYS;	/* traditional default */
-	else if (maxio > MAXPHYS)
-		maxio = MAXPHYS;	/* for safety */
-	softc->disk->d_maxsize = maxio;
-	softc->disk->d_unit = periph->unit_number;
-	softc->disk->d_flags = DISKFLAG_CANDELETE;
-	strlcpy(softc->disk->d_descr, softc->card_id_string,
-	    MIN(sizeof(softc->disk->d_descr), sizeof(softc->card_id_string)));
-	strlcpy(softc->disk->d_ident, softc->card_sn_string,
-	    MIN(sizeof(softc->disk->d_ident), sizeof(softc->card_sn_string)));
-	softc->disk->d_hba_vendor = cpi.hba_vendor;
-	softc->disk->d_hba_device = cpi.hba_device;
-	softc->disk->d_hba_subvendor = cpi.hba_subvendor;
-	softc->disk->d_hba_subdevice = cpi.hba_subdevice;
-
-	softc->disk->d_sectorsize = 512;
-	softc->disk->d_mediasize = softc->mediasize;
-	softc->disk->d_stripesize = 0;
-	softc->disk->d_fwsectors = 0;
-	softc->disk->d_fwheads = 0;
-
-	/*
-	 * Acquire a reference to the periph before we register with GEOM.
-	 * We'll release this reference once GEOM calls us back (via
-	 * sddadiskgonecb()) telling us that our provider has been freed.
-	 */
-	if (cam_periph_acquire(periph) != CAM_REQ_CMP) {
-		xpt_print(periph->path, "%s: lost periph during "
-			  "registration!\n", __func__);
-		cam_periph_lock(periph);
-		return (CAM_REQ_CMP_ERR);
-	}
-	disk_create(softc->disk, DISK_VERSION);
-	cam_periph_lock(periph);
-	cam_periph_unhold(periph);
-
-	xpt_announce_periph(periph, softc->card_id_string);
-
-	/*
-	 * Add async callbacks for bus reset and
-	 * bus device reset calls.  I don't bother
-	 * checking if this fails as, in most cases,
-	 * the system will function just fine without
-	 * them and the only alternative would be to
-	 * not attach the device on failure.
-	 */
-	xpt_register_async(AC_SENT_BDR | AC_BUS_RESET | AC_LOST_DEVICE |
-	    AC_GETDEV_CHANGED | AC_ADVINFO_CHANGED,
-	    sddaasync, periph, periph->path);
-
-	return(CAM_REQ_CMP);
 }
 
 static int
@@ -1335,24 +1294,126 @@ finish_hs_tests:
 	}
 
 	softc->state = SDDA_STATE_NORMAL;
-	sdda_hook_into_geom(periph);
 
 	/* MMC partitions support */
 	if (mmcp->card_features & CARD_FEATURE_MMC && mmc_get_spec_vers(periph) >= 4) {
 		sdda_process_mmc_partitions(periph, start_ccb);
 	}
+
+	/* For SD[HC] cards, just add one partition that is the whole card */
+	if (mmcp->card_features & CARD_FEATURE_SD20) {
+		sdda_add_part(periph, 0, "sdda",
+		    periph->unit_number,
+		    mmc_get_media_size(periph) * mmc_get_sector_size(periph),
+		    sdda_get_read_only(periph, start_ccb));
+		softc->part_curr = 0;
+	}
+
+	xpt_announce_periph(periph, softc->card_id_string);
+	/*
+	 * Add async callbacks for bus reset and
+	 * bus device reset calls.  I don't bother
+	 * checking if this fails as, in most cases,
+	 * the system will function just fine without
+	 * them and the only alternative would be to
+	 * not attach the device on failure.
+	 */
+	xpt_register_async(AC_SENT_BDR | AC_BUS_RESET | AC_LOST_DEVICE |
+	    AC_GETDEV_CHANGED | AC_ADVINFO_CHANGED,
+	    sddaasync, periph, periph->path);
 }
 
 /* TODO: actually add partitions to the device tree and GEOM */
 static void
-sdda_add_part(struct cam_periph *periph, u_int type,
-	      off_t media_size, bool ro) {
-	CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH,
-		  ("Partition type '%s', size %ju %s\n",
-		   part_type(type),
-		   media_size,
-		   ro ? "(read-only)" : ""));
+sdda_add_part(struct cam_periph *periph, u_int type, const char *name, u_int cnt, off_t media_size, bool ro) {
+	struct sdda_softc *sc = (struct sdda_softc *)periph->softc;
+//	struct mmc_params *mmcp = &periph->path->device->mmc_ident_data;
+	struct ccb_pathinq cpi;
 
+	struct sdda_part *part;
+//	struct disk *d;
+	u_int maxio;
+
+	CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH,
+	    ("Partition type '%s', size %ju %s\n",
+		part_type(type),
+		media_size,
+		ro ? "(read-only)" : ""));
+
+	part = sc->part[type] = malloc(sizeof(*part), M_DEVBUF,
+	    M_WAITOK | M_ZERO);
+
+	part->cnt = cnt;
+	part->type = type;
+	part->ro = ro;
+	snprintf(part->name, sizeof(part->name), name, periph->unit_number);
+	bioq_init(&part->bio_queue);
+
+	bzero(&cpi, sizeof(cpi));
+	xpt_setup_ccb(&cpi.ccb_h, periph->path, CAM_PRIORITY_NONE);
+	cpi.ccb_h.func_code = XPT_PATH_INQ;
+	xpt_action((union ccb *)&cpi);
+
+	/*
+	 * Register this media as a disk
+	 */
+	(void)cam_periph_hold(periph, PRIBIO);
+	cam_periph_unlock(periph);
+
+	part->disk = disk_alloc();
+	part->disk->d_rotation_rate = DISK_RR_NON_ROTATING;
+/*	part->disk->d_devstat = devstat_new_entry(periph->periph_name,
+			  periph->unit_number, 512,
+			  DEVSTAT_ALL_SUPPORTED,
+			  DEVSTAT_TYPE_DIRECT |
+			  XPORT_DEVSTAT_TYPE(cpi.transport),
+			  DEVSTAT_PRIORITY_DISK);
+*/
+	part->disk->d_open = sddaopen;
+	part->disk->d_close = sddaclose;
+	part->disk->d_strategy = sddastrategy;
+	part->disk->d_getattr = sddagetattr;
+//	sc->disk->d_dump = sddadump;
+	part->disk->d_gone = sddadiskgonecb;
+	part->disk->d_name = part->name;
+	part->disk->d_drv1 = part;
+	maxio = cpi.maxio;		/* Honor max I/O size of SIM */
+	if (maxio == 0)
+		maxio = DFLTPHYS;	/* traditional default */
+	else if (maxio > MAXPHYS)
+		maxio = MAXPHYS;	/* for safety */
+	part->disk->d_maxsize = maxio;
+	part->disk->d_unit = cnt;
+	part->disk->d_flags = DISKFLAG_CANDELETE;
+	strlcpy(part->disk->d_descr, sc->card_id_string,
+	    MIN(sizeof(part->disk->d_descr), sizeof(sc->card_id_string)));
+	strlcpy(part->disk->d_ident, sc->card_sn_string,
+	    MIN(sizeof(part->disk->d_ident), sizeof(sc->card_sn_string)));
+	part->disk->d_hba_vendor = cpi.hba_vendor;
+	part->disk->d_hba_device = cpi.hba_device;
+	part->disk->d_hba_subvendor = cpi.hba_subvendor;
+	part->disk->d_hba_subdevice = cpi.hba_subdevice;
+
+	part->disk->d_sectorsize = mmc_get_sector_size(periph);
+	part->disk->d_mediasize = media_size;
+	part->disk->d_stripesize = 0;
+	part->disk->d_fwsectors = 0;
+	part->disk->d_fwheads = 0;
+
+	/*
+	 * Acquire a reference to the periph before we register with GEOM.
+	 * We'll release this reference once GEOM calls us back (via
+	 * sddadiskgonecb()) telling us that our provider has been freed.
+	 */
+	if (cam_periph_acquire(periph) != CAM_REQ_CMP) {
+		xpt_print(periph->path, "%s: lost periph during "
+		    "registration!\n", __func__);
+		cam_periph_lock(periph);
+		return;
+	}
+	disk_create(part->disk, DISK_VERSION);
+	cam_periph_lock(periph);
+	cam_periph_unhold(periph);
 }
 
 static void
@@ -1395,14 +1456,14 @@ sdda_process_mmc_partitions(struct cam_periph *periph, union ccb *ccb) {
 	 */
 	sector_size = mmc_get_sector_size(periph);
 	size = ext_csd[EXT_CSD_ENH_SIZE_MULT] +
-	    (ext_csd[EXT_CSD_ENH_SIZE_MULT + 1] << 8) +
-	    (ext_csd[EXT_CSD_ENH_SIZE_MULT + 2] << 16);
+		(ext_csd[EXT_CSD_ENH_SIZE_MULT + 1] << 8) +
+		(ext_csd[EXT_CSD_ENH_SIZE_MULT + 2] << 16);
 	if (rev >= 4 && comp == TRUE && size > 0 &&
 	    (ext_csd[EXT_CSD_PART_SUPPORT] &
-	    EXT_CSD_PART_SUPPORT_ENH_ATTR_EN) != 0 &&
+		EXT_CSD_PART_SUPPORT_ENH_ATTR_EN) != 0 &&
 	    (ext_csd[EXT_CSD_PART_ATTR] & (EXT_CSD_PART_ATTR_ENH_USR)) != 0) {
 		erase_size = ext_csd[EXT_CSD_ERASE_GRP_SIZE] * 1024 *
-		    MMC_SECTOR_SIZE;
+			MMC_SECTOR_SIZE;
 		wp_size = ext_csd[EXT_CSD_HC_WP_GRP_SIZE];
 		size *= erase_size * wp_size;
 		if (size != mmc_get_media_size(periph) * sector_size) {
@@ -1414,7 +1475,7 @@ sdda_process_mmc_partitions(struct cam_periph *periph, union ccb *ccb) {
 				((mmcp->card_features & CARD_FEATURE_SDHC) ? 1: MMC_SECTOR_SIZE);
 		} else
 			CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH,
-				  ("enhanced user data area spans entire device"));
+			    ("enhanced user data area spans entire device"));
 	}
 
 	/*
@@ -1422,8 +1483,9 @@ sdda_process_mmc_partitions(struct cam_periph *periph, union ccb *ccb) {
 	 * data area in case partitions are supported.
 	 */
 	ro = sdda_get_read_only(periph, ccb);
-	sdda_add_part(periph, EXT_CSD_PART_CONFIG_ACC_DEFAULT,
-		      mmc_get_media_size(periph) * sector_size, ro);
+	sdda_add_part(periph, EXT_CSD_PART_CONFIG_ACC_DEFAULT, "sdda",
+	    periph->unit_number, mmc_get_media_size(periph) * sector_size, ro);
+	sc->part_curr = EXT_CSD_PART_CONFIG_ACC_DEFAULT;
 
 	if (mmc_get_spec_vers(periph) < 3)
 		return;
@@ -1431,8 +1493,8 @@ sdda_process_mmc_partitions(struct cam_periph *periph, union ccb *ccb) {
 	/* Belatedly announce enhanced user data slice. */
 	if (sc->enh_size != 0) {
 		CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH,
-			  ("enhanced user data area off 0x%jx size %ju bytes\n",
-			   sc->enh_base, sc->enh_size));
+		    ("enhanced user data area off 0x%jx size %ju bytes\n",
+			sc->enh_base, sc->enh_size));
 	}
 
 
@@ -1447,20 +1509,20 @@ sdda_process_mmc_partitions(struct cam_periph *periph, union ccb *ccb) {
 	size = ext_csd[EXT_CSD_BOOT_SIZE_MULT] * MMC_BOOT_RPMB_BLOCK_SIZE;
 	if (size > 0 && (sdda_get_host_caps(periph, ccb) & MMC_CAP_BOOT_NOACC) == 0) {
 		sdda_add_part(periph, EXT_CSD_PART_CONFIG_ACC_BOOT0,
-			       size,
-			       ro | ((ext_csd[EXT_CSD_BOOT_WP_STATUS] &
-				      EXT_CSD_BOOT_WP_STATUS_BOOT0_MASK) != 0));
+		    SDDA_FMT_BOOT, 0, size,
+		    ro | ((ext_csd[EXT_CSD_BOOT_WP_STATUS] &
+			    EXT_CSD_BOOT_WP_STATUS_BOOT0_MASK) != 0));
 		sdda_add_part(periph, EXT_CSD_PART_CONFIG_ACC_BOOT1,
-			       size,
-			       ro | ((ext_csd[EXT_CSD_BOOT_WP_STATUS] &
-				      EXT_CSD_BOOT_WP_STATUS_BOOT1_MASK) != 0));
+		    SDDA_FMT_BOOT, 1, size,
+		    ro | ((ext_csd[EXT_CSD_BOOT_WP_STATUS] &
+			    EXT_CSD_BOOT_WP_STATUS_BOOT1_MASK) != 0));
 	}
 
 	/* Add RPMB partition, which also is of a fixed multiple of 128 KB. */
 	size = ext_csd[EXT_CSD_RPMB_MULT] * MMC_BOOT_RPMB_BLOCK_SIZE;
 	if (rev >= 5 && size > 0)
 		sdda_add_part(periph, EXT_CSD_PART_CONFIG_ACC_RPMB,
-			      size, ro);
+		    SDDA_FMT_RPMB, 0, size, ro);
 
 	if (rev <= 3 || comp == FALSE)
 		return;
@@ -1471,16 +1533,16 @@ sdda_process_mmc_partitions(struct cam_periph *periph, union ccb *ccb) {
 	 */
 	if ((ext_csd[EXT_CSD_PART_SUPPORT] & EXT_CSD_PART_SUPPORT_EN) != 0) {
 		erase_size = ext_csd[EXT_CSD_ERASE_GRP_SIZE] * 1024 *
-		    MMC_SECTOR_SIZE;
+			MMC_SECTOR_SIZE;
 		wp_size = ext_csd[EXT_CSD_HC_WP_GRP_SIZE];
 		for (i = 0; i < MMC_PART_GP_MAX; i++) {
 			size = ext_csd[EXT_CSD_GP_SIZE_MULT + i * 3] +
-			    (ext_csd[EXT_CSD_GP_SIZE_MULT + i * 3 + 1] << 8) +
-			    (ext_csd[EXT_CSD_GP_SIZE_MULT + i * 3 + 2] << 16);
+				(ext_csd[EXT_CSD_GP_SIZE_MULT + i * 3 + 1] << 8) +
+				(ext_csd[EXT_CSD_GP_SIZE_MULT + i * 3 + 2] << 16);
 			if (size == 0)
 				continue;
 			sdda_add_part(periph, EXT_CSD_PART_CONFIG_ACC_GP0 + i,
-				      size * erase_size * wp_size, ro);
+			    SDDA_FMT_GP, i, size * erase_size * wp_size, ro);
 		}
 	}
 }
@@ -1491,6 +1553,7 @@ sddastart(struct cam_periph *periph, union ccb *start_ccb)
 {
 	struct sdda_softc *softc = (struct sdda_softc *)periph->softc;
 	struct mmc_params *mmcp = &periph->path->device->mmc_ident_data;
+	struct sdda_part *part;
 
 	CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("sddastart\n"));
 
@@ -1499,20 +1562,30 @@ sddastart(struct cam_periph *periph, union ccb *start_ccb)
 		xpt_release_ccb(start_ccb);
 		return;
 	}
-	struct bio *bp;
 
-	/* Run regular command. */
-	bp = bioq_first(&softc->bio_queue);
+	struct bio *bp;
+	part = NULL;
+
+	/* Find partition that has outstanding commands. Prefer current partition. */
+	bp = bioq_first(&softc->part[softc->part_curr]->bio_queue);
+	if (bp == NULL) {
+		for (int i = 0; i < MMC_PART_MAX; i++) {
+			if ((part = softc->part[i]) != NULL &&
+			    (bp = bioq_first(&softc->part[i]->bio_queue)) != NULL)
+				break;
+		}
+	}
 	if (bp == NULL) {
 		xpt_release_ccb(start_ccb);
 		return;
 	}
-	bioq_remove(&softc->bio_queue, bp);
+
+	bioq_remove(&part->bio_queue, bp);
 
 	switch (bp->bio_cmd) {
 	case BIO_WRITE:
 		CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("BIO_WRITE\n"));
-		softc->flags |= SDDA_FLAG_DIRTY;
+		part->flags |= SDDA_FLAG_DIRTY;
 		/* FALLTHROUGH */
 	case BIO_READ:
 	{
@@ -1574,11 +1647,11 @@ sddastart(struct cam_periph *periph, union ccb *start_ccb)
 	}
 	start_ccb->ccb_h.ccb_bp = bp;
 	softc->outstanding_cmds++;
-	softc->refcount++;
+	part->refcount++;
 	cam_periph_unlock(periph);
 	xpt_action(start_ccb);
 	cam_periph_lock(periph);
-	softc->refcount--;
+	part->refcount--;
 
 	/* May have more work to do, so ensure we stay scheduled */
 	sddaschedule(periph);
