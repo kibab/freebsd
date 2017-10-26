@@ -1304,7 +1304,7 @@ finish_hs_tests:
 	if (mmcp->card_features & CARD_FEATURE_SD20) {
 		sdda_add_part(periph, 0, "sdda",
 		    periph->unit_number,
-		    mmc_get_media_size(periph) * mmc_get_sector_size(periph),
+		    mmc_get_media_size(periph),
 		    sdda_get_read_only(periph, start_ccb));
 		softc->part_curr = 0;
 	}
@@ -1346,6 +1346,7 @@ sdda_add_part(struct cam_periph *periph, u_int type, const char *name, u_int cnt
 	part->cnt = cnt;
 	part->type = type;
 	part->ro = ro;
+	part->sc = sc;
 	snprintf(part->name, sizeof(part->name), name, periph->unit_number);
 	bioq_init(&part->bio_queue);
 
@@ -1564,10 +1565,10 @@ sddastart(struct cam_periph *periph, union ccb *start_ccb)
 	}
 
 	struct bio *bp;
-	part = NULL;
 
 	/* Find partition that has outstanding commands. Prefer current partition. */
-	bp = bioq_first(&softc->part[softc->part_curr]->bio_queue);
+	part = softc->part[softc->part_curr];
+	bp = bioq_first(&part->bio_queue);
 	if (bp == NULL) {
 		for (int i = 0; i < MMC_PART_MAX; i++) {
 			if ((part = softc->part[i]) != NULL &&
