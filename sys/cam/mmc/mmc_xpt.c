@@ -714,7 +714,6 @@ mmcprobe_start(struct cam_periph *periph, union ccb *start_ccb)
 		mmcio->cmd.flags = MMC_RSP_R1 | MMC_CMD_AC;
 		mmcio->stop.opcode = 0;
 		break;
-
 	case PROBE_SELECT_CARD:
 		init_standard_ccb(start_ccb, XPT_MMC_IO);
 		mmcio->cmd.opcode = MMC_SELECT_CARD;
@@ -1018,19 +1017,18 @@ mmcprobe_done(struct cam_periph *periph, union ccb *done_ccb)
                         PROBE_SET_ACTION(softc, PROBE_SELECT_CARD);
 		break;
         }
-	case PROBE_MMC_SET_RELATIVE_ADDR: {
+	case PROBE_MMC_SET_RELATIVE_ADDR:
 		mmcio = &done_ccb->mmcio;
 		err = mmcio->cmd.error;
 		if (err != MMC_ERR_NONE) {
 			CAM_DEBUG(done_ccb->ccb_h.path, CAM_DEBUG_PROBE,
-				  ("PROBE_MMC_SET_RELATIVE_ADDR: error %d\n", err));
+			    ("PROBE_MMC_SET_RELATIVE_ADDR: error %d\n", err));
 			PROBE_SET_ACTION(softc, PROBE_INVALID);
 			break;
 		}
 		path->device->mmc_ident_data.card_rca = MMC_PROPOSED_RCA;
 		PROBE_SET_ACTION(softc, PROBE_GET_CSD);
 		break;
-	}
         case PROBE_GET_CSD: {
 		mmcio = &done_ccb->mmcio;
 		err = mmcio->cmd.error;
