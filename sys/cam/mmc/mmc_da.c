@@ -692,11 +692,6 @@ sddaasync(void *callback_arg, u_int32_t code,
 		}
 		break;
 	}
-	case AC_SENT_BDR:
-	case AC_BUS_RESET:
-	{
-		CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("AC_BUS_RESET"));
-	}
 	default:
 		CAM_DEBUG(path, CAM_DEBUG_TRACE, ("=> default?!\n"));
 		cam_periph_async(periph, code, path, arg);
@@ -1357,9 +1352,8 @@ finish_hs_tests:
 	 * the system will function just fine without them and the only
 	 * alternative would be to not attach the device on failure.
 	 */
-	xpt_register_async(AC_SENT_BDR | AC_BUS_RESET | AC_LOST_DEVICE |
-	    AC_GETDEV_CHANGED | AC_ADVINFO_CHANGED,
-	    sddaasync, periph, periph->path);
+	xpt_register_async(AC_LOST_DEVICE | AC_GETDEV_CHANGED |
+	    AC_ADVINFO_CHANGED, sddaasync, periph, periph->path);
 }
 
 static void
