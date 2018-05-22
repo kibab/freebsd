@@ -1,4 +1,5 @@
 /******************************************************************************
+SPDX-License-Identifier: BSD-2-Clause-FreeBSD
 
 Copyright (c) 2006-2013, Myricom Inc.
 All rights reserved.
@@ -1145,7 +1146,7 @@ mxge_set_multicast_list(mxge_softc_t *sc)
 	/* Walk the multicast list, and add each address */
 
 	if_maddr_rlock(ifp);
-	TAILQ_FOREACH(ifma, &ifp->if_multiaddrs, ifma_link) {
+	CK_STAILQ_FOREACH(ifma, &ifp->if_multiaddrs, ifma_link) {
 		if (ifma->ifma_addr->sa_family != AF_LINK)
 			continue;
 		bcopy(LLADDR((struct sockaddr_dl *)ifma->ifma_addr),
@@ -4161,11 +4162,6 @@ mxge_ioctl(struct ifnet *ifp, u_long command, caddr_t data)
 
 	err = 0;
 	switch (command) {
-	case SIOCSIFADDR:
-	case SIOCGIFADDR:
-		err = ether_ioctl(ifp, command, data);
-		break;
-
 	case SIOCSIFMTU:
 		err = mxge_change_mtu(sc, ifr->ifr_mtu);
 		break;
@@ -4289,7 +4285,8 @@ mxge_ioctl(struct ifnet *ifp, u_long command, caddr_t data)
 		break;
 
 	default:
-		err = ENOTTY;
+		err = ether_ioctl(ifp, command, data);
+		break;
 	}
 	return err;
 }

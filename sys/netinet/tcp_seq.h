@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986, 1993, 1995
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -44,6 +46,14 @@
 
 #define	SEQ_MIN(a, b)	((SEQ_LT(a, b)) ? (a) : (b))
 #define	SEQ_MAX(a, b)	((SEQ_GT(a, b)) ? (a) : (b))
+
+#define	WIN_LT(a,b)	(ntohs(a) < ntohs(b))
+#define	WIN_LEQ(a,b)	(ntohs(a) <= ntohs(b))
+#define	WIN_GT(a,b)	(ntohs(a) > ntohs(b))
+#define	WIN_GEQ(a,b)	(ntohs(a) >= ntohs(b))
+
+#define	WIN_MIN(a, b)	((WIN_LT(a, b)) ? (a) : (b))
+#define	WIN_MAX(a, b)	((WIN_GT(a, b)) ? (a) : (b))
 
 /* for modulo comparisons of timestamps */
 #define TSTMP_LT(a,b)	((int)((a)-(b)) < 0)

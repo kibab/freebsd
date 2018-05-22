@@ -1,6 +1,8 @@
 /* $FreeBSD$ */
 
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2010 Hans Petter Selasky. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -507,6 +509,8 @@ struct xhci_softc {
 	uint8_t			sc_noport;
 	/* root HUB device configuration */
 	uint8_t			sc_conf;
+	/* step status stage of all control transfers */
+	uint8_t			sc_ctlstep;
 	/* root HUB port event bitmap, max 256 ports */
 	uint8_t			sc_hub_idata[32];
 

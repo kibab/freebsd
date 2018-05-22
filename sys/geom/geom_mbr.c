@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2002 Poul-Henning Kamp
  * Copyright (c) 2002 Networks Associates Technology, Inc.
  * All rights reserved.
@@ -526,3 +528,4 @@ static struct g_class g_mbrext_class	= {
 };
 
 DECLARE_GEOM_CLASS(g_mbrext_class, g_mbrext);
+MODULE_VERSION(geom_mbr, 0);

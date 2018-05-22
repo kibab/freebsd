@@ -3,6 +3,8 @@
  */
 
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2005 Maksim Yevmenkin <m_evmenkin@yahoo.com>
  * All rights reserved.
  *
@@ -31,7 +33,6 @@
  * $FreeBSD$
  */
 
-#include "opt_compat.h"
 #include "opt_evdev.h"
 #include "opt_kbd.h"
 #include "opt_kbdmux.h"

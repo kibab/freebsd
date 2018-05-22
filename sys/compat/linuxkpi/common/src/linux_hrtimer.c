@@ -1,6 +1,5 @@
 /*-
  * Copyright (c) 2017 Mark Johnston <markj@FreeBSD.org>
- * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -98,7 +97,7 @@ linux_hrtimer_start_range_ns(struct hrtimer *hrtimer, ktime_t time, int64_t nsec
 {
 
 	mtx_lock(&hrtimer->mtx);
-	callout_reset_sbt(&hrtimer->callout, nstosbt(time.tv64), nstosbt(nsec),
+	callout_reset_sbt(&hrtimer->callout, nstosbt(time), nstosbt(nsec),
 	    hrtimer_call_handler, hrtimer, 0);
 	mtx_unlock(&hrtimer->mtx);
 }

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2003 Silicon Graphics International Corp.
  * Copyright (c) 2011 Spectra Logic Corporation
  * Copyright (c) 2014-2017 Alexander Motin <mav@FreeBSD.org>
@@ -46,6 +48,7 @@
 #endif
 
 #include <sys/ioccom.h>
+#include <sys/nv.h>
 
 #define	CTL_DEFAULT_DEV		"/dev/cam/ctl"
 /*
@@ -59,24 +62,9 @@
 #define	CTL_MAX_TARGID		15
 
 /*
- * Maximum number of LUNs we support at the moment.  MUST be a power of 2.
- */
-#define	CTL_MAX_LUNS		1024
-
-/*
  * Maximum number of initiators per port.
  */
 #define	CTL_MAX_INIT_PER_PORT	2048
-
-/*
- * Maximum number of ports registered at one time.
- */
-#define	CTL_MAX_PORTS		256
-
-/*
- * Maximum number of initiators we support.
- */
-#define	CTL_MAX_INITIATORS	(CTL_MAX_INIT_PER_PORT * CTL_MAX_PORTS)
 
 /* Hopefully this won't conflict with new misc devices that pop up */
 #define	CTL_MINOR	225
@@ -150,7 +138,7 @@ struct ctl_lun_io_stats {
 	uint64_t			lun_number;
 	uint32_t			blocksize;
 	ctl_lun_stats_flags		flags;
-	struct ctl_lun_io_port_stats	ports[CTL_MAX_PORTS];
+	struct ctl_lun_io_port_stats	*ports;
 };
 
 struct ctl_stats {
@@ -329,39 +317,6 @@ typedef enum {
 
 #define	CTL_ERROR_STR_LEN	160
 
-#define	CTL_BEARG_RD		0x01
-#define	CTL_BEARG_WR		0x02
-#define	CTL_BEARG_RW		(CTL_BEARG_RD|CTL_BEARG_WR)
-#define	CTL_BEARG_ASCII		0x04
-
-/*
- * Backend Argument:
- *
- * namelen:	Length of the name field, including the terminating NUL.
- *
- * name:	Name of the parameter.  This must be NUL-terminated.
- *
- * flags:	Flags for the parameter, see above for values.
- *
- * vallen:	Length of the value in bytes, including the terminating NUL.
- *
- * value:	Value to be set/fetched. This must be NUL-terminated.
- *
- * kname:	For kernel use only.
- *
- * kvalue:	For kernel use only.
- */
-struct ctl_be_arg {
-	unsigned int	namelen;
-	char		*name;
-	int		flags;
-	unsigned int	vallen;
-	void		*value;
-
-	char		*kname;
-	void		*kvalue;
-};
-
 typedef enum {
 	CTL_LUNREQ_CREATE,
 	CTL_LUNREQ_RM,
@@ -537,11 +492,14 @@ struct ctl_lun_req {
 	char			backend[CTL_BE_NAME_LEN];
 	ctl_lunreq_type		reqtype;
 	union ctl_lunreq_data	reqdata;
-	int			num_be_args;
-	struct ctl_be_arg	*be_args;
+	void *			args;
+	nvlist_t *		args_nvl;
+	size_t			args_len;
+	void *			result;
+	nvlist_t *		result_nvl;
+	size_t			result_len;
 	ctl_lun_status		status;
 	char			error_str[CTL_ERROR_STR_LEN];
-	struct ctl_be_arg	*kern_be_args;
 };
 
 /*
@@ -630,11 +588,14 @@ typedef enum {
 struct ctl_req {
 	char			driver[CTL_DRIVER_NAME_LEN];
 	ctl_req_type		reqtype;
-	int			num_args;
-	struct ctl_be_arg	*args;
+	void *			args;
+	nvlist_t *		args_nvl;
+	size_t			args_len;
+	void *			result;
+	nvlist_t *		result_nvl;
+	size_t			result_len;
 	ctl_lun_status		status;
 	char			error_str[CTL_ERROR_STR_LEN];
-	struct ctl_be_arg	*kern_args;
 };
 
 /*

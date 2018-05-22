@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2009 Neelkanth Natu
  * All rights reserved.
  *
@@ -302,6 +304,10 @@ smp_init_secondary(u_int32_t cpuid)
 	while (!aps_ready)
 		;
 
+#ifdef PLATFORM_INIT_SECONDARY
+	platform_init_secondary(cpuid);
+#endif
+
 	/* Initialize curthread. */
 	KASSERT(PCPU_GET(idlethread) != NULL, ("no idle thread"));
 	PCPU_SET(curthread, PCPU_GET(idlethread));
@@ -341,6 +347,10 @@ release_aps(void *dummy __unused)
 
 	if (mp_ncpus == 1)
 		return;
+
+#ifdef PLATFORM_INIT_SECONDARY
+	platform_init_secondary(0);
+#endif
 
 	/*
 	 * IPI handler

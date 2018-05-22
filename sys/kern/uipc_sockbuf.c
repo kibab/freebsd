@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986, 1988, 1990, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -458,6 +460,7 @@ sbsetopt(struct socket *so, int cmd, u_long cc)
 	u_int *hiwat, *lowat;
 	int error;
 
+	sb = NULL;
 	SOCK_LOCK(so);
 	if (SOLISTENING(so)) {
 		switch (cmd) {

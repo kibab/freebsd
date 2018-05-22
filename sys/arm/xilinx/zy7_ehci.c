@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2012-2013 Thomas Skibo
  * All rights reserved.
  *
@@ -368,5 +370,5 @@ static driver_t ehci_driver = {
 };
 static devclass_t ehci_devclass;
 
-DRIVER_MODULE(ehci, simplebus, ehci_driver, ehci_devclass, NULL, NULL);
-MODULE_DEPEND(ehci, usb, 1, 1, 1);
+DRIVER_MODULE(zy7_ehci, simplebus, ehci_driver, ehci_devclass, NULL, NULL);
+MODULE_DEPEND(zy7_ehci, usb, 1, 1, 1);

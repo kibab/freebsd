@@ -33,9 +33,10 @@
 #include "opt_ddb.h"
 
 #include <machine/asmacros.h>
+#include <machine/specialreg.h>
 #include <machine/pmap.h>
 
-#include "assym.s"
+#include "assym.inc"
 
 	.text
 
@@ -50,7 +51,6 @@ ENTRY(bzero)
 	movq	%rsi,%rcx
 	xorl	%eax,%eax
 	shrq	$3,%rcx
-	cld
 	rep
 	stosq
 	movq	%rsi,%rcx
@@ -98,18 +98,40 @@ END(sse2_pagezero)
 
 ENTRY(bcmp)
 	PUSH_FRAME_POINTER
+	test	%rdx,%rdx
+	je	1f
+	cmpq	$64,%rdx
+	jg	4f
+
+	xor	%ecx,%ecx
+2:
+	movzbl	(%rdi,%rcx,1),%eax
+	movzbl	(%rsi,%rcx,1),%r8d
+	cmp	%r8b,%al
+	jne	3f
+	add	$0x1,%rcx
+	cmp	%rcx,%rdx
+	jne	2b
+1:
+	xor	%eax,%eax
+	POP_FRAME_POINTER
+	retq
+3:
+	mov	$1,%eax
+	POP_FRAME_POINTER
+	retq
+4:
 	movq	%rdx,%rcx
 	shrq	$3,%rcx
-	cld					/* compare forwards */
 	repe
 	cmpsq
-	jne	1f
+	jne	5f
 
 	movq	%rdx,%rcx
 	andq	$7,%rcx
 	repe
 	cmpsb
-1:
+5:
 	setne	%al
 	movsbl	%al,%eax
 	POP_FRAME_POINTER
@@ -132,7 +154,6 @@ ENTRY(bcopy)
 	jb	1f
 
 	shrq	$3,%rcx				/* copy by 64-bit words */
-	cld					/* nope, copy forwards */
 	rep
 	movsq
 	movq	%rdx,%rcx
@@ -164,6 +185,58 @@ ENTRY(bcopy)
 END(bcopy)
 
 /*
+ * memmove(dst, src, cnt)
+ *         rdi, rsi, rdx
+ * Adapted from bcopy written by:
+ *  ws@tools.de     (Wolfgang Solfrank, TooLs GmbH) +49-228-985800
+ */
+ENTRY(memmove)
+	PUSH_FRAME_POINTER
+	movq	%rdi,%r9
+	movq	%rdx,%rcx
+
+	movq	%rdi,%rax
+	subq	%rsi,%rax
+	cmpq	%rcx,%rax			/* overlapping && src < dst? */
+	jb	1f
+
+	shrq	$3,%rcx				/* copy by 64-bit words */
+	rep
+	movsq
+	movq	%rdx,%rcx
+	andq	$7,%rcx				/* any bytes left? */
+	rep
+	movsb
+	movq	%r9,%rax
+	POP_FRAME_POINTER
+	ret
+
+	/* ALIGN_TEXT */
+1:
+	addq	%rcx,%rdi			/* copy backwards */
+	addq	%rcx,%rsi
+	decq	%rdi
+	decq	%rsi
+	andq	$7,%rcx				/* any fractional bytes? */
+	std
+	rep
+	movsb
+	movq	%rdx,%rcx			/* copy remainder by 32-bit words */
+	shrq	$3,%rcx
+	subq	$7,%rsi
+	subq	$7,%rdi
+	rep
+	movsq
+	cld
+	movq	%r9,%rax
+	POP_FRAME_POINTER
+	ret
+END(memmove)
+
+/*
+ * memcpy(dst, src, len)
+ *        rdi, rsi, rdx
+ *
  * Note: memcpy does not support overlapping copies
  */
 ENTRY(memcpy)
@@ -171,7 +244,6 @@ ENTRY(memcpy)
 	movq	%rdi,%rax
 	movq	%rdx,%rcx
 	shrq	$3,%rcx				/* copy by 64-bit words */
-	cld					/* copy forwards */
 	rep
 	movsq
 	movq	%rdx,%rcx
@@ -181,6 +253,28 @@ ENTRY(memcpy)
 	POP_FRAME_POINTER
 	ret
 END(memcpy)
+
+/*
+ * memset(dst, c,   len)
+ *        rdi, rsi, rdx
+ */
+ENTRY(memset)
+	PUSH_FRAME_POINTER
+	movq	%rdi,%r9
+	movq	%rdx,%rcx
+	movabs	$0x0101010101010101,%rax
+	imulq	%rsi,%rax
+	shrq	$3,%rcx
+	rep
+	stosq
+	movq	%rdx,%rcx
+	andq	$7,%rcx
+	rep
+	stosb
+	movq	%r9,%rax
+	POP_FRAME_POINTER
+	ret
+END(memset)
 
 /*
  * pagecopy(%rdi=from, %rsi=to)
@@ -218,7 +312,6 @@ ENTRY(fillw)
 	movq	%rdi,%rax
 	movq	%rsi,%rdi
 	movq	%rdx,%rcx
-	cld
 	rep
 	stosw
 	POP_FRAME_POINTER
@@ -238,7 +331,7 @@ END(fillw)
  */
 
 /*
- * copyout(from_kernel, to_user, len)  - MP SAFE
+ * copyout(from_kernel, to_user, len)
  *         %rdi,        %rsi,    %rdx
  */
 ENTRY(copyout)
@@ -249,12 +342,11 @@ ENTRY(copyout)
 	jz	done_copyout
 
 	/*
-	 * Check explicitly for non-user addresses.  If 486 write protection
-	 * is being used, this check is essential because we are in kernel
-	 * mode so the h/w does not provide any protection against writing
-	 * kernel addresses.
+	 * Check explicitly for non-user addresses.  This check is essential
+	 * because it prevents usermode from writing into the kernel.  We do
+	 * not verify anywhere else that the user did not specify a rogue
+	 * address.
 	 */
-
 	/*
 	 * First, prevent address wrapping.
 	 */
@@ -276,7 +368,6 @@ ENTRY(copyout)
 	movq	%rdx,%rcx
 
 	shrq	$3,%rcx
-	cld
 	rep
 	movsq
 	movb	%dl,%cl
@@ -301,7 +392,7 @@ copyout_fault:
 END(copyout)
 
 /*
- * copyin(from_user, to_kernel, len) - MP SAFE
+ * copyin(from_user, to_kernel, len)
  *        %rdi,      %rsi,      %rdx
  */
 ENTRY(copyin)
@@ -325,7 +416,6 @@ ENTRY(copyin)
 	movq	%rdx,%rcx
 	movb	%cl,%al
 	shrq	$3,%rcx				/* copy longword-wise */
-	cld
 	rep
 	movsq
 	movb	%al,%cl
@@ -463,20 +553,6 @@ ENTRY(fueword32)
 	ret
 END(fueword32)
 
-/*
- * fuswintr() and suswintr() are specialized variants of fuword16() and
- * suword16(), respectively.  They are called from the profiling code,
- * potentially at interrupt time.  If they fail, that's okay; good things
- * will happen later.  They always fail for now, until the trap code is
- * able to deal with this.
- */
-ALTENTRY(suswintr)
-ENTRY(fuswintr)
-	movq	$-1,%rax
-	ret
-END(suswintr)
-END(fuswintr)
-
 ENTRY(fuword16)
 	PUSH_FRAME_POINTER
 	movq	PCPU(CURPCB),%rcx
@@ -518,7 +594,7 @@ fusufault:
 
 /*
  * Store a 64-bit word, a 32-bit word, a 16-bit word, or an 8-bit byte to
- * user memory.  All these functions are MPSAFE.
+ * user memory.
  * addr = %rdi, value = %rsi
  */
 ALTENTRY(suword64)
@@ -593,10 +669,10 @@ ENTRY(subyte)
 END(subyte)
 
 /*
- * copyinstr(from, to, maxlen, int *lencopied) - MP SAFE
+ * copyinstr(from, to, maxlen, int *lencopied)
  *           %rdi, %rsi, %rdx, %rcx
  *
- *	copy a string from from to to, stop when a 0 character is reached.
+ *	copy a string from 'from' to 'to', stop when a 0 character is reached.
  *	return ENAMETOOLONG if string is longer than maxlen, and
  *	EFAULT on protection violations. If lencopied is non-zero,
  *	return the actual length in *lencopied.
@@ -622,7 +698,6 @@ ENTRY(copyinstr)
 	movq	%rax,%r8
 1:
 	incq	%rdx
-	cld
 
 2:
 	decq	%rdx
@@ -664,7 +739,7 @@ cpystrflt_x:
 END(copyinstr)
 
 /*
- * copystr(from, to, maxlen, int *lencopied) - MP SAFE
+ * copystr(from, to, maxlen, int *lencopied)
  *         %rdi, %rsi, %rdx, %rcx
  */
 ENTRY(copystr)
@@ -673,7 +748,6 @@ ENTRY(copystr)
 
 	xchgq	%rdi,%rsi
 	incq	%rdx
-	cld
 1:
 	decq	%rdx
 	jz	4f
@@ -704,7 +778,6 @@ END(copystr)
 
 /*
  * Handling of special amd64 registers and descriptor tables etc
- * %rdi
  */
 /* void lgdt(struct region_descriptor *rdp); */
 ENTRY(lgdt)
@@ -764,7 +837,8 @@ ENTRY(longjmp)
 END(longjmp)
 
 /*
- * Support for reading MSRs in the safe manner.
+ * Support for reading MSRs in the safe manner.  (Instead of panic on #gp,
+ * return an error.)
  */
 ENTRY(rdmsr_safe)
 /* int rdmsr_safe(u_int msr, uint64_t *data) */
@@ -784,7 +858,8 @@ ENTRY(rdmsr_safe)
 	ret
 
 /*
- * Support for writing MSRs in the safe manner.
+ * Support for writing MSRs in the safe manner.  (Instead of panic on #gp,
+ * return an error.)
  */
 ENTRY(wrmsr_safe)
 /* int wrmsr_safe(u_int msr, uint64_t data) */
@@ -811,3 +886,118 @@ msr_onfault:
 	movl	$EFAULT,%eax
 	POP_FRAME_POINTER
 	ret
+
+/*
+ * void pmap_pti_pcid_invalidate(uint64_t ucr3, uint64_t kcr3);
+ * Invalidates address space addressed by ucr3, then returns to kcr3.
+ * Done in assembler to ensure no other memory accesses happen while
+ * on ucr3.
+ */
+	ALIGN_TEXT
+ENTRY(pmap_pti_pcid_invalidate)
+	pushfq
+	cli
+	movq	%rdi,%cr3	/* to user page table */
+	movq	%rsi,%cr3	/* back to kernel */
+	popfq
+	retq
+
+/*
+ * void pmap_pti_pcid_invlpg(uint64_t ucr3, uint64_t kcr3, vm_offset_t va);
+ * Invalidates virtual address va in address space ucr3, then returns to kcr3.
+ */
+	ALIGN_TEXT
+ENTRY(pmap_pti_pcid_invlpg)
+	pushfq
+	cli
+	movq	%rdi,%cr3	/* to user page table */
+	invlpg	(%rdx)
+	movq	%rsi,%cr3	/* back to kernel */
+	popfq
+	retq
+
+/*
+ * void pmap_pti_pcid_invlrng(uint64_t ucr3, uint64_t kcr3, vm_offset_t sva,
+ *     vm_offset_t eva);
+ * Invalidates virtual addresses between sva and eva in address space ucr3,
+ * then returns to kcr3.
+ */
+	ALIGN_TEXT
+ENTRY(pmap_pti_pcid_invlrng)
+	pushfq
+	cli
+	movq	%rdi,%cr3	/* to user page table */
+1:	invlpg	(%rdx)
+	addq	$PAGE_SIZE,%rdx
+	cmpq	%rdx,%rcx
+	ja	1b
+	movq	%rsi,%cr3	/* back to kernel */
+	popfq
+	retq
+
+	.altmacro
+	.macro	ibrs_seq_label l
+handle_ibrs_\l:
+	.endm
+	.macro	ibrs_call_label l
+	call	handle_ibrs_\l
+	.endm
+	.macro	ibrs_seq count
+	ll=1
+	.rept	\count
+	ibrs_call_label	%(ll)
+	nop
+	ibrs_seq_label %(ll)
+	addq	$8,%rsp
+	ll=ll+1
+	.endr
+	.endm
+
+/* all callers already saved %rax, %rdx, and %rcx */
+ENTRY(handle_ibrs_entry)
+	cmpb	$0,hw_ibrs_active(%rip)
+	je	1f
+	movl	$MSR_IA32_SPEC_CTRL,%ecx
+	rdmsr
+	orl	$(IA32_SPEC_CTRL_IBRS|IA32_SPEC_CTRL_STIBP),%eax
+	orl	$(IA32_SPEC_CTRL_IBRS|IA32_SPEC_CTRL_STIBP)>>32,%edx
+	wrmsr
+	movb	$1,PCPU(IBPB_SET)
+	testl	$CPUID_STDEXT_SMEP,cpu_stdext_feature(%rip)
+	jne	1f
+	ibrs_seq 32
+1:	ret
+END(handle_ibrs_entry)
+
+ENTRY(handle_ibrs_exit)
+	cmpb	$0,PCPU(IBPB_SET)
+	je	1f
+	movl	$MSR_IA32_SPEC_CTRL,%ecx
+	rdmsr
+	andl	$~(IA32_SPEC_CTRL_IBRS|IA32_SPEC_CTRL_STIBP),%eax
+	andl	$~((IA32_SPEC_CTRL_IBRS|IA32_SPEC_CTRL_STIBP)>>32),%edx
+	wrmsr
+	movb	$0,PCPU(IBPB_SET)
+1:	ret
+END(handle_ibrs_exit)
+
+/* registers-neutral version, but needs stack */
+ENTRY(handle_ibrs_exit_rs)
+	cmpb	$0,PCPU(IBPB_SET)
+	je	1f
+	pushq	%rax
+	pushq	%rdx
+	pushq	%rcx
+	movl	$MSR_IA32_SPEC_CTRL,%ecx
+	rdmsr
+	andl	$~(IA32_SPEC_CTRL_IBRS|IA32_SPEC_CTRL_STIBP),%eax
+	andl	$~((IA32_SPEC_CTRL_IBRS|IA32_SPEC_CTRL_STIBP)>>32),%edx
+	wrmsr
+	popq	%rcx
+	popq	%rdx
+	popq	%rax
+	movb	$0,PCPU(IBPB_SET)
+1:	ret
+END(handle_ibrs_exit_rs)
+
+	.noaltmacro

@@ -156,6 +156,9 @@ data_abort(struct thread *td, struct trapframe *frame, uint64_t esr,
 	vm_prot_t ftype;
 	vm_offset_t va;
 	int error, sig, ucode;
+#ifdef KDB
+	bool handled;
+#endif
 
 	/*
 	 * According to the ARMv8-A rev. A.g, B2.10.5 "Load-Exclusive
@@ -172,16 +175,6 @@ data_abort(struct thread *td, struct trapframe *frame, uint64_t esr,
 #endif
 
 	pcb = td->td_pcb;
-
-	/*
-	 * Special case for fuswintr and suswintr. These can't sleep so
-	 * handle them early on in the trap handler.
-	 */
-	if (__predict_false(pcb->pcb_onfault == (vm_offset_t)&fsu_intr_fault)) {
-		frame->tf_elr = pcb->pcb_onfault;
-		return;
-	}
-
 	p = td->td_proc;
 	if (lower)
 		map = &p->p_vmspace->vm_map;
@@ -196,8 +189,16 @@ data_abort(struct thread *td, struct trapframe *frame, uint64_t esr,
 		}
 	}
 
-	if (pmap_fault(map->pmap, esr, far) == KERN_SUCCESS)
-		return;
+	/*
+	 * We may fault from userspace or when in a DMAP region due to
+	 * a superpage being unmapped when the access took place. In these
+	 * cases we need to wait for the pmap to be unlocked and check
+	 * if the translation is still invalid.
+	 */
+	if (map != kernel_map || VIRT_IN_DMAP(far)) {
+		if (pmap_fault(map->pmap, esr, far) == KERN_SUCCESS)
+			return;
+	}
 
 	KASSERT(td->td_md.md_spinlock_count == 0,
 	    ("data abort with spinlock held"));
@@ -236,9 +237,14 @@ data_abort(struct thread *td, struct trapframe *frame, uint64_t esr,
 			printf(" esr:         %.8lx\n", esr);
 
 #ifdef KDB
-			if (debugger_on_panic || kdb_active)
-				if (kdb_trap(ESR_ELx_EXCEPTION(esr), 0, frame))
+			if (debugger_on_panic) {
+				kdb_why = KDB_WHY_TRAP;
+				handled = kdb_trap(ESR_ELx_EXCEPTION(esr), 0,
+				    frame);
+				kdb_why = KDB_WHY_UNSET;
+				if (handled)
 					return;
+			}
 #endif
 			panic("vm_fault failed: %lx", frame->tf_elr);
 		}
@@ -323,7 +329,14 @@ do_el1h_sync(struct thread *td, struct trapframe *frame)
 			break;
 		}
 #endif
-		/* FALLTHROUGH */
+#ifdef KDB
+		kdb_trap(exception, 0,
+		    (td->td_frame != NULL) ? td->td_frame : frame);
+#else
+		panic("No debugger in kernel.\n");
+#endif
+		frame->tf_elr += 4;
+		break;
 	case EXCP_WATCHPT_EL1:
 	case EXCP_SOFTSTP_EL1:
 #ifdef KDB
@@ -349,6 +362,7 @@ do_el1h_sync(struct thread *td, struct trapframe *frame)
 void
 do_el0_sync(struct thread *td, struct trapframe *frame)
 {
+	pcpu_bp_harden bp_harden;
 	uint32_t exception;
 	uint64_t esr, far;
 
@@ -360,11 +374,25 @@ do_el0_sync(struct thread *td, struct trapframe *frame)
 	esr = frame->tf_esr;
 	exception = ESR_ELx_EXCEPTION(esr);
 	switch (exception) {
-	case EXCP_UNKNOWN:
 	case EXCP_INSN_ABORT_L:
+		far = READ_SPECIALREG(far_el1);
+
+		/*
+		 * Userspace may be trying to train the branch predictor to
+		 * attack the kernel. If we are on a CPU affected by this
+		 * call the handler to clear the branch predictor state.
+		 */
+		if (far > VM_MAXUSER_ADDRESS) {
+			bp_harden = PCPU_GET(bp_harden);
+			if (bp_harden != NULL)
+				bp_harden();
+		}
+		break;
+	case EXCP_UNKNOWN:
 	case EXCP_DATA_ABORT_L:
 	case EXCP_DATA_ABORT:
 		far = READ_SPECIALREG(far_el1);
+		break;
 	}
 	intr_enable();
 
@@ -381,7 +409,8 @@ do_el0_sync(struct thread *td, struct trapframe *frame)
 		panic("VFP exception in userland");
 #endif
 		break;
-	case EXCP_SVC:
+	case EXCP_SVC32:
+	case EXCP_SVC64:
 		svc_handler(td, frame);
 		break;
 	case EXCP_INSN_ABORT_L:

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2011, David E. O'Brien.
  * Copyright (c) 2009-2011, Juniper Networks, Inc.
  * Copyright (c) 2015-2016, EMC Corp.
@@ -36,8 +38,6 @@ __FBSDID("$FreeBSD$");
 #include <sys/sx.h>
 #include <sys/sysent.h>
 #include <sys/vnode.h>
-
-#include "opt_compat.h"
 
 static eventhandler_tag filemon_exec_tag;
 static eventhandler_tag filemon_exit_tag;

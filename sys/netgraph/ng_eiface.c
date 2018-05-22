@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  *
  * Copyright (c) 1999-2001, Vitaly V Belekhov
  * All rights reserved.
@@ -57,6 +59,7 @@
 #include <net/bpf.h>
 #include <net/ethernet.h>
 #include <net/if_arp.h>
+
 
 static const struct ng_cmdlist ng_eiface_cmdlist[] = {
 	{
@@ -510,7 +513,7 @@ ng_eiface_rcvmsg(node_p node, item_p item, hook_p lasthook)
 			/* Determine size of response and allocate it */
 			buflen = 0;
 			if_addr_rlock(ifp);
-			TAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link)
+			CK_STAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link)
 				buflen += SA_SIZE(ifa->ifa_addr);
 			NG_MKRESPONSE(resp, msg, buflen, M_NOWAIT);
 			if (resp == NULL) {
@@ -521,7 +524,7 @@ ng_eiface_rcvmsg(node_p node, item_p item, hook_p lasthook)
 
 			/* Add addresses */
 			ptr = resp->data;
-			TAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link) {
+			CK_STAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link) {
 				const int len = SA_SIZE(ifa->ifa_addr);
 
 				if (buflen < len) {

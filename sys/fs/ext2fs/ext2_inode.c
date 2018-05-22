@@ -5,6 +5,8 @@
  *  University of Utah, Department of Computer Science
  */
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986, 1989, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -48,6 +50,7 @@
 #include <vm/vm.h>
 #include <vm/vm_extern.h>
 
+#include <fs/ext2fs/fs.h>
 #include <fs/ext2fs/inode.h>
 #include <fs/ext2fs/ext2_mount.h>
 #include <fs/ext2fs/ext2fs.h>
@@ -224,9 +227,9 @@ ext2_ind_truncate(struct vnode *vp, off_t length, int flags, struct ucred *cred,
     struct thread *td)
 {
 	struct vnode *ovp = vp;
-	int32_t lastblock;
+	e4fs_daddr_t lastblock;
 	struct inode *oip;
-	int32_t bn, lbn, lastiblock[EXT2_NIADDR], indir_lbn[EXT2_NIADDR];
+	e4fs_daddr_t bn, lbn, lastiblock[EXT2_NIADDR], indir_lbn[EXT2_NIADDR];
 	uint32_t oldblks[EXT2_NDADDR + EXT2_NIADDR];
 	uint32_t newblks[EXT2_NDADDR + EXT2_NIADDR];
 	struct m_ext2fs *fs;

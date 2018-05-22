@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1988, 1991, 1993
  *	The Regents of the University of California.  All rights reserved.
  * (c) UNIX System Laboratories, Inc.
@@ -38,10 +40,10 @@
 #ifndef _SYS_SYSTM_H_
 #define	_SYS_SYSTM_H_
 
+#include <sys/cdefs.h>
 #include <machine/atomic.h>
 #include <machine/cpufunc.h>
 #include <sys/callout.h>
-#include <sys/cdefs.h>
 #include <sys/queue.h>
 #include <sys/stdint.h>		/* for people using printf mainly */
 
@@ -257,6 +259,12 @@ void	hexdump(const void *ptr, int length, const char *hdr, int flags);
 
 #define ovbcopy(f, t, l) bcopy((f), (t), (l))
 void	bcopy(const void * _Nonnull from, void * _Nonnull to, size_t len);
+#define bcopy(from, to, len) ({				\
+	if (__builtin_constant_p(len) && (len) <= 64)	\
+		__builtin_memmove((to), (from), (len));	\
+	else						\
+		bcopy((from), (to), (len));		\
+})
 void	bzero(void * _Nonnull buf, size_t len);
 #define bzero(buf, len) ({				\
 	if (__builtin_constant_p(len) && (len) <= 64)	\
@@ -267,6 +275,7 @@ void	bzero(void * _Nonnull buf, size_t len);
 void	explicit_bzero(void * _Nonnull, size_t);
 
 void	*memcpy(void * _Nonnull to, const void * _Nonnull from, size_t len);
+#define memcpy(to, from, len) __builtin_memcpy(to, from, len)
 void	*memmove(void * _Nonnull dest, const void * _Nonnull src, size_t n);
 
 int	copystr(const void * _Nonnull __restrict kfaddr,
@@ -275,14 +284,14 @@ int	copystr(const void * _Nonnull __restrict kfaddr,
 int	copyinstr(const void * __restrict udaddr,
 	    void * _Nonnull __restrict kaddr, size_t len,
 	    size_t * __restrict lencopied);
-int	copyin(const void * _Nonnull __restrict udaddr,
+int	copyin(const void * __restrict udaddr,
 	    void * _Nonnull __restrict kaddr, size_t len);
-int	copyin_nofault(const void * _Nonnull __restrict udaddr,
+int	copyin_nofault(const void * __restrict udaddr,
 	    void * _Nonnull __restrict kaddr, size_t len);
 int	copyout(const void * _Nonnull __restrict kaddr,
-	    void * _Nonnull __restrict udaddr, size_t len);
+	    void * __restrict udaddr, size_t len);
 int	copyout_nofault(const void * _Nonnull __restrict kaddr,
-	    void * _Nonnull __restrict udaddr, size_t len);
+	    void * __restrict udaddr, size_t len);
 
 int	fubyte(volatile const void *base);
 long	fuword(volatile const void *base);
@@ -324,6 +333,8 @@ void	startprofclock(struct proc *);
 void	stopprofclock(struct proc *);
 void	cpu_startprofclock(void);
 void	cpu_stopprofclock(void);
+void	suspendclock(void);
+void	resumeclock(void);
 sbintime_t 	cpu_idleclock(void);
 void	cpu_activeclock(void);
 void	cpu_new_callout(int cpu, sbintime_t bt, sbintime_t bt_opt);
@@ -409,6 +420,8 @@ int	pause_sbt(const char *wmesg, sbintime_t sbt, sbintime_t pr,
 	    int flags);
 #define	pause(wmesg, timo)						\
 	pause_sbt((wmesg), tick_sbt * (timo), 0, C_HARDCLOCK)
+#define	pause_sig(wmesg, timo)						\
+	pause_sbt((wmesg), tick_sbt * (timo), 0, C_HARDCLOCK | C_CATCH)
 #define	tsleep(chan, pri, wmesg, timo)					\
 	_sleep((chan), NULL, (pri), (wmesg), tick_sbt * (timo),		\
 	    0, C_HARDCLOCK)
@@ -461,6 +474,22 @@ void free_unr(struct unrhdr *uh, u_int item);
 void	intr_prof_stack_use(struct thread *td, struct trapframe *frame);
 
 void counted_warning(unsigned *counter, const char *msg);
+
+/*
+ * APIs to manage deprecation and obsolescence.
+ */
+struct device;
+void _gone_in(int major, const char *msg);
+void _gone_in_dev(struct device *dev, int major, const char *msg);
+#ifdef NO_OBSOLETE_CODE
+#define __gone_ok(m, msg)					 \
+	_Static_assert(m < P_OSREL_MAJOR(__FreeBSD_version)),	 \
+	    "Obsolete code" msg);
+#else
+#define	__gone_ok(m, msg)
+#endif
+#define gone_in(major, msg)		__gone_ok(major, msg) _gone_in(major, msg)
+#define gone_in_dev(dev, major, msg)	__gone_ok(major, msg) _gone_in_dev(dev, major, msg)
 
 __NULLABILITY_PRAGMA_POP
 

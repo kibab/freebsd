@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1991, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -1432,8 +1434,10 @@ readtoken1(int firstc, char const *initialsyntax, const char *eofmark,
 
 			switch(synentry) {
 			case CNL:	/* '\n' */
-				if (state[level].syntax == BASESYNTAX)
+				if (level == 0)
 					goto endword;	/* exit outer loop */
+				/* FALLTHROUGH */
+			case CQNL:
 				USTPUTC(c, out);
 				plinno++;
 				if (doprompt)

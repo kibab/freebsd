@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2010 The FreeBSD Foundation
  * All rights reserved.
  *
@@ -1044,7 +1046,7 @@ racct_proc_ucred_changed(struct proc *p, struct ucred *oldcred,
 	if (!racct_enable)
 		return;
 
-	PROC_LOCK_ASSERT(p, MA_NOTOWNED);
+	PROC_LOCK_ASSERT(p, MA_OWNED);
 
 	newuip = newcred->cr_ruidinfo;
 	olduip = oldcred->cr_ruidinfo;
@@ -1071,10 +1073,6 @@ racct_proc_ucred_changed(struct proc *p, struct ucred *oldcred,
 			    p->p_racct);
 	}
 	RACCT_UNLOCK();
-
-#ifdef RCTL
-	rctl_proc_ucred_changed(p, newcred);
-#endif
 }
 
 void

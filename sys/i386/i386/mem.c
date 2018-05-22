@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1988 University of Utah.
  * Copyright (c) 1982, 1986, 1990 The Regents of the University of California.
  * All rights reserved.
@@ -90,9 +92,6 @@ memrw(struct cdev *dev, struct uio *uio, int flags)
 		return EIO;
 
 	if (dev2unit(dev) == CDEV_MINOR_KMEM && uio->uio_resid > 0) {
-		if (uio->uio_offset < (vm_offset_t)VADDR(PTDPTDI, 0))
-				return (EFAULT);
-
 		if (!kernacc((caddr_t)(int)uio->uio_offset, uio->uio_resid,
 		    uio->uio_rw == UIO_READ ?  VM_PROT_READ : VM_PROT_WRITE))
 			return (EFAULT);

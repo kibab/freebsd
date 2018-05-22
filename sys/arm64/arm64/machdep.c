@@ -80,6 +80,8 @@ __FBSDID("$FreeBSD$");
 #include <machine/undefined.h>
 #include <machine/vmparam.h>
 
+#include <arm/include/physmem.h>
+
 #ifdef VFP
 #include <machine/vfp.h>
 #endif
@@ -101,13 +103,8 @@ struct pcpu __pcpu[MAXCPU];
 
 static struct trapframe proc0_tf;
 
-vm_paddr_t phys_avail[PHYS_AVAIL_SIZE + 2];
-vm_paddr_t dump_avail[PHYS_AVAIL_SIZE + 2];
-
 int early_boot = 1;
 int cold = 1;
-long realmem = 0;
-long Maxmem = 0;
 
 #define	PHYSMAP_SIZE	(2 * (VM_PHYSSEG_MAX - 1))
 vm_paddr_t physmap[PHYSMAP_SIZE];
@@ -171,6 +168,7 @@ cpu_startup(void *dummy)
 
 	undef_init();
 	identify_cpu();
+	install_cpu_errata();
 
 	vm_ksubmap_init(&kmi);
 	bufinit();
@@ -211,7 +209,8 @@ set_regs(struct thread *td, struct reg *regs)
 	frame->tf_sp = regs->sp;
 	frame->tf_lr = regs->lr;
 	frame->tf_elr = regs->elr;
-	frame->tf_spsr = regs->spsr;
+	frame->tf_spsr &= ~PSR_FLAGS;
+	frame->tf_spsr |= regs->spsr & PSR_FLAGS;
 
 	memcpy(frame->tf_x, regs->x, sizeof(frame->tf_x));
 
@@ -277,6 +276,56 @@ set_dbregs(struct thread *td, struct dbreg *regs)
 	return (EDOOFUS);
 }
 
+#ifdef COMPAT_FREEBSD32
+int
+fill_regs32(struct thread *td, struct reg32 *regs)
+{
+
+	printf("ARM64TODO: fill_regs32");
+	return (EDOOFUS);
+}
+
+int
+set_regs32(struct thread *td, struct reg32 *regs)
+{
+
+	printf("ARM64TODO: set_regs32");
+	return (EDOOFUS);
+}
+
+int
+fill_fpregs32(struct thread *td, struct fpreg32 *regs)
+{
+
+	printf("ARM64TODO: fill_fpregs32");
+	return (EDOOFUS);
+}
+
+int
+set_fpregs32(struct thread *td, struct fpreg32 *regs)
+{
+
+	printf("ARM64TODO: set_fpregs32");
+	return (EDOOFUS);
+}
+
+int
+fill_dbregs32(struct thread *td, struct dbreg32 *regs)
+{
+
+	printf("ARM64TODO: fill_dbregs32");
+	return (EDOOFUS);
+}
+
+int
+set_dbregs32(struct thread *td, struct dbreg32 *regs)
+{
+
+	printf("ARM64TODO: set_dbregs32");
+	return (EDOOFUS);
+}
+#endif
+
 int
 ptrace_set_pc(struct thread *td, u_long addr)
 {
@@ -310,12 +359,7 @@ exec_setregs(struct thread *td, struct image_params *imgp, u_long stack)
 
 	memset(tf, 0, sizeof(struct trapframe));
 
-	/*
-	 * We need to set x0 for init as it doesn't call
-	 * cpu_set_syscall_retval to copy the value. We also
-	 * need to set td_retval for the cases where we do.
-	 */
-	tf->tf_x[0] = td->td_retval[0] = stack;
+	tf->tf_x[0] = stack;
 	tf->tf_sp = STACKALIGN(stack);
 	tf->tf_lr = imgp->entry_addr;
 	tf->tf_elr = imgp->entry_addr;
@@ -354,6 +398,12 @@ int
 set_mcontext(struct thread *td, mcontext_t *mcp)
 {
 	struct trapframe *tf = td->td_frame;
+	uint32_t spsr;
+
+	spsr = mcp->mc_gpregs.gp_spsr;
+	if ((spsr & PSR_M_MASK) != PSR_M_EL0t ||
+	    (spsr & (PSR_AARCH32 | PSR_F | PSR_I | PSR_A | PSR_D)) != 0)
+		return (EINVAL); 
 
 	memcpy(tf->tf_x, mcp->mc_gpregs.gp_x, sizeof(tf->tf_x));
 
@@ -530,19 +580,16 @@ int
 sys_sigreturn(struct thread *td, struct sigreturn_args *uap)
 {
 	ucontext_t uc;
-	uint32_t spsr;
+	int error;
 
 	if (uap == NULL)
 		return (EFAULT);
 	if (copyin(uap->sigcntxp, &uc, sizeof(uc)))
 		return (EFAULT);
 
-	spsr = uc.uc_mcontext.mc_gpregs.gp_spsr;
-	if ((spsr & PSR_M_MASK) != PSR_M_EL0t ||
-	    (spsr & (PSR_F | PSR_I | PSR_A | PSR_D)) != 0)
-		return (EINVAL); 
-
-	set_mcontext(td, &uc.uc_mcontext);
+	error = set_mcontext(td, &uc.uc_mcontext);
+	if (error != 0)
+		return (error);
 	set_fpcontext(td, &uc.uc_mcontext);
 
 	/* Restore signal mask. */
@@ -580,14 +627,13 @@ sendsig(sig_t catcher, ksiginfo_t *ksi, sigset_t *mask)
 	struct sigframe *fp, frame;
 	struct sigacts *psp;
 	struct sysentvec *sysent;
-	int code, onstack, sig;
+	int onstack, sig;
 
 	td = curthread;
 	p = td->td_proc;
 	PROC_LOCK_ASSERT(p, MA_OWNED);
 
 	sig = ksi->ksi_signo;
-	code = ksi->ksi_code;
 	psp = p->p_sigacts;
 	mtx_assert(&psp->ps_mtx, MA_OWNED);
 
@@ -665,6 +711,9 @@ init_proc0(vm_offset_t kstack)
 	thread0.td_pcb->pcb_vfpcpu = UINT_MAX;
 	thread0.td_frame = &proc0_tf;
 	pcpup->pc_curpcb = thread0.td_pcb;
+
+	/* Set the base address of translation table 0. */
+	thread0.td_proc->p_md.md_l0addr = READ_SPECIALREG(ttbr0_el1);
 }
 
 typedef struct {
@@ -846,6 +895,8 @@ add_efi_map_entries(struct efi_map_header *efihdr, vm_paddr_t *physmap,
 			continue;
 		}
 
+		arm_physmem_hardware_region(p->md_phys,
+		    p->md_pages * PAGE_SIZE);
 		if (!add_physmap_entry(p->md_phys, (p->md_pages * PAGE_SIZE),
 		    physmap, physmap_idxp))
 			break;
@@ -967,15 +1018,14 @@ initarm(struct arm64_bootparams *abp)
 {
 	struct efi_map_header *efihdr;
 	struct pcpu *pcpup;
+	char *env;
 #ifdef FDT
 	struct mem_region mem_regions[FDT_MEM_REGIONS];
 	int mem_regions_sz;
 #endif
 	vm_offset_t lastaddr;
 	caddr_t kmdp;
-	vm_paddr_t mem_len;
 	bool valid;
-	int i;
 
 	/* Set the module data location */
 	preload_metadata = (caddr_t)(uintptr_t)(abp->modulep);
@@ -1011,18 +1061,9 @@ initarm(struct arm64_bootparams *abp)
 			panic("Cannot get physical memory regions");
 		add_fdt_mem_regions(mem_regions, mem_regions_sz, physmap,
 		    &physmap_idx);
+		arm_physmem_hardware_regions(mem_regions, mem_regions_sz);
 	}
 #endif
-
-	/* Print the memory map */
-	mem_len = 0;
-	for (i = 0; i < physmap_idx; i += 2) {
-		dump_avail[i] = physmap[i];
-		dump_avail[i + 1] = physmap[i + 1];
-		mem_len += physmap[i + 1] - physmap[i];
-	}
-	dump_avail[i] = 0;
-	dump_avail[i + 1] = 0;
 
 	/* Set the pcpu data, this is needed by pmap_bootstrap */
 	pcpup = &__pcpu[0];
@@ -1047,6 +1088,7 @@ initarm(struct arm64_bootparams *abp)
 	/* Bootstrap enough of pmap  to enter the kernel proper */
 	pmap_bootstrap(abp->kern_l0pt, abp->kern_l1pt,
 	    KERNBASE - abp->kern_delta, lastaddr - KERNBASE);
+	arm_physmem_init_kernel_globals();
 
 	devmap_bootstrap(0, NULL);
 
@@ -1066,6 +1108,10 @@ initarm(struct arm64_bootparams *abp)
 	dbg_init();
 	kdb_init();
 	pan_enable();
+
+	env = kern_getenv("kernelname");
+	if (env != NULL)
+		strlcpy(kernelname, env, sizeof(kernelname));
 
 	early_boot = 0;
 }

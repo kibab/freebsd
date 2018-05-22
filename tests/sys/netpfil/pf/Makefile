@@ -3,9 +3,11 @@
 PACKAGE=	tests
 
 TESTSDIR=       ${TESTSBASE}/sys/netpfil/pf
+TESTS_SUBDIRS+=	ioctl
 
 ATF_TESTS_SH+=	pass_block \
 		forward \
+		fragmentation \
 		set_tos
 
 ${PACKAGE}FILES+=	utils.subr \

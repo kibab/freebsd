@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 2007 Stephan Uphoff <ups@FreeBSD.org>
  * All rights reserved.
  *
@@ -336,20 +338,13 @@ rm_wowned(const struct rmlock *rm)
 void
 rm_sysinit(void *arg)
 {
-	struct rm_args *args = arg;
+	struct rm_args *args;
 
-	rm_init(args->ra_rm, args->ra_desc);
+	args = arg;
+	rm_init_flags(args->ra_rm, args->ra_desc, args->ra_flags);
 }
 
-void
-rm_sysinit_flags(void *arg)
-{
-	struct rm_args_flags *args = arg;
-
-	rm_init_flags(args->ra_rm, args->ra_desc, args->ra_opts);
-}
-
-static int
+static __noinline int
 _rm_rlock_hard(struct rmlock *rm, struct rm_priotracker *tracker, int trylock)
 {
 	struct pcpu *pc;
@@ -464,15 +459,15 @@ _rm_rlock(struct rmlock *rm, struct rm_priotracker *tracker, int trylock)
 	 * Fast path to combine two common conditions into a single
 	 * conditional jump.
 	 */
-	if (0 == (td->td_owepreempt |
-	    CPU_ISSET(pc->pc_cpuid, &rm->rm_writecpus)))
+	if (__predict_true(0 == (td->td_owepreempt |
+	    CPU_ISSET(pc->pc_cpuid, &rm->rm_writecpus))))
 		return (1);
 
 	/* We do not have a read token and need to acquire one. */
 	return _rm_rlock_hard(rm, tracker, trylock);
 }
 
-static void
+static __noinline void
 _rm_unlock_hard(struct thread *td,struct rm_priotracker *tracker)
 {
 
@@ -523,7 +518,7 @@ _rm_runlock(struct rmlock *rm, struct rm_priotracker *tracker)
 	if (rm->lock_object.lo_flags & LO_SLEEPABLE)
 		THREAD_SLEEPING_OK();
 
-	if (0 == (td->td_owepreempt | tracker->rmp_flags))
+	if (__predict_true(0 == (td->td_owepreempt | tracker->rmp_flags)))
 		return;
 
 	_rm_unlock_hard(td, tracker);

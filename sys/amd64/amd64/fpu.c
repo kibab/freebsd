@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1990 William Jolitz.
  * Copyright (c) 1991 The Regents of the University of California.
  * All rights reserved.
@@ -59,6 +61,7 @@ __FBSDID("$FreeBSD$");
 #include <machine/specialreg.h>
 #include <machine/segments.h>
 #include <machine/ucontext.h>
+#include <x86/ifunc.h>
 
 /*
  * Floating point support.
@@ -149,24 +152,58 @@ struct xsave_area_elm_descr {
 	u_int	size;
 } *xsave_area_desc;
 
-void
-fpusave(void *addr)
+static void
+fpusave_xsave(void *addr)
 {
 
-	if (use_xsave)
-		xsave((char *)addr, xsave_mask);
-	else
-		fxsave((char *)addr);
+	xsave((char *)addr, xsave_mask);
 }
 
-void
-fpurestore(void *addr)
+static void
+fpurestore_xrstor(void *addr)
+{
+
+	xrstor((char *)addr, xsave_mask);
+}
+
+static void
+fpusave_fxsave(void *addr)
+{
+
+	fxsave((char *)addr);
+}
+
+static void
+fpurestore_fxrstor(void *addr)
+{
+
+	fxrstor((char *)addr);
+}
+
+static void
+init_xsave(void)
 {
 
 	if (use_xsave)
-		xrstor((char *)addr, xsave_mask);
-	else
-		fxrstor((char *)addr);
+		return;
+	if ((cpu_feature2 & CPUID2_XSAVE) == 0)
+		return;
+	use_xsave = 1;
+	TUNABLE_INT_FETCH("hw.use_xsave", &use_xsave);
+}
+
+DEFINE_IFUNC(, void, fpusave, (void *), static)
+{
+
+	init_xsave();
+	return (use_xsave ? fpusave_xsave : fpusave_fxsave);
+}
+
+DEFINE_IFUNC(, void, fpurestore, (void *), static)
+{
+
+	init_xsave();
+	return (use_xsave ? fpurestore_xrstor : fpurestore_fxrstor);
 }
 
 void
@@ -203,14 +240,10 @@ fpuinit_bsp1(void)
 {
 	u_int cp[4];
 	uint64_t xsave_mask_user;
+	bool old_wp;
 
-	if ((cpu_feature2 & CPUID2_XSAVE) != 0) {
-		use_xsave = 1;
-		TUNABLE_INT_FETCH("hw.use_xsave", &use_xsave);
-	}
 	if (!use_xsave)
 		return;
-
 	cpuid_count(0xd, 0x0, cp);
 	xsave_mask = XFEATURE_ENABLED_X87 | XFEATURE_ENABLED_SSE;
 	if ((cp[0] & xsave_mask) != xsave_mask)
@@ -231,8 +264,14 @@ fpuinit_bsp1(void)
 		 * Patch the XSAVE instruction in the cpu_switch code
 		 * to XSAVEOPT.  We assume that XSAVE encoding used
 		 * REX byte, and set the bit 4 of the r/m byte.
+		 *
+		 * It seems that some BIOSes give control to the OS
+		 * with CR0.WP already set, making the kernel text
+		 * read-only before cpu_startup().
 		 */
+		old_wp = disable_wp();
 		ctx_switch_xsave[3] |= 0x10;
+		restore_wp(old_wp);
 	}
 }
 
@@ -357,7 +396,8 @@ fpuinitstate(void *arg __unused)
 	start_emulating();
 	intr_restore(saveintr);
 }
-SYSINIT(fpuinitstate, SI_SUB_DRIVERS, SI_ORDER_ANY, fpuinitstate, NULL);
+/* EFIRT needs this to be initialized before we can enter our EFI environment */
+SYSINIT(fpuinitstate, SI_SUB_DRIVERS, SI_ORDER_FIRST, fpuinitstate, NULL);
 
 /*
  * Free coprocessor (if we have it).
@@ -806,6 +846,7 @@ fpusetregs(struct thread *td, struct savefpu *addr, char *xfpustate,
 	struct pcb *pcb;
 	int error;
 
+	addr->sv_env.en_mxcsr &= cpu_mxcsr_mask;
 	pcb = td->td_pcb;
 	critical_enter();
 	if (td == PCPU_GET(fpcurthread) && PCB_USER_FPU(pcb)) {
@@ -914,6 +955,7 @@ static driver_t fpupnp_driver = {
 static devclass_t fpupnp_devclass;
 
 DRIVER_MODULE(fpupnp, acpi, fpupnp_driver, fpupnp_devclass, 0, 0);
+ISA_PNP_INFO(fpupnp_ids);
 #endif	/* DEV_ISA */
 
 static MALLOC_DEFINE(M_FPUKERN_CTX, "fpukern_ctx",
@@ -961,7 +1003,7 @@ fpu_kern_ctx_savefpu(struct fpu_kern_ctx *ctx)
 	return ((struct savefpu *)p);
 }
 
-int
+void
 fpu_kern_enter(struct thread *td, struct fpu_kern_ctx *ctx, u_int flags)
 {
 	struct pcb *pcb;
@@ -993,11 +1035,11 @@ fpu_kern_enter(struct thread *td, struct fpu_kern_ctx *ctx, u_int flags)
 		fpurestore(fpu_initialstate);
 		set_pcb_flags(pcb, PCB_KERNFPU | PCB_FPUNOSAVE |
 		    PCB_FPUINITDONE);
-		return (0);
+		return;
 	}
 	if ((flags & FPU_KERN_KTHR) != 0 && is_fpu_kern_thread(0)) {
 		ctx->flags = FPU_KERN_CTX_DUMMY | FPU_KERN_CTX_INUSE;
-		return (0);
+		return;
 	}
 	KASSERT(!PCB_USER_FPU(pcb) || pcb->pcb_save ==
 	    get_pcb_user_save_pcb(pcb), ("mangled pcb_save"));
@@ -1009,7 +1051,7 @@ fpu_kern_enter(struct thread *td, struct fpu_kern_ctx *ctx, u_int flags)
 	pcb->pcb_save = fpu_kern_ctx_savefpu(ctx);
 	set_pcb_flags(pcb, PCB_KERNFPU);
 	clear_pcb_flags(pcb, PCB_FPUINITDONE);
-	return (0);
+	return;
 }
 
 int

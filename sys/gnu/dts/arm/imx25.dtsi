@@ -122,7 +122,7 @@
 			};
 
 			can1: can@43f88000 {
-				compatible = "fsl,imx25-flexcan", "fsl,p1010-flexcan";
+				compatible = "fsl,imx25-flexcan";
 				reg = <0x43f88000 0x4000>;
 				interrupts = <43>;
 				clocks = <&clks 75>, <&clks 75>;
@@ -131,7 +131,7 @@
 			};
 
 			can2: can@43f8c000 {
-				compatible = "fsl,imx25-flexcan", "fsl,p1010-flexcan";
+				compatible = "fsl,imx25-flexcan";
 				reg = <0x43f8c000 0x4000>;
 				interrupts = <44>;
 				clocks = <&clks 76>, <&clks 76>;
@@ -452,6 +452,13 @@
 				interrupt-names = "scm", "smn";
 			};
 
+			rngb: rngb@53fb0000 {
+				compatible = "fsl,imx25-rngb";
+				reg = <0x53fb0000 0x4000>;
+				clocks = <&clks 109>;
+				interrupts = <22>;
+			};
+
 			esdhc1: esdhc@53fb4000 {
 				compatible = "fsl,imx25-esdhc";
 				reg = <0x53fb4000 0x4000>;
@@ -621,11 +628,13 @@
 		usbphy0: usb-phy@0 {
 			reg = <0>;
 			compatible = "usb-nop-xceiv";
+			#phy-cells = <0>;
 		};
 
 		usbphy1: usb-phy@1 {
 			reg = <1>;
 			compatible = "usb-nop-xceiv";
+			#phy-cells = <0>;
 		};
 	};
 };

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2000 Mark R. V. Murray & Jeroen C. van Gelderen
  * Copyright (c) 2001-2004 Mark R. V. Murray
  * Copyright (c) 2014 Eitan Adler
@@ -29,8 +31,6 @@
 
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
-
-#include "opt_compat.h"
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -107,14 +107,14 @@ null_ioctl(struct cdev *dev __unused, u_long cmd, caddr_t data __unused,
     int flags __unused, struct thread *td)
 {
 	int error;
-	error = 0;
 
+	error = 0;
 	switch (cmd) {
 #ifdef COMPAT_FREEBSD11
 	case DIOCSKERNELDUMP_FREEBSD11:
 #endif
 	case DIOCSKERNELDUMP:
-		error = set_dumper(NULL, NULL, td, 0, NULL, 0, NULL);
+		error = clear_dumper(td);
 		break;
 	case FIONBIO:
 		break;

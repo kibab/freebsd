@@ -32,8 +32,6 @@
 #
 # LIBEXECDIR	Base path for system daemons and utilities. [/usr/libexec]
 #
-# LINTLIBDIR	Base path for lint libraries. [/usr/libdata/lint]
-#
 # SHLIBDIR	Base path for shared libraries. [${LIBDIR}]
 #
 # LIBOWN	Library owner. [${BINOWN}]
@@ -75,6 +73,13 @@
 # CONFGRP	Configuration file group. [wheel]
 #
 # CONFMODE	Configuration file mode. [644]
+#
+#
+# DIROWN	Directory owner. [root]
+#
+# DIRGRP	Directory group. [wheel]
+#
+# DIRMODE	Directory mode. [755]
 #
 #
 # DOCDIR	Base path for system documentation (e.g. PSD, USD,
@@ -148,6 +153,7 @@ KMODOWN?=	${BINOWN}
 KMODGRP?=	${BINGRP}
 KMODMODE?=	${BINMODE}
 DTBDIR?=	/boot/dtb
+DTBODIR?=	/boot/dtb/overlays
 DTBOWN?=	root
 DTBGRP?=	wheel
 DTBMODE?=	444
@@ -162,7 +168,6 @@ LIBDIR?=	${LIBDIR_BASE}
 LIBCOMPATDIR?=	/usr/lib/compat
 LIBDATADIR?=	/usr/libdata
 LIBEXECDIR?=	/usr/libexec
-LINTLIBDIR?=	/usr/libdata/lint
 SHLIBDIR?=	${LIBDIR}
 LIBOWN?=	${BINOWN}
 LIBGRP?=	${BINGRP}
@@ -187,6 +192,10 @@ MANDIR?=	${SHAREDIR}/man/man
 MANOWN?=	${SHAREOWN}
 MANGRP?=	${SHAREGRP}
 MANMODE?=	${NOBINMODE}
+
+DIROWN?=	root
+DIRGRP?=	wheel
+DIRMODE?=	755
 
 DOCDIR?=	${SHAREDIR}/doc
 DOCOWN?=	${SHAREOWN}
@@ -231,17 +240,6 @@ XZ_THREADS?=	0
 XZ_CMD?=	xz -T ${XZ_THREADS}
 .else
 XZ_CMD?=	xz
-.endif
-
-.if !defined(SVNVERSION_CMD) && empty(SVNVERSION_CMD)
-. for _D in ${PATH:S,:, ,g}
-.  if exists(${_D}/svnversion)
-SVNVERSION_CMD?=${_D}/svnversion
-.  endif
-.  if exists(${_D}/svnliteversion)
-SVNVERSION_CMD?=${_D}/svnliteversion
-.  endif
-. endfor
 .endif
 
 PKG_CMD?=	pkg

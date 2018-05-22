@@ -1,6 +1,39 @@
-/*
- * See i386-fbsd.c for copyright and license terms.
+/*-
+ * SPDX-License-Identifier: BSD-4-Clause
  *
+ * Copyright 1997 Sean Eric Fagan
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. All advertising materials mentioning features or use of this software
+ *    must display the following acknowledgement:
+ *	This product includes software developed by Sean Eric Fagan
+ * 4. Neither the name of the author may be used to endorse or promote
+ *    products derived from this software without specific prior written
+ *    permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ * $FreeBSD$
+ */
+
+/*
  * System call arguments come in several flavours:
  * Hex -- values that should be printed in hex (addresses)
  * Octal -- Same as above, but octal
@@ -35,35 +68,144 @@
  * this means that the data is set on *return* from the system call -- or
  * IN (meaning that the data is passed *into* the system call).
  */
-/*
- * $FreeBSD$
- */
 
-enum Argtype { None = 1, Hex, Octal, Int, UInt, LongHex, Name, Ptr, Stat, Stat11, Ioctl,
-	Quad, Signal, Sockaddr, StringArray, Timespec, Timeval, Itimerval,
-	Pollfd, Fd_set, Sigaction, Fcntl, Mprot, Mmapflags, Whence, Readlinkres,
-	Sigset, Sigprocmask, StatFs, Kevent, Sockdomain, Socktype, Open,
-	Fcntlflag, Rusage, RusageWho, BinString, Shutdown, Resource, Rlimit,
-	Timeval2, Pathconf, Rforkflags, ExitStatus, Waitoptions, Idtype, Procctl,
-	LinuxSockArgs, Umtxop, Atfd, Atflags, Timespec2, Accessmode, Long,
-	Sysarch, ExecArgs, ExecEnv, PipeFds, QuadHex, Utrace, IntArray, Pipe2,
-	CapFcntlRights, Fadvice, FileFlags, Flockop, Getfsstatmode, Kldsymcmd,
-	Kldunloadflags, Sizet, Madvice, Socklent, Sockprotocol, Sockoptlevel,
-	Sockoptname, Msgflags, CapRights, PUInt, PQuadHex, Acltype,
-	Extattrnamespace, Minherit, Mlockall, Mountflags, Msync, Priowhich,
-	Ptraceop, Quotactlcmd, Reboothowto, Rtpriofunc, Schedpolicy, Schedparam,
-	PSig, Siginfo,
+enum Argtype {
+	None = 1,
 
-	CloudABIAdvice, CloudABIClockID, ClouduABIFDSFlags,
-	CloudABIFDStat, CloudABIFileStat, CloudABIFileType,
-	CloudABIFSFlags, CloudABILookup, CloudABIMFlags, CloudABIMProt,
-	CloudABIMSFlags, CloudABIOFlags, CloudABISDFlags,
-	CloudABISignal, CloudABISockStat, CloudABISSFlags,
-	CloudABITimestamp, CloudABIULFlags, CloudABIWhence };
+	/* Scalar integers. */
+	Socklent,
+	Octal,
+	Int,
+	UInt,
+	Hex,
+	Long,
+	LongHex,
+	Sizet,
+	Quad,
+	QuadHex,
+
+	/* Encoded scalar values. */
+	Accessmode,
+	Acltype,
+	Atfd,
+	Atflags,
+	CapFcntlRights,
+	Extattrnamespace,
+	Fadvice,
+	Fcntl,
+	Fcntlflag,
+	FileFlags,
+	Flockop,
+	Getfsstatmode,
+	Idtype,
+	Ioctl,
+	Kldsymcmd,
+	Kldunloadflags,
+	Madvice,
+	Minherit,
+	Msgflags,
+	Mlockall,
+	Mmapflags,
+	Mountflags,
+	Mprot,
+	Msync,
+	Open,
+	Pathconf,
+	Pipe2,
+	Procctl,
+	Priowhich,
+	Ptraceop,
+	Quotactlcmd,
+	Reboothowto,
+	Resource,
+	Rforkflags,
+	Rtpriofunc,
+	RusageWho,
+	Schedpolicy,
+	Shutdown,
+	Signal,
+	Sigprocmask,
+	Sockdomain,
+	Sockoptlevel,
+	Sockoptname,
+	Sockprotocol,
+	Socktype,
+	Sysarch,
+	Umtxop,
+	Waitoptions,
+	Whence,
+
+	/* Pointers to non-structures. */
+	Ptr,
+	BinString,
+	CapRights,
+	ExecArgs,
+	ExecEnv,
+	ExitStatus,
+	Fd_set,
+	IntArray,
+	Iovec,
+	Name,
+	PipeFds,
+	PSig,
+	PQuadHex,
+	PUInt,
+	Readlinkres,
+	StringArray,
+
+	/* Pointers to structures. */
+	Itimerval,
+	Kevent,
+	Kevent11,
+	LinuxSockArgs,
+	Msghdr,
+	Pollfd,
+	Rlimit,
+	Rusage,
+	Schedparam,
+	Sctpsndrcvinfo,
+	Sigaction,
+	Siginfo,
+	Sigset,
+	Sockaddr,
+	Stat,
+	Stat11,
+	StatFs,
+	Timespec,
+	Timespec2,
+	Timeval,
+	Timeval2,
+	Utrace,
+
+	CloudABIAdvice,
+	CloudABIClockID,
+	CloudABIFDSFlags,
+	CloudABIFDStat,
+	CloudABIFileStat,
+	CloudABIFileType,
+	CloudABIFSFlags,
+	CloudABILookup,
+	CloudABIMFlags,
+	CloudABIMProt,
+	CloudABIMSFlags,
+	CloudABIOFlags,
+	CloudABISDFlags,
+	CloudABISignal,
+	CloudABISockStat,
+	CloudABISSFlags,
+	CloudABITimestamp,
+	CloudABIULFlags,
+	CloudABIWhence,
+
+	MAX_ARG_TYPE,
+};
 
 #define	ARG_MASK	0xff
 #define	OUT	0x100
 #define	IN	/*0x20*/0
+
+_Static_assert(ARG_MASK > MAX_ARG_TYPE,
+    "ARG_MASK overlaps with Argtype values");
 
 struct syscall_args {
 	enum Argtype type;

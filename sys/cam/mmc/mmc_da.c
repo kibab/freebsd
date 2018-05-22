@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2006 Bernd Walter <tisco@FreeBSD.org>
  * Copyright (c) 2006 M. Warner Losh <imp@FreeBSD.org>
  * Copyright (c) 2009 Alexander Motin <mav@FreeBSD.org>
@@ -415,11 +417,9 @@ sddaopen(struct disk *dp)
 	struct sdda_softc *softc;
 	int error;
 
-	part = (struct sdda_part *)dp->d_drv1;
-	softc = part->sc;
-	periph = softc->periph;
-	if (cam_periph_acquire(periph) != CAM_REQ_CMP) {
-		return (ENXIO);
+	periph = (struct cam_periph *)dp->d_drv1;
+	if (cam_periph_acquire(periph) != 0) {
+		return(ENXIO);
 	}
 
 	cam_periph_lock(periph);
@@ -1744,7 +1744,6 @@ sddastart(struct cam_periph *periph, union ccb *start_ccb)
 	cam_periph_unlock(periph);
 	xpt_action(start_ccb);
 	cam_periph_lock(periph);
-	part->refcount--;
 
 	/* May have more work to do, so ensure we stay scheduled */
 	sddaschedule(periph);
@@ -1827,12 +1826,17 @@ sddadone(struct cam_periph *periph, union ccb *done_ccb)
 
 	softc->outstanding_cmds--;
 	xpt_release_ccb(done_ccb);
+	/*
+	 * Release the periph refcount taken in mdastart() for each CCB.
+	 */
+	KASSERT(softc->refcount >= 1, ("mdadone softc %p refcount %d", softc, softc->refcount));
+	softc->refcount--;
 	biodone(bp);
 }
 
 static int
 sddaerror(union ccb *ccb, u_int32_t cam_flags, u_int32_t sense_flags)
 {
-	return(cam_periph_error(ccb, cam_flags, sense_flags, NULL));
+	return(cam_periph_error(ccb, cam_flags, sense_flags));
 }
 #endif /* _KERNEL */

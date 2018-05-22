@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2009 Hudson River Trading LLC
  * Written by: John H. Baldwin <jhb@FreeBSD.org>
  * All rights reserved.
@@ -839,7 +841,7 @@ cmci_setup(void)
 static void
 amd_thresholding_setup(void)
 {
-	int i;
+	u_int i;
 
 	amd_et_state = malloc((mp_maxid + 1) * sizeof(struct amd_et_state *),
 	    M_MCA, M_WAITOK);
@@ -1101,7 +1103,7 @@ _mca_init(int boot)
 		if (mcg_cap & MCG_CAP_CTL_P)
 			/* Enable MCA features. */
 			wrmsr(MSR_MCG_CTL, MCG_CTL_ENABLE);
-		if (PCPU_GET(cpuid) == 0 && boot)
+		if (IS_BSP() && boot)
 			mca_setup(mcg_cap);
 
 		/*
@@ -1117,6 +1119,14 @@ _mca_init(int boot)
 			if ((mask & (1UL << 5)) == 0)
 				wrmsr(MSR_MC0_CTL_MASK, mask | (1UL << 5));
 		}
+
+		/*
+		 * The cmci_monitor() must not be executed
+		 * simultaneously by several CPUs.
+		 */
+		if (boot)
+			mtx_lock_spin(&mca_lock);
+
 		for (i = 0; i < (mcg_cap & MCG_CAP_COUNT); i++) {
 			/* By default enable logging of all errors. */
 			ctl = 0xffffffffffffffffUL;
@@ -1156,6 +1166,8 @@ _mca_init(int boot)
 			/* Clear all errors. */
 			wrmsr(MSR_MC_STATUS(i), 0);
 		}
+		if (boot)
+			mtx_unlock_spin(&mca_lock);
 
 #ifdef DEV_APIC
 		if (!amd_thresholding_supported() &&

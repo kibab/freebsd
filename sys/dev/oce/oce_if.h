@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (C) 2013 Emulex
  * All rights reserved.
  *
@@ -1014,6 +1016,7 @@ void oce_free_lro(POCE_SOFTC sc);
  * Mailbox functions
  ************************************************************/
 int oce_fw_clean(POCE_SOFTC sc);
+int oce_wait_ready(POCE_SOFTC sc);
 int oce_reset_fun(POCE_SOFTC sc);
 int oce_mbox_init(POCE_SOFTC sc);
 int oce_mbox_dispatch(POCE_SOFTC sc, uint32_t tmo_sec);

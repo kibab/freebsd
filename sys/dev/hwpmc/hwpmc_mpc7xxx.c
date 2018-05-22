@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2011 Justin Hibbits
  * Copyright (c) 2005, Joseph Koshy
  * All rights reserved.
@@ -708,9 +710,10 @@ mpc7xxx_intr(int cpu, struct trapframe *tf)
 		/* reload count. */
 		mpc7xxx_write_pmc(cpu, i, pm->pm_sc.pm_reloadcount);
 	}
-
-	atomic_add_int(retval ? &pmc_stats.pm_intr_processed :
-	    &pmc_stats.pm_intr_ignored, 1);
+	if (retval)
+		counter_u64_add(pmc_stats.pm_intr_processed, 1);
+	else
+		counter_u64_add(pmc_stats.pm_intr_ignored, 1);
 
 	/* Re-enable PERF exceptions. */
 	if (retval)

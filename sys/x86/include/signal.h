@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1986, 1989, 1991, 1993
  *	The Regents of the University of California.  All rights reserved.
  * Copyright (c) 2003 Peter Wemm.
@@ -40,10 +42,6 @@
 
 #include <sys/cdefs.h>
 #include <sys/_sigset.h>
-
-#if __BSD_VISIBLE
-#include <machine/trap.h>	/* codes for SIGILL, SIGFPE */
-#endif
 
 #ifdef __i386__
 typedef int sig_atomic_t;

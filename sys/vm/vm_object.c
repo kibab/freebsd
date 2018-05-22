@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: (BSD-3-Clause AND MIT-CMU)
+ *
  * Copyright (c) 1991, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -69,6 +71,7 @@ __FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/systm.h>
+#include <sys/cpuset.h>
 #include <sys/lock.h>
 #include <sys/mman.h>
 #include <sys/mount.h>
@@ -93,6 +96,8 @@ __FBSDID("$FreeBSD$");
 #include <vm/vm_page.h>
 #include <vm/vm_pageout.h>
 #include <vm/vm_pager.h>
+#include <vm/vm_phys.h>
+#include <vm/vm_pagequeue.h>
 #include <vm/swap_pager.h>
 #include <vm/vm_kern.h>
 #include <vm/vm_extern.h>
@@ -142,18 +147,28 @@ struct object_q vm_object_list;
 struct mtx vm_object_list_mtx;	/* lock for object list and count */
 
 struct vm_object kernel_object_store;
-struct vm_object kmem_object_store;
 
 static SYSCTL_NODE(_vm_stats, OID_AUTO, object, CTLFLAG_RD, 0,
     "VM object stats");
 
-static long object_collapses;
-SYSCTL_LONG(_vm_stats_object, OID_AUTO, collapses, CTLFLAG_RD,
-    &object_collapses, 0, "VM object collapses");
+static counter_u64_t object_collapses = EARLY_COUNTER;
+SYSCTL_COUNTER_U64(_vm_stats_object, OID_AUTO, collapses, CTLFLAG_RD,
+    &object_collapses,
+    "VM object collapses");
 
-static long object_bypasses;
-SYSCTL_LONG(_vm_stats_object, OID_AUTO, bypasses, CTLFLAG_RD,
-    &object_bypasses, 0, "VM object bypasses");
+static counter_u64_t object_bypasses = EARLY_COUNTER;
+SYSCTL_COUNTER_U64(_vm_stats_object, OID_AUTO, bypasses, CTLFLAG_RD,
+    &object_bypasses,
+    "VM object bypasses");
+
+static void
+counter_startup(void)
+{
+
+	object_collapses = counter_u64_alloc(M_WAITOK);
+	object_bypasses = counter_u64_alloc(M_WAITOK);
+}
+SYSINIT(object_counters, SI_SUB_CPU, SI_ORDER_ANY, counter_startup, NULL);
 
 static uma_zone_t obj_zone;
 
@@ -290,14 +305,6 @@ vm_object_init(void)
 #if VM_NRESERVLEVEL > 0
 	kernel_object->flags |= OBJ_COLORED;
 	kernel_object->pg_color = (u_short)atop(VM_MIN_KERNEL_ADDRESS);
-#endif
-
-	rw_init(&kmem_object->lock, "kmem vm object");
-	_vm_object_allocate(OBJT_PHYS, atop(VM_MAX_KERNEL_ADDRESS -
-	    VM_MIN_KERNEL_ADDRESS), kmem_object);
-#if VM_NRESERVLEVEL > 0
-	kmem_object->flags |= OBJ_COLORED;
-	kmem_object->pg_color = (u_short)atop(VM_MIN_KERNEL_ADDRESS);
 #endif
 
 	/*
@@ -713,14 +720,11 @@ static void
 vm_object_terminate_pages(vm_object_t object)
 {
 	vm_page_t p, p_next;
-	struct mtx *mtx, *mtx1;
-	struct vm_pagequeue *pq, *pq1;
-	int dequeued;
+	struct mtx *mtx;
 
 	VM_OBJECT_ASSERT_WLOCKED(object);
 
 	mtx = NULL;
-	pq = NULL;
 
 	/*
 	 * Free any remaining pageable pages.  This also removes them from the
@@ -730,59 +734,20 @@ vm_object_terminate_pages(vm_object_t object)
 	 */
 	TAILQ_FOREACH_SAFE(p, &object->memq, listq, p_next) {
 		vm_page_assert_unbusied(p);
-		if ((object->flags & OBJ_UNMANAGED) == 0) {
+		if ((object->flags & OBJ_UNMANAGED) == 0)
 			/*
 			 * vm_page_free_prep() only needs the page
 			 * lock for managed pages.
 			 */
-			mtx1 = vm_page_lockptr(p);
-			if (mtx1 != mtx) {
-				if (mtx != NULL)
-					mtx_unlock(mtx);
-				if (pq != NULL) {
-					vm_pagequeue_cnt_add(pq, dequeued);
-					vm_pagequeue_unlock(pq);
-					pq = NULL;
-				}
-				mtx = mtx1;
-				mtx_lock(mtx);
-			}
-		}
+			vm_page_change_lock(p, &mtx);
 		p->object = NULL;
 		if (p->wire_count != 0)
-			goto unlist;
-		VM_CNT_INC(v_pfree);
-		p->flags &= ~PG_ZERO;
-		if (p->queue != PQ_NONE) {
-			KASSERT(p->queue < PQ_COUNT, ("vm_object_terminate: "
-			    "page %p is not queued", p));
-			pq1 = vm_page_pagequeue(p);
-			if (pq != pq1) {
-				if (pq != NULL) {
-					vm_pagequeue_cnt_add(pq, dequeued);
-					vm_pagequeue_unlock(pq);
-				}
-				pq = pq1;
-				vm_pagequeue_lock(pq);
-				dequeued = 0;
-			}
-			p->queue = PQ_NONE;
-			TAILQ_REMOVE(&pq->pq_pl, p, plinks.q);
-			dequeued--;
-		}
-		if (vm_page_free_prep(p, true))
 			continue;
-unlist:
-		TAILQ_REMOVE(&object->memq, p, listq);
-	}
-	if (pq != NULL) {
-		vm_pagequeue_cnt_add(pq, dequeued);
-		vm_pagequeue_unlock(pq);
+		VM_CNT_INC(v_pfree);
+		vm_page_free(p);
 	}
 	if (mtx != NULL)
 		mtx_unlock(mtx);
-
-	vm_page_free_phys_pglist(&object->memq);
 
 	/*
 	 * If the object contained any pages, then reset it to an empty state.
@@ -1268,7 +1233,7 @@ next_page:
 		if (tm->valid != VM_PAGE_BITS_ALL)
 			goto next_pindex;
 		vm_page_lock(tm);
-		if (tm->hold_count != 0 || tm->wire_count != 0) {
+		if (vm_page_held(tm)) {
 			vm_page_unlock(tm);
 			goto next_pindex;
 		}
@@ -1360,6 +1325,7 @@ vm_object_shadow(
 	result->backing_object_offset = *offset;
 	if (source != NULL) {
 		VM_OBJECT_WLOCK(source);
+		result->domain = source->domain;
 		LIST_INSERT_HEAD(&source->shadow_head, result, shadow_list);
 		source->shadow_count++;
 #if VM_NRESERVLEVEL > 0
@@ -1415,6 +1381,7 @@ vm_object_split(vm_map_entry_t entry)
 	 */
 	VM_OBJECT_WLOCK(new_object);
 	VM_OBJECT_WLOCK(orig_object);
+	new_object->domain = orig_object->domain;
 	source = orig_object->backing_object;
 	if (source != NULL) {
 		VM_OBJECT_WLOCK(source);
@@ -1471,7 +1438,7 @@ retry:
 		if (vm_page_rename(m, new_object, idx)) {
 			VM_OBJECT_WUNLOCK(new_object);
 			VM_OBJECT_WUNLOCK(orig_object);
-			VM_WAIT;
+			vm_radix_wait();
 			VM_OBJECT_WLOCK(orig_object);
 			VM_OBJECT_WLOCK(new_object);
 			goto retry;
@@ -1533,8 +1500,9 @@ vm_object_collapse_scan_wait(vm_object_t object, vm_page_t p, vm_page_t next,
 		vm_page_lock(p);
 	VM_OBJECT_WUNLOCK(object);
 	VM_OBJECT_WUNLOCK(backing_object);
+	/* The page is only NULL when rename fails. */
 	if (p == NULL)
-		VM_WAIT;
+		vm_radix_wait();
 	else
 		vm_page_busy_sleep(p, "vmocol", false);
 	VM_OBJECT_WLOCK(object);
@@ -1881,7 +1849,7 @@ vm_object_collapse(vm_object_t object)
 			vm_object_destroy(backing_object);
 
 			vm_object_pip_wakeup(object);
-			object_collapses++;
+			counter_u64_add(object_collapses, 1);
 		} else {
 			/*
 			 * If we do not entirely shadow the backing object,
@@ -1922,7 +1890,7 @@ vm_object_collapse(vm_object_t object)
 			 */
 			backing_object->ref_count--;
 			VM_OBJECT_WUNLOCK(backing_object);
-			object_bypasses++;
+			counter_u64_add(object_bypasses, 1);
 		}
 
 		/*
@@ -1963,7 +1931,6 @@ vm_object_page_remove(vm_object_t object, vm_pindex_t start, vm_pindex_t end,
 {
 	vm_page_t p, next;
 	struct mtx *mtx;
-	struct pglist pgl;
 
 	VM_OBJECT_ASSERT_WLOCKED(object);
 	KASSERT((object->flags & OBJ_UNMANAGED) == 0 ||
@@ -1972,7 +1939,6 @@ vm_object_page_remove(vm_object_t object, vm_pindex_t start, vm_pindex_t end,
 	if (object->resident_page_count == 0)
 		return;
 	vm_object_pip_add(object, 1);
-	TAILQ_INIT(&pgl);
 again:
 	p = vm_page_find_least(object, start);
 	mtx = NULL;
@@ -2026,13 +1992,10 @@ again:
 		}
 		if ((options & OBJPR_NOTMAPPED) == 0 && object->ref_count != 0)
 			pmap_remove_all(p);
-		p->flags &= ~PG_ZERO;
-		if (vm_page_free_prep(p, false))
-			TAILQ_INSERT_TAIL(&pgl, p, listq);
+		vm_page_free(p);
 	}
 	if (mtx != NULL)
 		mtx_unlock(mtx);
-	vm_page_free_phys_pglist(&pgl);
 	vm_object_pip_wakeup(object);
 }
 
@@ -2270,7 +2233,7 @@ void
 vm_object_unwire(vm_object_t object, vm_ooffset_t offset, vm_size_t length,
     uint8_t queue)
 {
-	vm_object_t tobject;
+	vm_object_t tobject, t1object;
 	vm_page_t m, tm;
 	vm_pindex_t end_pindex, pindex, tpindex;
 	int depth, locked_depth;
@@ -2284,6 +2247,7 @@ vm_object_unwire(vm_object_t object, vm_ooffset_t offset, vm_size_t length,
 		return;
 	pindex = OFF_TO_IDX(offset);
 	end_pindex = pindex + atop(length);
+again:
 	locked_depth = 1;
 	VM_OBJECT_RLOCK(object);
 	m = vm_page_find_least(object, pindex);
@@ -2317,16 +2281,26 @@ vm_object_unwire(vm_object_t object, vm_ooffset_t offset, vm_size_t length,
 			m = TAILQ_NEXT(m, listq);
 		}
 		vm_page_lock(tm);
+		if (vm_page_xbusied(tm)) {
+			for (tobject = object; locked_depth >= 1;
+			    locked_depth--) {
+				t1object = tobject->backing_object;
+				VM_OBJECT_RUNLOCK(tobject);
+				tobject = t1object;
+			}
+			vm_page_busy_sleep(tm, "unwbo", true);
+			goto again;
+		}
 		vm_page_unwire(tm, queue);
 		vm_page_unlock(tm);
 next_page:
 		pindex++;
 	}
 	/* Release the accumulated object locks. */
-	for (depth = 0; depth < locked_depth; depth++) {
-		tobject = object->backing_object;
-		VM_OBJECT_RUNLOCK(object);
-		object = tobject;
+	for (tobject = object; locked_depth >= 1; locked_depth--) {
+		t1object = tobject->backing_object;
+		VM_OBJECT_RUNLOCK(tobject);
+		tobject = t1object;
 	}
 }
 
@@ -2405,9 +2379,9 @@ sysctl_vm_object_list(SYSCTL_HANDLER_ARGS)
 			 * sysctl is only meant to give an
 			 * approximation of the system anyway.
 			 */
-			if (vm_page_active(m))
+			if (m->queue == PQ_ACTIVE)
 				kvo->kvo_active++;
-			else if (vm_page_inactive(m))
+			else if (m->queue == PQ_INACTIVE)
 				kvo->kvo_inactive++;
 		}
 

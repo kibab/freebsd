@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2009-2012,2016-2017 Microsoft Corp.
  * Copyright (c) 2012 NetApp Inc.
  * Copyright (c) 2012 Citrix Inc.
@@ -2171,20 +2173,7 @@ storvsc_io_done(struct hv_storvsc_request *reqp)
 					    scsi_op_desc(cmd->opcode, NULL));
 				}
 			}
-
-			/*
-			 * XXX For a selection timeout, all of the LUNs
-			 * on the target will be gone.  It works for SCSI
-			 * disks, but does not work for IDE disks.
-			 *
-			 * For CAM_DEV_NOT_THERE, CAM will only get
-			 * rid of the device(s) specified by the path.
-			 */
-			if (storvsc_get_storage_type(sc->hs_dev) ==
-			    DRIVER_STORVSC)
-				ccb->ccb_h.status |= CAM_SEL_TIMEOUT;
-			else
-				ccb->ccb_h.status |= CAM_DEV_NOT_THERE;
+			ccb->ccb_h.status |= CAM_DEV_NOT_THERE;
 		} else {
 			ccb->ccb_h.status |= CAM_REQ_CMP;
 		}
@@ -2362,10 +2351,7 @@ storvsc_ada_probe_veto(void *arg __unused, struct cam_path *path,
 	if (path->device->protocol == PROTO_ATA) {
 		struct ccb_pathinq cpi;
 
-		bzero(&cpi, sizeof(cpi));
-		xpt_setup_ccb(&cpi.ccb_h, path, CAM_PRIORITY_NONE);
-		cpi.ccb_h.func_code = XPT_PATH_INQ;
-		xpt_action((union ccb *)&cpi);
+		xpt_path_inq(&cpi, path);
 		if (cpi.ccb_h.status == CAM_REQ_CMP &&
 		    cpi.hba_vendor == PCI_VENDOR_INTEL &&
 		    cpi.hba_device == PCI_PRODUCT_PIIX4) {

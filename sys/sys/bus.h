@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 1997,1998,2003 Doug Rabson
  * All rights reserved.
  *
@@ -87,6 +89,7 @@ struct u_device {
 #define	DF_EXTERNALSOFTC 0x40		/* softc not allocated by us */
 #define	DF_REBID	0x80		/* Can rebid after attach */
 #define	DF_SUSPENDED	0x100		/* Device is suspended. */
+#define DF_QUIET_CHILDREN 0x200		/* Default to quiet for all my children */
 
 /**
  * @brief Device request structure used for ioctl's.
@@ -491,6 +494,7 @@ struct resource_spec {
 	int	rid;
 	int	flags;
 };
+#define	RESOURCE_SPEC_END	{-1, 0, 0}
 
 int	bus_alloc_resources(device_t dev, struct resource_spec *rs,
 			    struct resource **res);
@@ -581,6 +585,7 @@ device_state_t	device_get_state(device_t dev);
 int	device_get_unit(device_t dev);
 struct sysctl_ctx_list *device_get_sysctl_ctx(device_t dev);
 struct sysctl_oid *device_get_sysctl_tree(device_t dev);
+int	device_has_quiet_children(device_t dev);
 int	device_is_alive(device_t dev);	/* did probe succeed? */
 int	device_is_attached(device_t dev);	/* did attach succeed? */
 int	device_is_enabled(device_t dev);
@@ -594,6 +599,7 @@ int	device_probe_and_attach(device_t dev);
 int	device_probe_child(device_t bus, device_t dev);
 int	device_quiesce(device_t dev);
 void	device_quiet(device_t dev);
+void	device_quiet_children(device_t dev);
 void	device_set_desc(device_t dev, const char* desc);
 void	device_set_desc_copy(device_t dev, const char* desc);
 int	device_set_devclass(device_t dev, const char *classname);
@@ -632,7 +638,6 @@ struct sysctl_oid *devclass_get_sysctl_tree(devclass_t dc);
 /*
  * Access functions for device resources.
  */
-
 int	resource_int_value(const char *name, int unit, const char *resname,
 			   int *result);
 int	resource_long_value(const char *name, int unit, const char *resname,
@@ -644,12 +649,6 @@ int	resource_find_match(int *anchor, const char **name, int *unit,
 			    const char *resname, const char *value);
 int	resource_find_dev(int *anchor, const char *name, int *unit,
 			  const char *resname, const char *value);
-int	resource_set_int(const char *name, int unit, const char *resname,
-			 int value);
-int	resource_set_long(const char *name, int unit, const char *resname,
-			  long value);
-int	resource_set_string(const char *name, int unit, const char *resname,
-			    const char *value);
 int	resource_unset_value(const char *name, int unit, const char *resname);
 
 /*
@@ -706,6 +705,7 @@ void	bus_data_generation_update(void);
 #define	BUS_PASS_INTERRUPT	40	/* Interrupt controllers. */
 #define	BUS_PASS_TIMER		50	/* Timers and clocks. */
 #define	BUS_PASS_SCHEDULER	60	/* Start scheduler. */
+#define	BUS_PASS_SUPPORTDEV	100000	/* Drivers which support DEFAULT drivers. */
 #define	BUS_PASS_DEFAULT	__INT_MAX /* Everything else. */
 
 #define	BUS_PASS_ORDER_FIRST	0

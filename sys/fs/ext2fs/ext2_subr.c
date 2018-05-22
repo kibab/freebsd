@@ -5,6 +5,8 @@
  *  University of Utah, Department of Computer Science
  */
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986, 1989, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -46,9 +48,10 @@
 #include <sys/ucred.h>
 #include <sys/vnode.h>
 
+#include <fs/ext2fs/fs.h>
 #include <fs/ext2fs/inode.h>
-#include <fs/ext2fs/ext2_extern.h>
 #include <fs/ext2fs/ext2fs.h>
+#include <fs/ext2fs/ext2_extern.h>
 #include <fs/ext2fs/fs.h>
 #include <fs/ext2fs/ext2_extents.h>
 #include <fs/ext2fs/ext2_mount.h>
@@ -77,6 +80,11 @@ ext2_blkatoff(struct vnode *vp, off_t offset, char **res, struct buf **bpp)
 		brelse(bp);
 		return (error);
 	}
+	error = ext2_dir_blk_csum_verify(ip, bp);
+	if (error != 0) {
+		brelse(bp);
+		return (error);
+	}
 	if (res)
 		*res = (char *)bp->b_data + blkoff(fs, offset);
 
@@ -91,11 +99,12 @@ ext2_blkatoff(struct vnode *vp, off_t offset, char **res, struct buf **bpp)
  * Cnt == 1 means free; cnt == -1 means allocating.
  */
 void
-ext2_clusteracct(struct m_ext2fs *fs, char *bbp, int cg, daddr_t bno, int cnt)
+ext2_clusteracct(struct m_ext2fs *fs, char *bbp, int cg, e4fs_daddr_t bno, int cnt)
 {
 	int32_t *sump = fs->e2fs_clustersum[cg].cs_sum;
 	int32_t *lp;
-	int back, bit, end, forw, i, loc, start;
+	e4fs_daddr_t start, end, loc, forw, back;
+	int bit, i;
 
 	/* Initialize the cluster summary array. */
 	if (fs->e2fs_clustersum[cg].cs_init == 0) {

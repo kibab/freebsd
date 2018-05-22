@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2010-2011 Aleksandr Rybalko <ray@dlink.ua>
  *   based on geom_redboot.c
  * Copyright (c) 2009 Sam Leffler, Errno Consulting
@@ -405,3 +407,4 @@ static struct g_class g_map_class = {
 	.ctlreq = g_map_config,
 };
 DECLARE_GEOM_CLASS(g_map_class, g_map);
+MODULE_VERSION(geom_map, 0);

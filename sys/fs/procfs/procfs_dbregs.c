@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1999 Brian Scott Dean, brdean@unx.sas.com.
  *                    All rights reserved.
  *
@@ -42,8 +44,6 @@
  *	$Id: procfs_regs.c,v 3.2 1993/12/15 09:40:17 jsp Exp $
  * $FreeBSD$
  */
-
-#include "opt_compat.h"
 
 #include <sys/param.h>
 #include <sys/systm.h>

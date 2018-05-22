@@ -1,6 +1,8 @@
 /*	$NetBSD: cd9660_debug.c,v 1.11 2010/10/27 18:51:35 christos Exp $	*/
 
-/*
+/*-
+ * SPDX-License-Identifier: BSD-2-Clause-NetBSD
+ *
  * Copyright (c) 2005 Daniel Watt, Walter Deignan, Ryan Gabrys, Alan
  * Perez-Rathke and Ram Vedam.  All rights reserved.
  *
@@ -57,8 +59,7 @@ print_n_tabs(int n)
 
 #if 0
 void
-debug_print_rrip_info(n)
-cd9660node *n;
+debug_print_rrip_info(cd9660node *n)
 {
 	struct ISO_SUSP_ATTRIBUTES *t;
 	TAILQ_FOREACH(t, &node->head, rr_ll) {

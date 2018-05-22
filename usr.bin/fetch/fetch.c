@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 2000-2014 Dag-Erling Smørgrav
  * Copyright (c) 2013 Michael Gmelin <freebsd@grem.de>
  * All rights reserved.
@@ -550,9 +552,10 @@ fetch(char *URL, const char *path)
 		goto signal;
 	if (f == NULL) {
 		warnx("%s: %s", URL, fetchLastErrString);
-		if (i_flag && strcmp(url->scheme, SCHEME_HTTP) == 0
-		    && fetchLastErrCode == FETCH_OK
-		    && strcmp(fetchLastErrString, "Not Modified") == 0) {
+		if (i_flag && (strcmp(url->scheme, SCHEME_HTTP) == 0 ||
+		    strcmp(url->scheme, SCHEME_HTTPS) == 0) &&
+		    fetchLastErrCode == FETCH_OK &&
+		    strcmp(fetchLastErrString, "Not Modified") == 0) {
 			/* HTTP Not Modified Response, return OK. */
 			r = 0;
 			goto done;

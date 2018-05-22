@@ -1,6 +1,8 @@
 /*	$OpenBSD: db_machdep.h,v 1.2 1998/09/15 10:50:12 pefo Exp $ */
 
-/*
+/*-
+ * SPDX-License-Identifier: BSD-4-Clause
+ *
  * Copyright (c) 1998 Per Fogelstrom, Opsycon AB
  *
  * Redistribution and use in source and binary forms, with or without
@@ -39,17 +41,12 @@
 
 #include <machine/frame.h>
 #include <machine/trap.h>
-#include <machine/endian.h>
 
 typedef struct trapframe db_regs_t;
 extern db_regs_t	ddb_regs;	/* register state */
 
 typedef	vm_offset_t	db_addr_t;	/* address - unsigned */
 typedef	register_t	db_expr_t;	/* expression - signed */
-
-#if BYTE_ORDER == _BIG_ENDIAN
-#define	BYTE_MSF	(1)
-#endif
 
 #define	SOFTWARE_SSTEP		/* Need software single step */
 #define	SOFTWARE_SSTEP_EMUL	/* next_instr_address() emulates 100% */

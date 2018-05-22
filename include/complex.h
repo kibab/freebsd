@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2001-2011 The FreeBSD Project.
  * All rights reserved.
  *
@@ -99,6 +101,10 @@ float complex	cexpf(float complex);
 double		cimag(double complex) __pure2;
 float		cimagf(float complex) __pure2;
 long double	cimagl(long double complex) __pure2;
+double complex	clog(double complex);
+float complex	clogf(float complex);
+long double complex
+		clogl(long double complex);
 double complex	conj(double complex) __pure2;
 float complex	conjf(float complex) __pure2;
 long double complex

@@ -2,6 +2,8 @@
 /*	$NetBSD: msdosfs_conv.c,v 1.25 1997/11/17 15:36:40 ws Exp $	*/
 
 /*-
+ * SPDX-License-Identifier: BSD-4-Clause
+ *
  * Copyright (C) 1995, 1997 Wolfgang Solfrank.
  * Copyright (C) 1995, 1997 TooLs GmbH.
  * All rights reserved.
@@ -568,7 +570,7 @@ unix2winfn(const u_char *un, size_t unlen, struct winentry *wep, int cnt,
 		if (!code)
 			end = WIN_LAST;
 	}
-	if (*un == '\0')
+	if (!unlen)
 		end = WIN_LAST;
 	wep->weCnt |= end;
 	return !end;

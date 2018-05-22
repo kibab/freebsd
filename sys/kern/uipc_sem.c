@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2002 Alfred Perlstein <alfred@FreeBSD.org>
  * Copyright (c) 2003-2005 SPARTA, Inc.
  * Copyright (c) 2005, 2016-2017 Robert N. M. Watson
@@ -39,7 +41,6 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
-#include "opt_compat.h"
 #include "opt_posix.h"
 
 #include <sys/param.h>
@@ -690,14 +691,13 @@ struct ksem_close_args {
 int
 sys_ksem_close(struct thread *td, struct ksem_close_args *uap)
 {
-	cap_rights_t rights;
 	struct ksem *ks;
 	struct file *fp;
 	int error;
 
 	/* No capability rights required to close a semaphore. */
 	AUDIT_ARG_FD(uap->id);
-	error = ksem_get(td, uap->id, cap_rights_init(&rights), &fp);
+	error = ksem_get(td, uap->id, &cap_no_rights, &fp);
 	if (error)
 		return (error);
 	ks = fp->f_data;
@@ -916,14 +916,13 @@ struct ksem_destroy_args {
 int
 sys_ksem_destroy(struct thread *td, struct ksem_destroy_args *uap)
 {
-	cap_rights_t rights;
 	struct file *fp;
 	struct ksem *ks;
 	int error;
 
 	/* No capability rights required to close a semaphore. */
 	AUDIT_ARG_FD(uap->id);
-	error = ksem_get(td, uap->id, cap_rights_init(&rights), &fp);
+	error = ksem_get(td, uap->id, &cap_no_rights, &fp);
 	if (error)
 		return (error);
 	ks = fp->f_data;

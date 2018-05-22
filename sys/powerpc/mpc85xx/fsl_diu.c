@@ -362,13 +362,10 @@ diu_attach(device_t dev)
 	}
 
 	/* TODO: Eventually, allow EDID to be dynamically provided. */
-	if (OF_getprop_alloc(node, "edid", 1, &edid_cells) <= 0) {
-		/*
-		 * u-boot uses the environment variable name 'video-mode', so
-		 * just use the same name here.  Should allow another variable
-		 * that better fits our design model, but this is fine.
-		 */
-		if ((vm_name = kern_getenv("video-mode")) == NULL) {
+	if (OF_getprop_alloc(node, "edid", &edid_cells) <= 0) {
+		/* Get a resource hint: hint.fb.N.mode */
+		if (resource_string_value(device_get_name(dev),
+		    device_get_unit(dev), "mode", &vm_name) != 0) {
 			device_printf(dev,
 			    "No EDID data and no video-mode env set\n");
 			return (ENXIO);
@@ -383,7 +380,7 @@ diu_attach(device_t dev)
 		videomode = edid.edid_preferred_mode;
 	} else {
 		/* Parse video-mode kenv variable. */
-		if ((err = sscanf(vm_name, "fslfb:%dx%d@%d", &w, &h, &r)) != 3) {
+		if ((err = sscanf(vm_name, "%dx%d@%d", &w, &h, &r)) != 3) {
 			device_printf(dev,
 			    "Cannot parse video mode: %s\n", vm_name);
 			return (ENXIO);
@@ -414,6 +411,8 @@ diu_attach(device_t dev)
 	sc->sc_info.fb_vbase = (intptr_t)contigmalloc(sc->sc_info.fb_size,
 	    M_DEVBUF, M_ZERO, 0, BUS_SPACE_MAXADDR_32BIT, PAGE_SIZE, 0);
 	sc->sc_info.fb_pbase = (intptr_t)vtophys(sc->sc_info.fb_vbase);
+	sc->sc_info.fb_flags = FB_FLAG_MEMATTR;
+	sc->sc_info.fb_memattr = VM_MEMATTR_DEFAULT;
 	
 	/* Gamma table is 3 consecutive segments of 256 bytes. */
 	sc->sc_gamma = contigmalloc(3 * 256, M_DEVBUF, 0, 0,

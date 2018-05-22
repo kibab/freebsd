@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2004 John Baldwin <jhb@FreeBSD.org>
  * All rights reserved.
  *
@@ -93,7 +95,10 @@ __FBSDID("$FreeBSD$");
  * Constants for the hash table of sleep queue chains.
  * SC_TABLESIZE must be a power of two for SC_MASK to work properly.
  */
-#define	SC_TABLESIZE	256			/* Must be power of 2. */
+#ifndef SC_TABLESIZE
+#define	SC_TABLESIZE	256
+#endif
+CTASSERT(powerof2(SC_TABLESIZE));
 #define	SC_MASK		(SC_TABLESIZE - 1)
 #define	SC_SHIFT	8
 #define	SC_HASH(wc)	((((uintptr_t)(wc) >> SC_SHIFT) ^ (uintptr_t)(wc)) & \
@@ -137,7 +142,7 @@ struct sleepqueue_chain {
 	u_int	sc_depth;			/* Length of sc_queues. */
 	u_int	sc_max_depth;			/* Max length of sc_queues. */
 #endif
-};
+} __aligned(CACHE_LINE_SIZE);
 
 #ifdef SLEEPQUEUE_PROFILING
 u_int sleepq_max_depth;
@@ -379,7 +384,7 @@ void
 sleepq_set_timeout_sbt(void *wchan, sbintime_t sbt, sbintime_t pr,
     int flags)
 {
-	struct sleepqueue_chain *sc;
+	struct sleepqueue_chain *sc __unused;
 	struct thread *td;
 	sbintime_t pr1;
 
@@ -775,7 +780,7 @@ sleepq_type(void *wchan)
 static int
 sleepq_resume_thread(struct sleepqueue *sq, struct thread *td, int pri)
 {
-	struct sleepqueue_chain *sc;
+	struct sleepqueue_chain *sc __unused;
 
 	MPASS(td != NULL);
 	MPASS(sq->sq_wchan != NULL);
@@ -969,7 +974,7 @@ sleepq_remove_matching(struct sleepqueue *sq, int queue,
 static void
 sleepq_timeout(void *arg)
 {
-	struct sleepqueue_chain *sc;
+	struct sleepqueue_chain *sc __unused;
 	struct sleepqueue *sq;
 	struct thread *td;
 	void *wchan;
@@ -1098,7 +1103,7 @@ void
 sleepq_chains_remove_matching(bool (*matches)(struct thread *))
 {
 	struct sleepqueue_chain *sc;
-	struct sleepqueue *sq;
+	struct sleepqueue *sq, *sq1;
 	int i, wakeup_swapper;
 
 	wakeup_swapper = 0;
@@ -1107,7 +1112,7 @@ sleepq_chains_remove_matching(bool (*matches)(struct thread *))
 			continue;
 		}
 		mtx_lock_spin(&sc->sc_lock);
-		LIST_FOREACH(sq, &sc->sc_queues, sq_hash) {
+		LIST_FOREACH_SAFE(sq, &sc->sc_queues, sq_hash, sq1) {
 			for (i = 0; i < NR_SLEEPQS; ++i) {
 				wakeup_swapper |= sleepq_remove_matching(sq, i,
 				    matches, 0);
@@ -1136,11 +1141,10 @@ sleepq_sbuf_print_stacks(struct sbuf *sb, void *wchan, int queue,
 	struct stack **st;
 	struct sbuf **td_infos;
 	int i, stack_idx, error, stacks_to_allocate;
-	bool finished, partial_print;
+	bool finished;
 
 	error = 0;
 	finished = false;
-	partial_print = false;
 
 	KASSERT(wchan != NULL, ("%s: invalid NULL wait channel", __func__));
 	MPASS((queue >= 0) && (queue < NR_SLEEPQS));

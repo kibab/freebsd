@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright 1996, 1997, 1998, 1999, 2000 John D. Polstra.
  * Copyright 2003 Alexander Kabaev <kan@FreeBSD.ORG>.
  * Copyright 2009-2013 Konstantin Belousov <kib@FreeBSD.ORG>.
@@ -138,7 +140,7 @@ static int rtld_dirname(const char *, char *);
 static int rtld_dirname_abs(const char *, char *);
 static void *rtld_dlopen(const char *name, int fd, int mode);
 static void rtld_exit(void);
-static char *search_library_path(const char *, const char *);
+static char *search_library_path(const char *, const char *, int *);
 static char *search_library_pathfds(const char *, const char *, int *);
 static const void **get_program_var_addr(const char *, RtldLockState *);
 static void set_program_var(const char *, const void *);
@@ -235,8 +237,6 @@ void _rtld_error(const char *, ...) __exported;
 
 int npagesizes, osreldate;
 size_t *pagesizes;
-
-long __stack_chk_guard[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 
 static int stack_prot = PROT_READ | PROT_WRITE | RTLD_DEFAULT_STACK_EXEC;
 static int max_stack_flags;
@@ -358,8 +358,7 @@ _rtld(Elf_Addr *sp, func_ptr_type *exit_proc, Obj_Entry **objp)
     char **argv, *argv0, **env, **envp, *kexecpath, *library_path_rpath;
     caddr_t imgentry;
     char buf[MAXPATHLEN];
-    int argc, fd, i, mib[2], phnum, rtld_argc;
-    size_t len;
+    int argc, fd, i, phnum, rtld_argc;
     bool dir_enable, explicit_fd, search_in_path;
 
     /*
@@ -396,27 +395,6 @@ _rtld(Elf_Addr *sp, func_ptr_type *exit_proc, Obj_Entry **objp)
     environ = env;
     main_argc = argc;
     main_argv = argv;
-
-    if (aux_info[AT_CANARY] != NULL &&
-	aux_info[AT_CANARY]->a_un.a_ptr != NULL) {
-	    i = aux_info[AT_CANARYLEN]->a_un.a_val;
-	    if (i > sizeof(__stack_chk_guard))
-		    i = sizeof(__stack_chk_guard);
-	    memcpy(__stack_chk_guard, aux_info[AT_CANARY]->a_un.a_ptr, i);
-    } else {
-	mib[0] = CTL_KERN;
-	mib[1] = KERN_ARND;
-
-	len = sizeof(__stack_chk_guard);
-	if (sysctl(mib, 2, __stack_chk_guard, &len, NULL, 0) == -1 ||
-	    len != sizeof(__stack_chk_guard)) {
-		/* If sysctl was unsuccessful, use the "terminator canary". */
-		((unsigned char *)(void *)__stack_chk_guard)[0] = 0;
-		((unsigned char *)(void *)__stack_chk_guard)[1] = 0;
-		((unsigned char *)(void *)__stack_chk_guard)[2] = '\n';
-		((unsigned char *)(void *)__stack_chk_guard)[3] = 255;
-	}
-    }
 
     trust = !issetugid();
 
@@ -752,6 +730,12 @@ _rtld(Elf_Addr *sp, func_ptr_type *exit_proc, Obj_Entry **objp)
 	obj_main->preinit_array = obj_main->init_array =
 	    obj_main->fini_array = (Elf_Addr)NULL;
     }
+
+    /*
+     * Execute MD initializers required before we call the objects'
+     * init functions.
+     */
+    pre_init();
 
     wlock_acquire(rtld_bind_lock, &lockstate);
     if (obj_main->crt_no_init)
@@ -1591,65 +1575,93 @@ gnu_hash(const char *s)
 static char *
 find_library(const char *xname, const Obj_Entry *refobj, int *fdp)
 {
-    char *pathname;
-    char *name;
-    bool nodeflib, objgiven;
+	char *pathname;
+	char *name;
+	bool nodeflib, objgiven;
 
-    objgiven = refobj != NULL;
+	objgiven = refobj != NULL;
 
-    if (libmap_disable || !objgiven ||
-      (name = lm_find(refobj->path, xname)) == NULL)
-	name = (char *)xname;
+	if (libmap_disable || !objgiven ||
+	    (name = lm_find(refobj->path, xname)) == NULL)
+		name = (char *)xname;
 
-    if (strchr(name, '/') != NULL) {	/* Hard coded pathname */
-	if (name[0] != '/' && !trust) {
-	    _rtld_error("Absolute pathname required for shared object \"%s\"",
-	      name);
-	    return (NULL);
+	if (strchr(name, '/') != NULL) {	/* Hard coded pathname */
+		if (name[0] != '/' && !trust) {
+			_rtld_error("Absolute pathname required "
+			    "for shared object \"%s\"", name);
+			return (NULL);
+		}
+		return (origin_subst(__DECONST(Obj_Entry *, refobj),
+		    __DECONST(char *, name)));
 	}
-	return (origin_subst(__DECONST(Obj_Entry *, refobj),
-	  __DECONST(char *, name)));
-    }
 
-    dbg(" Searching for \"%s\"", name);
+	dbg(" Searching for \"%s\"", name);
 
-    /*
-     * If refobj->rpath != NULL, then refobj->runpath is NULL.  Fall
-     * back to pre-conforming behaviour if user requested so with
-     * LD_LIBRARY_PATH_RPATH environment variable and ignore -z
-     * nodeflib.
-     */
-    if (objgiven && refobj->rpath != NULL && ld_library_path_rpath) {
-	if ((pathname = search_library_path(name, ld_library_path)) != NULL ||
-	  (refobj != NULL &&
-	  (pathname = search_library_path(name, refobj->rpath)) != NULL) ||
-	  (pathname = search_library_pathfds(name, ld_library_dirs, fdp)) != NULL ||
-          (pathname = search_library_path(name, gethints(false))) != NULL ||
-	  (pathname = search_library_path(name, ld_standard_library_path)) != NULL)
-	    return (pathname);
-    } else {
-	nodeflib = objgiven ? refobj->z_nodeflib : false;
-	if ((objgiven &&
-	  (pathname = search_library_path(name, refobj->rpath)) != NULL) ||
-	  (objgiven && refobj->runpath == NULL && refobj != obj_main &&
-	  (pathname = search_library_path(name, obj_main->rpath)) != NULL) ||
-	  (pathname = search_library_path(name, ld_library_path)) != NULL ||
-	  (objgiven &&
-	  (pathname = search_library_path(name, refobj->runpath)) != NULL) ||
-	  (pathname = search_library_pathfds(name, ld_library_dirs, fdp)) != NULL ||
-	  (pathname = search_library_path(name, gethints(nodeflib))) != NULL ||
-	  (objgiven && !nodeflib &&
-	  (pathname = search_library_path(name, ld_standard_library_path)) != NULL))
-	    return (pathname);
-    }
+	/*
+	 * If refobj->rpath != NULL, then refobj->runpath is NULL.  Fall
+	 * back to pre-conforming behaviour if user requested so with
+	 * LD_LIBRARY_PATH_RPATH environment variable and ignore -z
+	 * nodeflib.
+	 */
+	if (objgiven && refobj->rpath != NULL && ld_library_path_rpath) {
+		pathname = search_library_path(name, ld_library_path, fdp);
+		if (pathname != NULL)
+			return (pathname);
+		if (refobj != NULL) {
+			pathname = search_library_path(name, refobj->rpath, fdp);
+			if (pathname != NULL)
+				return (pathname);
+		}
+		pathname = search_library_pathfds(name, ld_library_dirs, fdp);
+		if (pathname != NULL)
+			return (pathname);
+		pathname = search_library_path(name, gethints(false), fdp);
+		if (pathname != NULL)
+			return (pathname);
+		pathname = search_library_path(name, ld_standard_library_path, fdp);
+		if (pathname != NULL)
+			return (pathname);
+	} else {
+		nodeflib = objgiven ? refobj->z_nodeflib : false;
+		if (objgiven) {
+			pathname = search_library_path(name, refobj->rpath, fdp);
+			if (pathname != NULL)
+				return (pathname);
+		}
+		if (objgiven && refobj->runpath == NULL && refobj != obj_main) {
+			pathname = search_library_path(name, obj_main->rpath, fdp);
+			if (pathname != NULL)
+				return (pathname);
+		}
+		pathname = search_library_path(name, ld_library_path, fdp);
+		if (pathname != NULL)
+			return (pathname);
+		if (objgiven) {
+			pathname = search_library_path(name, refobj->runpath, fdp);
+			if (pathname != NULL)
+				return (pathname);
+		}
+		pathname = search_library_pathfds(name, ld_library_dirs, fdp);
+		if (pathname != NULL)
+			return (pathname);
+		pathname = search_library_path(name, gethints(nodeflib), fdp);
+		if (pathname != NULL)
+			return (pathname);
+		if (objgiven && !nodeflib) {
+			pathname = search_library_path(name,
+			    ld_standard_library_path, fdp);
+			if (pathname != NULL)
+				return (pathname);
+		}
+	}
 
-    if (objgiven && refobj->path != NULL) {
-	_rtld_error("Shared object \"%s\" not found, required by \"%s\"",
-	  name, basename(refobj->path));
-    } else {
-	_rtld_error("Shared object \"%s\" not found", name);
-    }
-    return NULL;
+	if (objgiven && refobj->path != NULL) {
+		_rtld_error("Shared object \"%s\" not found, "
+		    "required by \"%s\"", name, basename(refobj->path));
+	} else {
+		_rtld_error("Shared object \"%s\" not found", name);
+	}
+	return (NULL);
 }
 
 /*
@@ -1796,10 +1808,9 @@ cleanup1:
 		if (dl > hint_stat.st_size)
 			goto cleanup1;
 		p = xmalloc(hdr.dirlistlen + 1);
-
-		if (lseek(fd, hdr.strtab + hdr.dirlist, SEEK_SET) == -1 ||
-		    read(fd, p, hdr.dirlistlen + 1) !=
-		    (ssize_t)hdr.dirlistlen + 1 || p[hdr.dirlistlen] != '\0') {
+		if (pread(fd, p, hdr.dirlistlen + 1,
+		    hdr.strtab + hdr.dirlist) != (ssize_t)hdr.dirlistlen + 1 ||
+		    p[hdr.dirlistlen] != '\0') {
 			free(p);
 			goto cleanup1;
 		}
@@ -2995,12 +3006,14 @@ struct try_library_args {
     size_t	 namelen;
     char	*buffer;
     size_t	 buflen;
+    int		 fd;
 };
 
 static void *
 try_library_path(const char *dir, size_t dirlen, void *param)
 {
     struct try_library_args *arg;
+    int fd;
 
     arg = param;
     if (*dir == '/' || trust) {
@@ -3015,17 +3028,23 @@ try_library_path(const char *dir, size_t dirlen, void *param)
 	strcpy(pathname + dirlen + 1, arg->name);
 
 	dbg("  Trying \"%s\"", pathname);
-	if (access(pathname, F_OK) == 0) {		/* We found it */
+	fd = open(pathname, O_RDONLY | O_CLOEXEC | O_VERIFY);
+	if (fd >= 0) {
+	    dbg("  Opened \"%s\", fd %d", pathname, fd);
 	    pathname = xmalloc(dirlen + 1 + arg->namelen + 1);
 	    strcpy(pathname, arg->buffer);
+	    arg->fd = fd;
 	    return (pathname);
+	} else {
+	    dbg("  Failed to open \"%s\": %s",
+		pathname, rtld_strerror(errno));
 	}
     }
     return (NULL);
 }
 
 static char *
-search_library_path(const char *name, const char *path)
+search_library_path(const char *name, const char *path, int *fdp)
 {
     char *p;
     struct try_library_args arg;
@@ -3037,8 +3056,10 @@ search_library_path(const char *name, const char *path)
     arg.namelen = strlen(name);
     arg.buffer = xmalloc(PATH_MAX);
     arg.buflen = PATH_MAX;
+    arg.fd = -1;
 
     p = path_enumerate(path, try_library_path, &arg);
+    *fdp = arg.fd;
 
     free(arg.buffer);
 
@@ -5490,23 +5511,6 @@ int _thread_autoinit_dummy_decl = 1;
 void
 __pthread_cxa_finalize(struct dl_phdr_info *a)
 {
-}
-
-void
-__stack_chk_fail(void)
-{
-
-	_rtld_error("stack overflow detected; terminated");
-	rtld_die();
-}
-__weak_reference(__stack_chk_fail, __stack_chk_fail_local);
-
-void
-__chk_fail(void)
-{
-
-	_rtld_error("buffer overflow detected; terminated");
-	rtld_die();
 }
 
 const char *

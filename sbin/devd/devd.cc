@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause AND BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2002-2010 M. Warner Losh.
  * All rights reserved.
  *
@@ -159,7 +161,7 @@ static const char *configfile = CF;
 static void devdlog(int priority, const char* message, ...)
 	__printflike(2, 3);
 static void event_loop(void);
-static void usage(void);
+static void usage(void) __dead2;
 
 template <class T> void
 delete_and_clear(vector<T *> &v)
@@ -331,8 +333,6 @@ media::media(config &, const char *var, const char *type)
 {
 	static struct ifmedia_description media_types[] = {
 		{ IFM_ETHER,		"Ethernet" },
-		{ IFM_TOKEN,		"Tokenring" },
-		{ IFM_FDDI,		"FDDI" },
 		{ IFM_IEEE80211,	"802.11" },
 		{ IFM_ATM,		"ATM" },
 		{ -1,			"unknown" },
@@ -1019,7 +1019,7 @@ event_loop(void)
 			tv.tv_usec = 0;
 			FD_ZERO(&fds);
 			FD_SET(fd, &fds);
-			rv = select(fd + 1, &fds, &fds, &fds, &tv);
+			rv = select(fd + 1, &fds, NULL, NULL, &tv);
 			// No events -> we've processed all pending events
 			if (rv == 0) {
 				devdlog(LOG_DEBUG, "Calling daemon\n");

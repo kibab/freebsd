@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: Beerware
+ *
  * ----------------------------------------------------------------------------
  * "THE BEER-WARE LICENSE" (Revision 42):
  * <phk@FreeBSD.ORG> wrote this file.  As long as you retain this notice you
@@ -19,7 +21,6 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
-#include "opt_compat.h"
 #include "opt_ntp.h"
 #include "opt_ffclock.h"
 
@@ -1351,7 +1352,7 @@ tc_windup(struct bintime *new_boottimebin)
 	ogen = th->th_generation;
 	th->th_generation = 0;
 	atomic_thread_fence_rel();
-	bcopy(tho, th, offsetof(struct timehands, th_generation));
+	memcpy(th, tho, offsetof(struct timehands, th_generation));
 	if (new_boottimebin != NULL)
 		th->th_boottime = *new_boottimebin;
 
@@ -1599,10 +1600,10 @@ pps_fetch(struct pps_fetch_args *fapi, struct pps_state *pps)
 			tv.tv_usec = fapi->timeout.tv_nsec / 1000;
 			timo = tvtohz(&tv);
 		}
-		aseq = pps->ppsinfo.assert_sequence;
-		cseq = pps->ppsinfo.clear_sequence;
-		while (aseq == pps->ppsinfo.assert_sequence &&
-		    cseq == pps->ppsinfo.clear_sequence) {
+		aseq = atomic_load_int(&pps->ppsinfo.assert_sequence);
+		cseq = atomic_load_int(&pps->ppsinfo.clear_sequence);
+		while (aseq == atomic_load_int(&pps->ppsinfo.assert_sequence) &&
+		    cseq == atomic_load_int(&pps->ppsinfo.clear_sequence)) {
 			if (abi_aware(pps, 1) && pps->driver_mtx != NULL) {
 				if (pps->flags & PPSFLAG_MTX_SPIN) {
 					err = msleep_spin(pps, pps->driver_mtx,

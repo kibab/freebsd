@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986, 1989, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -38,7 +40,6 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
-#include "opt_compat.h"
 #include "opt_posix.h"
 #include "opt_config.h"
 
@@ -87,11 +88,6 @@ SYSCTL_ROOT_NODE(OID_AUTO, security, CTLFLAG_RW, 0,
 #ifdef REGRESSION
 SYSCTL_ROOT_NODE(OID_AUTO, regression, CTLFLAG_RW, 0,
      "Regression test MIB");
-#endif
-
-#ifdef EXT_RESOURCES
-SYSCTL_ROOT_NODE(OID_AUTO, clock, CTLFLAG_RW, 0,
-	"Clocks");
 #endif
 
 SYSCTL_STRING(_kern, OID_AUTO, ident, CTLFLAG_RD|CTLFLAG_MPSAFE,
@@ -204,7 +200,7 @@ sysctl_hw_usermem(SYSCTL_HANDLER_ARGS)
 {
 	u_long val;
 
-	val = ctob(physmem - vm_cnt.v_wire_count);
+	val = ctob(physmem - vm_wire_count());
 	return (sysctl_handle_long(oidp, &val, 0, req));
 }
 

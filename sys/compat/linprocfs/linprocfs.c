@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-4-Clause
+ *
  * Copyright (c) 2000 Dag-Erling Coïdan Smørgrav
  * Copyright (c) 1999 Pierre Beyssac
  * Copyright (c) 1993 Jan-Simon Pendry
@@ -154,14 +156,14 @@ linprocfs_domeminfo(PFS_FILL_ARGS)
 	/*
 	 * The correct thing here would be:
 	 *
-	memfree = vm_cnt.v_free_count * PAGE_SIZE;
+	memfree = vm_free_count() * PAGE_SIZE;
 	memused = memtotal - memfree;
 	 *
 	 * but it might mislead linux binaries into thinking there
 	 * is very little memory left, so we cheat and tell them that
 	 * all memory that isn't wired down is free.
 	 */
-	memused = vm_cnt.v_wire_count * PAGE_SIZE;
+	memused = vm_wire_count() * PAGE_SIZE;
 	memfree = memtotal - memused;
 	swap_pager_status(&i, &j);
 	swaptotal = (unsigned long long)i * PAGE_SIZE;
@@ -176,7 +178,7 @@ linprocfs_domeminfo(PFS_FILL_ARGS)
 	 * like unstaticizing it just for linprocfs's sake.
 	 */
 	buffers = 0;
-	cached = vm_cnt.v_inactive_count * PAGE_SIZE;
+	cached = vm_inactive_count() * PAGE_SIZE;
 
 	sbuf_printf(sb,
 	    "MemTotal: %9lu kB\n"
@@ -1589,7 +1591,7 @@ linprocfs_init(PFS_INIT_ARGS)
 	pfs_create_file(dir, "maps", &linprocfs_doprocmaps,
 	    NULL, NULL, NULL, PFS_RD);
 	pfs_create_file(dir, "mem", &procfs_doprocmem,
-	    &procfs_attr, &procfs_candebug, NULL, PFS_RDWR|PFS_RAW);
+	    procfs_attr_rw, &procfs_candebug, NULL, PFS_RDWR | PFS_RAW);
 	pfs_create_file(dir, "mounts", &linprocfs_domtab,
 	    NULL, NULL, NULL, PFS_RD);
 	pfs_create_link(dir, "root", &linprocfs_doprocroot,
@@ -1650,7 +1652,7 @@ linprocfs_uninit(PFS_INIT_ARGS)
 	return (0);
 }
 
-PSEUDOFS(linprocfs, 1, PR_ALLOW_MOUNT_LINPROCFS);
+PSEUDOFS(linprocfs, 1, VFCF_JAIL);
 #if defined(__amd64__)
 MODULE_DEPEND(linprocfs, linux_common, 1, 1, 1);
 #else

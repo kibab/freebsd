@@ -2,6 +2,8 @@
 /*	$NetBSD: msdosfs_fat.c,v 1.28 1997/11/17 15:36:49 ws Exp $	*/
 
 /*-
+ * SPDX-License-Identifier: BSD-4-Clause
+ *
  * Copyright (C) 1994, 1995, 1997 Wolfgang Solfrank.
  * Copyright (C) 1994, 1995, 1997 TooLs GmbH.
  * All rights reserved.
@@ -1080,7 +1082,7 @@ extendfile(struct denode *dep, u_long count, struct buf **bpp, u_long *ncp,
 					else
 						bp->b_blkno = blkno;
 				}
-				vfs_bio_clrbuf(bp);
+				clrbuf(bp);
 				if (bpp) {
 					*bpp = bp;
 					bpp = NULL;

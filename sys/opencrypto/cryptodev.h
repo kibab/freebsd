@@ -63,6 +63,7 @@
 #define _CRYPTO_CRYPTO_H_
 
 #include <sys/ioccom.h>
+#include <sys/_task.h>
 
 /* Some initial values */
 #define CRYPTO_DRIVERS_INITIAL	4
@@ -111,7 +112,8 @@
 #define	AES_ICM_BLOCK_LEN	1
 #define	ARC4_BLOCK_LEN		1
 #define	CAMELLIA_BLOCK_LEN	16
-#define	EALG_MAX_BLOCK_LEN	AES_BLOCK_LEN /* Keep this updated */
+#define	CHACHA20_NATIVE_BLOCK_LEN	64
+#define	EALG_MAX_BLOCK_LEN	CHACHA20_NATIVE_BLOCK_LEN /* Keep this updated */
 
 /* IV Lengths */
 
@@ -177,7 +179,10 @@
 #define	CRYPTO_AES_128_NIST_GMAC 26 /* auth side */
 #define	CRYPTO_AES_192_NIST_GMAC 27 /* auth side */
 #define	CRYPTO_AES_256_NIST_GMAC 28 /* auth side */
-#define	CRYPTO_ALGORITHM_MAX	28 /* Keep updated - see below */
+#define	CRYPTO_BLAKE2B		29 /* Blake2b hash */
+#define	CRYPTO_BLAKE2S		30 /* Blake2s hash */
+#define	CRYPTO_CHACHA20		31 /* Chacha20 stream cipher */
+#define	CRYPTO_ALGORITHM_MAX	31 /* Keep updated - see below */
 
 #define	CRYPTO_ALGO_VALID(x)	((x) >= CRYPTO_ALGORITHM_MIN && \
 				 (x) <= CRYPTO_ALGORITHM_MAX)
@@ -345,10 +350,11 @@ struct cryptostats {
 #ifdef _KERNEL
 
 #if 0
-#define CRYPTDEB(s)	do { printf("%s:%d: %s\n", __FILE__, __LINE__, s); \
-			} while (0)
+#define CRYPTDEB(s, ...) do {						\
+	printf("%s:%d: " s "\n", __FILE__, __LINE__, ## __VA_ARGS__);	\
+} while (0)
 #else
-#define CRYPTDEB(s)	do { } while (0)
+#define CRYPTDEB(...)	do { } while (0)
 #endif
 
 /* Standard initialization structure beginning */
@@ -391,6 +397,8 @@ struct cryptodesc {
 struct cryptop {
 	TAILQ_ENTRY(cryptop) crp_next;
 
+	struct task	crp_task;
+
 	u_int64_t	crp_sid;	/* Session ID */
 	int		crp_ilen;	/* Input data total length */
 	int		crp_olen;	/* Result total length */
@@ -413,15 +421,39 @@ struct cryptop {
 #define	CRYPTO_F_CBIMM		0x0010	/* Do callback immediately */
 #define	CRYPTO_F_DONE		0x0020	/* Operation completed */
 #define	CRYPTO_F_CBIFSYNC	0x0040	/* Do CBIMM if op is synchronous */
+#define	CRYPTO_F_ASYNC		0x0080	/* Dispatch crypto jobs on several threads
+					 * if op is synchronous
+					 */
+#define	CRYPTO_F_ASYNC_KEEPORDER	0x0100	/*
+					 * Dispatch the crypto jobs in the same
+					 * order there are submitted. Applied only
+					 * if CRYPTO_F_ASYNC flags is set
+					 */
 
-	caddr_t		crp_buf;	/* Data to be processed */
-	caddr_t		crp_opaque;	/* Opaque pointer, passed along */
+	union {
+		caddr_t		crp_buf;	/* Data to be processed */
+		struct mbuf	*crp_mbuf;
+		struct uio	*crp_uio;
+	};
+	void *		crp_opaque;	/* Opaque pointer, passed along */
 	struct cryptodesc *crp_desc;	/* Linked list of processing descriptors */
 
 	int (*crp_callback)(struct cryptop *); /* Callback function */
 
 	struct bintime	crp_tstamp;	/* performance time stamp */
+	uint32_t	crp_seq;	/* used for ordered dispatch */
+	uint32_t	crp_retw_id;	/*
+					 * the return worker to be used,
+					 *  used for ordered dispatch
+					 */
 };
+
+#define	CRYPTOP_ASYNC(crp) \
+	(((crp)->crp_flags & CRYPTO_F_ASYNC) && \
+	CRYPTO_SESID2CAPS((crp)->crp_sid) & CRYPTOCAP_F_SYNC)
+#define	CRYPTOP_ASYNC_KEEPORDER(crp) \
+	(CRYPTOP_ASYNC(crp) && \
+	(crp)->crp_flags & CRYPTO_F_ASYNC_KEEPORDER)
 
 #define	CRYPTO_BUF_CONTIG	0x0
 #define	CRYPTO_BUF_IOV		0x1
@@ -515,5 +547,6 @@ extern	void crypto_copydata(int flags, caddr_t buf, int off, int size,
 	    caddr_t out);
 extern	int crypto_apply(int flags, caddr_t buf, int off, int len,
 	    int (*f)(void *, void *, u_int), void *arg);
+
 #endif /* _KERNEL */
 #endif /* _CRYPTO_CRYPTO_H_ */

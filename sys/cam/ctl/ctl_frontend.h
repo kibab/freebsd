@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2003 Silicon Graphics International Corp.
  * Copyright (c) 2014-2017 Alexander Motin <mav@FreeBSD.org>
  * All rights reserved.
@@ -41,6 +43,7 @@
 #define	_CTL_FRONTEND_H_
 
 #include <cam/ctl/ctl_ioctl.h>
+#include <sys/nv.h>
 
 typedef enum {
 	CTL_PORT_STATUS_NONE		= 0x00,
@@ -235,7 +238,7 @@ struct ctl_port {
 	uint64_t	wwnn;			/* set by CTL before online */
 	uint64_t	wwpn;			/* set by CTL before online */
 	ctl_port_status	status;			/* used by CTL */
-	ctl_options_t	options;		/* passed to CTL */
+	nvlist_t	*options;		/* passed to CTL */
 	struct ctl_devid *port_devid;		/* passed to CTL */
 	struct ctl_devid *target_devid;		/* passed to CTL */
 	struct ctl_devid *init_devid;		/* passed to CTL */

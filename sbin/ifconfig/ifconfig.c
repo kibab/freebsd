@@ -1,4 +1,6 @@
-/*
+/*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1983, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -97,6 +99,7 @@ int	printifname = 0;
 
 int	supmedia = 0;
 int	printkeys = 0;		/* Print keying material for interfaces. */
+int	exit_code = 0;
 
 /* Formatter Strings */
 char	*f_inet, *f_inet6, *f_ether, *f_addr;
@@ -483,7 +486,7 @@ main(int argc, char *argv[])
 					errx(1, "%s: cloning name too long",
 					    ifname);
 				ifconfig(argc, argv, 1, NULL);
-				exit(0);
+				exit(exit_code);
 			}
 #ifdef JAIL
 			/*
@@ -497,7 +500,7 @@ main(int argc, char *argv[])
 					errx(1, "%s: interface name too long",
 					    ifname);
 				ifconfig(argc, argv, 0, NULL);
-				exit(0);
+				exit(exit_code);
 			}
 #endif
 			errx(1, "interface %s does not exist", ifname);
@@ -595,7 +598,7 @@ main(int argc, char *argv[])
 	freeifaddrs(ifap);
 
 	freeformat();
-	exit(0);
+	exit(exit_code);
 }
 
 static struct afswtch *afs = NULL;
@@ -1078,6 +1081,32 @@ setifmtu(const char *val, int dummy __unused, int s,
 }
 
 static void
+setifpcp(const char *val, int arg __unused, int s, const struct afswtch *afp)
+{
+	u_long ul;
+	char *endp;
+
+	ul = strtoul(val, &endp, 0);
+	if (*endp != '\0')
+		errx(1, "invalid value for pcp");
+	if (ul > 7)
+		errx(1, "value for pcp out of range");
+	ifr.ifr_lan_pcp = ul;
+	if (ioctl(s, SIOCSLANPCP, (caddr_t)&ifr) == -1)
+		err(1, "SIOCSLANPCP");
+}
+
+static void
+disableifpcp(const char *val, int arg __unused, int s,
+    const struct afswtch *afp)
+{
+
+	ifr.ifr_lan_pcp = IFNET_PCP_NONE;
+	if (ioctl(s, SIOCSLANPCP, (caddr_t)&ifr) == -1)
+		err(1, "SIOCSLANPCP");
+}
+
+static void
 setifname(const char *val, int dummy __unused, int s, 
     const struct afswtch *afp)
 {
@@ -1143,7 +1172,7 @@ unsetifdescr(const char *val, int value, int s, const struct afswtch *afp)
 "\020\1RXCSUM\2TXCSUM\3NETCONS\4VLAN_MTU\5VLAN_HWTAGGING\6JUMBO_MTU\7POLLING" \
 "\10VLAN_HWCSUM\11TSO4\12TSO6\13LRO\14WOL_UCAST\15WOL_MCAST\16WOL_MAGIC" \
 "\17TOE4\20TOE6\21VLAN_HWFILTER\23VLAN_HWTSO\24LINKSTATE\25NETMAP" \
-"\26RXCSUM_IPV6\27TXCSUM_IPV6\31TXRTLMT"
+"\26RXCSUM_IPV6\27TXCSUM_IPV6\31TXRTLMT\32HWRXTSTMP"
 
 /*
  * Print the status of the interface.  If an address family was
@@ -1434,6 +1463,8 @@ static struct cmd basic_cmds[] = {
 	DEF_CMD("-txcsum",	-IFCAP_TXCSUM,	setifcap),
 	DEF_CMD("netcons",	IFCAP_NETCONS,	setifcap),
 	DEF_CMD("-netcons",	-IFCAP_NETCONS,	setifcap),
+	DEF_CMD_ARG("pcp",			setifpcp),
+	DEF_CMD("-pcp", 0,			disableifpcp),
 	DEF_CMD("polling",	IFCAP_POLLING,	setifcap),
 	DEF_CMD("-polling",	-IFCAP_POLLING,	setifcap),
 	DEF_CMD("tso6",		IFCAP_TSO6,	setifcap),
@@ -1456,6 +1487,8 @@ static struct cmd basic_cmds[] = {
 	DEF_CMD("-wol_magic",	-IFCAP_WOL_MAGIC,	setifcap),
 	DEF_CMD("txrtlmt",	IFCAP_TXRTLMT,	setifcap),
 	DEF_CMD("-txrtlmt",	-IFCAP_TXRTLMT,	setifcap),
+	DEF_CMD("hwrxtstmp",	IFCAP_HWRXTSTMP,	setifcap),
+	DEF_CMD("-hwrxtstmp",	-IFCAP_HWRXTSTMP,	setifcap),
 	DEF_CMD("normal",	-IFF_LINK0,	setifflags),
 	DEF_CMD("compress",	IFF_LINK0,	setifflags),
 	DEF_CMD("noicmp",	IFF_LINK1,	setifflags),

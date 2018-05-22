@@ -105,6 +105,7 @@ FBSD_1.0 {
 	sys_errlist;
 	sys_nerr;
 	errno;
+	exect;
 	execl;
 	execle;
 	execlp;
@@ -332,7 +333,6 @@ FBSD_1.1 {
 };
 
 FBSD_1.2 {
-	basename_r;
 	cfmakesane;
 	endutxent;
 	getpagesizes;
@@ -395,6 +395,7 @@ FBSD_1.4 {
 FBSD_1.5 {
 	alphasort;
 	basename;
+	daemonfd;
 	devname;
 	devname_r;
 	dirname;
@@ -408,6 +409,7 @@ FBSD_1.5 {
 	fts_set;
 	fts_set_clientptr;
 	ftw;
+	getentropy;
 	getmntinfo;
 	glob;
 	globfree;

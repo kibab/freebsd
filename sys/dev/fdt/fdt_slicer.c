@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2012 Semihalf.
  * All rights reserved.
  *
@@ -92,12 +94,12 @@ fdt_flash_fill_slices(device_t dev, const char *provider __unused,
 		/*
 		 * Retrieve label.
 		 */
-		name_len = OF_getprop_alloc(dt_child, "label", sizeof(char),
+		name_len = OF_getprop_alloc(dt_child, "label",
 		    (void **)&slice_name);
 		if (name_len <= 0) {
 			/* Use node name if no label defined */
 			name_len = OF_getprop_alloc(dt_child, "name",
-			    sizeof(char), (void **)&slice_name);
+			    (void **)&slice_name);
 			if (name_len <= 0) {
 				debugf("slice i=%d with no name\n", i);
 				slice_name = NULL;

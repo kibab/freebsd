@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 2003 Poul-Henning Kamp
  * All rights reserved.
  *
@@ -483,3 +485,4 @@ static struct g_class g_fox_class	= {
 };
 
 DECLARE_GEOM_CLASS(g_fox_class, g_fox);
+MODULE_VERSION(geom_fox, 0);

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2002 Poul-Henning Kamp
  * Copyright (c) 2002 Networks Associates Technology, Inc.
  * All rights reserved.
@@ -290,3 +292,4 @@ static struct g_class g_bde_class	= {
 };
 
 DECLARE_GEOM_CLASS(g_bde_class, g_bde);
+MODULE_VERSION(geom_bde, 0);

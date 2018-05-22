@@ -1,6 +1,8 @@
 /*	$OpenBSD: reg.h,v 1.1 1998/01/28 11:14:53 pefo Exp $	*/
 
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1988 University of Utah.
  * Copyright (c) 1992, 1993
  *	The Regents of the University of California.  All rights reserved.
@@ -41,10 +43,6 @@
 
 #ifndef _MACHINE_REG_H_
 #define	_MACHINE_REG_H_
-
-#if defined(_KERNEL) && !defined(KLD_MODULE) && !defined(_STANDALONE)
-#include "opt_compat.h"
-#endif
 
 /*
  * Location of the users' stored registers relative to ZERO.

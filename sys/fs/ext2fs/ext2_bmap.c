@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1989, 1991, 1993
  *	The Regents of the University of California.  All rights reserved.
  * (c) UNIX System Laboratories, Inc.
@@ -46,8 +48,8 @@
 #include <sys/resourcevar.h>
 #include <sys/stat.h>
 
-#include <fs/ext2fs/inode.h>
 #include <fs/ext2fs/fs.h>
+#include <fs/ext2fs/inode.h>
 #include <fs/ext2fs/ext2fs.h>
 #include <fs/ext2fs/ext2_dinode.h>
 #include <fs/ext2fs/ext2_extern.h>

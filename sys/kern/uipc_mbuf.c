@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986, 1988, 1991, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -1631,9 +1633,6 @@ m_unshare(struct mbuf *m0, int how)
 				mprev->m_len += m->m_len;
 				mprev->m_next = m->m_next;	/* unlink from chain */
 				m_free(m);			/* reclaim mbuf */
-#if 0
-				newipsecstat.ips_mbcoalesced++;
-#endif
 			} else {
 				mprev = m;
 			}
@@ -1663,9 +1662,6 @@ m_unshare(struct mbuf *m0, int how)
 			mprev->m_len += m->m_len;
 			mprev->m_next = m->m_next;	/* unlink from chain */
 			m_free(m);			/* reclaim mbuf */
-#if 0
-			newipsecstat.ips_clcoalesced++;
-#endif
 			continue;
 		}
 

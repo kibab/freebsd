@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2010 Yohanes Nugroho <yohanes@gmail.com>
  * All rights reserved.
  *
@@ -1135,7 +1137,7 @@ set_filter(struct macb_softc *sc)
 	multicast_filter[0] = 0;
 	multicast_filter[1] = 0;
 
-	TAILQ_FOREACH(ifma, &ifp->if_multiaddrs, ifma_link) {
+	CK_STAILQ_FOREACH(ifma, &ifp->if_multiaddrs, ifma_link) {
 		if (ifma->ifma_addr->sa_family != AF_LINK)
 			continue;
 		count++;

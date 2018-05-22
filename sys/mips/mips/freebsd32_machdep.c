@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2012 Juli Mallett <jmallett@FreeBSD.org>
  * All rights reserved.
  *
@@ -29,8 +31,6 @@
 /*
  * Based on nwhitehorn's COMPAT_FREEBSD32 support code for PowerPC64.
  */
-
-#include "opt_compat.h"
 
 #define __ELF_WORD_SIZE 32
 

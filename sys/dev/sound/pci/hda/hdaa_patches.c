@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2006 Stephane E. Potvin <sepotvin@videotron.ca>
  * Copyright (c) 2006 Ariff Abdullah <ariff@FreeBSD.org>
  * Copyright (c) 2008-2012 Alexander Motin <mav@FreeBSD.org>
@@ -406,6 +408,15 @@ hdac_pin_patch(struct hdaa_widget *w)
 		switch (nid) {
 		case 21:
 			patch = "as=1 seq=15";
+			break;
+		}
+	} else if (id == HDA_CODEC_ALC298 && subid == DELL_XPS9560_SUBVENDOR) {
+		switch (nid) {
+		case 24:
+			config  = 0x01a1913c;
+			break;
+		case 26:
+			config  = 0x01a1913d;
 			break;
 		}
 	}

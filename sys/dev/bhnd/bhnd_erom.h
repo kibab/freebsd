@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2015-2017 Landon Fuller <landonf@FreeBSD.org>
  * Copyright (c) 2017 The FreeBSD Foundation
  * All rights reserved.
@@ -74,6 +76,8 @@ int			 bhnd_erom_iobus_init(struct bhnd_erom_iobus *iobus,
 
 int			 bhnd_erom_io_map(struct bhnd_erom_io *eio,
 			     bhnd_addr_t addr, bhnd_size_t size);
+int			 bhnd_erom_io_tell(struct bhnd_erom_io *eio,
+			     bhnd_addr_t *addr, bhnd_size_t *size);
 uint32_t		 bhnd_erom_io_read(struct bhnd_erom_io *eio,
 			     bhnd_size_t offset, u_int width);
 void			 bhnd_erom_io_fini(struct bhnd_erom_io *eio);

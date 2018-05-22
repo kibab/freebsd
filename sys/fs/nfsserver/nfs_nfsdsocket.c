@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1989, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -190,7 +192,7 @@ int (*nfsrv4_ops0[NFSV41_NOPS])(struct nfsrv_descript *,
 	nfsrvd_notsupp,
 	nfsrvd_sequence,
 	nfsrvd_notsupp,
-	nfsrvd_notsupp,
+	nfsrvd_teststateid,
 	nfsrvd_notsupp,
 	nfsrvd_destroyclientid,
 	nfsrvd_reclaimcomplete,

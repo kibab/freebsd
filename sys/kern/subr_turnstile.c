@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1998 Berkeley Software Design, Inc. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -564,6 +566,45 @@ turnstile_trywait(struct lock_object *lock)
 	return (ts);
 }
 
+struct thread *
+turnstile_lock(struct turnstile *ts, struct lock_object **lockp)
+{
+	struct turnstile_chain *tc;
+	struct lock_object *lock;
+
+	if ((lock = ts->ts_lockobj) == NULL)
+		return (NULL);
+	tc = TC_LOOKUP(lock);
+	mtx_lock_spin(&tc->tc_lock);
+	mtx_lock_spin(&ts->ts_lock);
+	if (__predict_false(lock != ts->ts_lockobj)) {
+		mtx_unlock_spin(&tc->tc_lock);
+		mtx_unlock_spin(&ts->ts_lock);
+		return (NULL);
+	}
+	*lockp = lock;
+	return (ts->ts_owner);
+}
+
+void
+turnstile_unlock(struct turnstile *ts, struct lock_object *lock)
+{
+	struct turnstile_chain *tc;
+
+	mtx_assert(&ts->ts_lock, MA_OWNED);
+	mtx_unlock_spin(&ts->ts_lock);
+	if (ts == curthread->td_turnstile)
+		ts->ts_lockobj = NULL;
+	tc = TC_LOOKUP(lock);
+	mtx_unlock_spin(&tc->tc_lock);
+}
+
+void
+turnstile_assert(struct turnstile *ts)
+{
+	MPASS(ts->ts_lockobj == NULL);
+}
+
 void
 turnstile_cancel(struct turnstile *ts)
 {
@@ -763,7 +804,7 @@ turnstile_wait(struct turnstile *ts, struct thread *owner, int queue)
 int
 turnstile_signal(struct turnstile *ts, int queue)
 {
-	struct turnstile_chain *tc;
+	struct turnstile_chain *tc __unused;
 	struct thread *td;
 	int empty;
 
@@ -814,7 +855,7 @@ turnstile_signal(struct turnstile *ts, int queue)
 void
 turnstile_broadcast(struct turnstile *ts, int queue)
 {
-	struct turnstile_chain *tc;
+	struct turnstile_chain *tc __unused;
 	struct turnstile *ts1;
 	struct thread *td;
 

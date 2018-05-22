@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2012 Chelsio Communications, Inc.
  * All rights reserved.
  * Written by: Navdeep Parhar <np@FreeBSD.org>
@@ -180,6 +182,14 @@ toedev_ctloutput(struct toedev *tod __unused, struct tcpcb *tp __unused,
 	return;
 }
 
+static void
+toedev_tcp_info(struct toedev *tod __unused, struct tcpcb *tp __unused,
+    struct tcp_info *ti __unused)
+{
+
+	return;
+}
+
 /*
  * Inform one or more TOE devices about a listening socket.
  */
@@ -269,6 +279,7 @@ init_toedev(struct toedev *tod)
 	tod->tod_syncache_respond = toedev_syncache_respond;
 	tod->tod_offload_socket = toedev_offload_socket;
 	tod->tod_ctloutput = toedev_ctloutput;
+	tod->tod_tcp_info = toedev_tcp_info;
 }
 
 /*

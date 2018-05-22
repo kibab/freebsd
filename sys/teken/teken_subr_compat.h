@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2008-2009 Ed Schouten <ed@FreeBSD.org>
  * All rights reserved.
  *
@@ -27,15 +29,15 @@
  */
 
 static void
-teken_subr_cons25_set_border(teken_t *t, unsigned int c)
+teken_subr_cons25_set_border(const teken_t *t, unsigned int c)
 {
 
 	teken_funcs_param(t, TP_SETBORDER, c);
 }
 
 static void
-teken_subr_cons25_set_global_cursor_shape(teken_t *t, unsigned int ncmds,
-    unsigned int cmds[])
+teken_subr_cons25_set_global_cursor_shape(const teken_t *t, unsigned int ncmds,
+    const unsigned int cmds[])
 {
 	unsigned int code, i;
 
@@ -56,7 +58,7 @@ teken_subr_cons25_set_global_cursor_shape(teken_t *t, unsigned int ncmds,
 }
 
 static void
-teken_subr_cons25_set_local_cursor_type(teken_t *t, unsigned int type)
+teken_subr_cons25_set_local_cursor_type(const teken_t *t, unsigned int type)
 {
 
 	teken_funcs_param(t, TP_SETLOCALCURSOR, type);
@@ -84,7 +86,7 @@ teken_subr_cons25_set_default_foreground(teken_t *t, unsigned int c)
 static const teken_color_t cons25_revcolors[8] = { 0, 4, 2, 6, 1, 5, 3, 7 };
 
 void
-teken_get_defattr_cons25(teken_t *t, int *fg, int *bg)
+teken_get_defattr_cons25(const teken_t *t, int *fg, int *bg)
 {
 
 	*fg = cons25_revcolors[teken_256to8(t->t_defattr.ta_fgcolor)];
@@ -94,14 +96,14 @@ teken_get_defattr_cons25(teken_t *t, int *fg, int *bg)
 }
 
 static void
-teken_subr_cons25_switch_virtual_terminal(teken_t *t, unsigned int vt)
+teken_subr_cons25_switch_virtual_terminal(const teken_t *t, unsigned int vt)
 {
 
 	teken_funcs_param(t, TP_SWITCHVT, vt);
 }
 
 static void
-teken_subr_cons25_set_bell_pitch_duration(teken_t *t, unsigned int pitch,
+teken_subr_cons25_set_bell_pitch_duration(const teken_t *t, unsigned int pitch,
     unsigned int duration)
 {
 
@@ -111,9 +113,10 @@ teken_subr_cons25_set_bell_pitch_duration(teken_t *t, unsigned int pitch,
 
 static void
 teken_subr_cons25_set_graphic_rendition(teken_t *t, unsigned int cmd,
-    unsigned int param __unused)
+    unsigned int param)
 {
 
+	(void)param;
 	switch (cmd) {
 	case 0: /* Reset. */
 		t->t_curattr = t->t_defattr;
@@ -133,6 +136,8 @@ teken_subr_cons25_set_terminal_mode(teken_t *t, unsigned int mode)
 		break;
 	case 1: /* Switch terminal to cons25. */
 		t->t_stateflags |= TS_CONS25;
+		break;
+	default:
 		break;
 	}
 }

@@ -41,6 +41,7 @@ SUBDIR=	alias \
 	elfdump \
 	enigma \
 	env \
+	etdump \
 	expand \
 	false \
 	fetch \
@@ -150,6 +151,7 @@ SUBDIR=	alias \
 	split \
 	stat \
 	stdbuf \
+	strings \
 	su \
 	systat \
 	tabs \
@@ -277,10 +279,6 @@ SUBDIR.${MK_TOOLCHAIN}+=	readelf
 SUBDIR.${MK_TOOLCHAIN}+=	rpcgen
 SUBDIR.${MK_TOOLCHAIN}+=	unifdef
 SUBDIR.${MK_TOOLCHAIN}+=	size
-SUBDIR.${MK_TOOLCHAIN}+=	strings
-.if ${MACHINE_ARCH} != "aarch64" # ARM64TODO xlint does not build
-SUBDIR.${MK_TOOLCHAIN}+=	xlint
-.endif
 SUBDIR.${MK_TOOLCHAIN}+=	xstr
 SUBDIR.${MK_TOOLCHAIN}+=	yacc
 SUBDIR.${MK_VI}+=	vi

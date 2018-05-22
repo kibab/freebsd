@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2003, Jeffrey Roberson <jeff@freebsd.org>
  * All rights reserved.
  *
@@ -27,8 +29,8 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
-#include "opt_compat.h"
 #include "opt_posix.h"
+#include "opt_hwpmc_hooks.h"
 #include <sys/param.h>
 #include <sys/kernel.h>
 #include <sys/lock.h>
@@ -54,8 +56,9 @@ __FBSDID("$FreeBSD$");
 #include <sys/rtprio.h>
 #include <sys/umtx.h>
 #include <sys/limits.h>
-
-#include <vm/vm_domain.h>
+#ifdef	HWPMC_HOOKS
+#include <sys/pmckern.h>
+#endif
 
 #include <machine/frame.h>
 
@@ -258,13 +261,11 @@ thread_create(struct thread *td, struct rtprio *rtp,
 	if (p->p_ptevents & PTRACE_LWP)
 		newtd->td_dbgflags |= TDB_BORN;
 
-	/*
-	 * Copy the existing thread VM policy into the new thread.
-	 */
-	vm_domain_policy_localcopy(&newtd->td_vm_dom_policy,
-	    &td->td_vm_dom_policy);
-
 	PROC_UNLOCK(p);
+#ifdef	HWPMC_HOOKS
+	if (PMC_PROC_IS_USING_PMCS(p))
+		PMC_CALL_HOOK(newtd, PMC_FN_THR_CREATE, NULL);
+#endif
 
 	tidhash_add(newtd);
 

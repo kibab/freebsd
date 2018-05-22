@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 1997-2000 Nicolas Souchu
  * Copyright (c) 2001 Alcove - Nicolas Souchu
  * All rights reserved.
@@ -49,6 +51,7 @@ __FBSDID("$FreeBSD$");
 #include <vm/vm.h>
 #include <vm/pmap.h>
 #include <machine/vmparam.h>
+#include <machine/pc/bios.h>
 #endif
 
 #include <dev/ppbus/ppbconf.h>
@@ -119,7 +122,7 @@ static char *ppc_epp_protocol[] = { " (EPP 1.9)", " (EPP 1.7)", 0 };
  * BIOS printer list - used by BIOS probe.
  */
 #define	BIOS_PPC_PORTS	0x408
-#define	BIOS_PORTS	(short *)(KERNBASE+BIOS_PPC_PORTS)
+#define	BIOS_PORTS	((short *)BIOS_PADDRTOVADDR(BIOS_PPC_PORTS))
 #define	BIOS_MAX_PPC	4
 #endif
 

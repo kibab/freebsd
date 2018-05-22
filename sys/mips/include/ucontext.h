@@ -1,4 +1,6 @@
 /*
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1992, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -38,10 +40,6 @@
 #define	_MACHINE_UCONTEXT_H_
 
 #ifndef _LOCORE
-
-#if defined(_KERNEL) && !defined(KLD_MODULE) && !defined(_STANDALONE)
-#include "opt_compat.h"
-#endif
 
 typedef struct	__mcontext {
 	/*

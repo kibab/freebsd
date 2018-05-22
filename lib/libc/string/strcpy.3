@@ -36,7 +36,10 @@
 .Dt STRCPY 3
 .Os
 .Sh NAME
-.Nm stpcpy, stpncpy, strcpy , strncpy
+.Nm stpcpy ,
+.Nm stpncpy ,
+.Nm strcpy ,
+.Nm strncpy
 .Nd copy strings
 .Sh LIBRARY
 .Lb libc
@@ -63,6 +66,11 @@ to
 (including the terminating
 .Ql \e0
 character.)
+If
+.Fa src
+and
+.Fa dst
+overlap, the results are undefined.
 .Pp
 The
 .Fn stpncpy
@@ -89,6 +97,11 @@ Otherwise,
 is
 .Em not
 terminated.
+If
+.Fa src
+and
+.Fa dst
+overlap, the results are undefined.
 .Sh RETURN VALUES
 The
 .Fn strcpy

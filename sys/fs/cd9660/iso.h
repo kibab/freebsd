@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1994
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -93,7 +95,8 @@ struct iso_primary_descriptor {
 	char application_data		[ISODCL (884, 1395)];
 	char unused5			[ISODCL (1396, 2048)];
 };
-#define ISO_DEFAULT_BLOCK_SIZE		2048
+#define ISO_DEFAULT_BLOCK_SHIFT		11
+#define ISO_DEFAULT_BLOCK_SIZE		(1 << ISO_DEFAULT_BLOCK_SHIFT)
 
 /*
  * Used by Microsoft Joliet extension to ISO9660. Almost the same

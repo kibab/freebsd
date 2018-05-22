@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-4-Clause
+ *
  * Copyright (c) 1996 John S. Dyson
  * Copyright (c) 2012 Giovanni Trematerra
  * All rights reserved.
@@ -88,8 +90,6 @@
  * is important to reread all data after a call to pipelock(); everything
  * in the structure may have changed.
  */
-
-#include "opt_compat.h"
 
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");

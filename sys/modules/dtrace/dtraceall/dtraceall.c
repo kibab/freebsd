@@ -1,4 +1,6 @@
-/*
+/*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (C) 2008 John Birrell <jb@freebsd.org>
  * 
  * Redistribution and use in source and binary forms, with or without
@@ -32,7 +34,6 @@
 #include <sys/kernel.h>
 #include <sys/module.h>
 #include <sys/errno.h>
-#include "opt_compat.h"
 #include "opt_nfs.h"
 
 static int

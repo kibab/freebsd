@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2013 Hudson River Trading LLC
  * Copyright (c) 2014, 2016 The FreeBSD Foundation
  * Written by: John H. Baldwin <jhb@FreeBSD.org>
@@ -49,6 +51,8 @@
 #define	PROC_TRACE_STATUS	8	/* query tracing status */
 #define	PROC_TRAPCAP_CTL	9	/* trap capability errors */
 #define	PROC_TRAPCAP_STATUS	10	/* query trap capability status */
+#define	PROC_PDEATHSIG_CTL	11	/* set parent death signal */
+#define	PROC_PDEATHSIG_STATUS	12	/* get parent death signal */
 
 /* Operations for PROC_SPROTECT (passed in integer arg). */
 #define	PPROT_OP(x)	((x) & 0xf)
@@ -83,6 +87,7 @@ struct procctl_reaper_pidinfo {
 
 #define	REAPER_PIDINFO_VALID	0x00000001
 #define	REAPER_PIDINFO_CHILD	0x00000002
+#define	REAPER_PIDINFO_REAPER	0x00000004
 
 struct procctl_reaper_pids {
 	u_int	rp_count;

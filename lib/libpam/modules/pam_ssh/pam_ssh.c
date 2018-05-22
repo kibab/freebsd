@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 2003 Networks Associates Technology, Inc.
  * Copyright (c) 2004-2011 Dag-Erling Smørgrav
  * All rights reserved.
@@ -64,7 +66,7 @@ __FBSDID("$FreeBSD$");
 #include "authfile.h"
 
 #define ssh_add_identity(auth, key, comment) \
-	ssh_add_identity_constrained(auth, key, comment, 0, 0)
+	ssh_add_identity_constrained(auth, key, comment, 0, 0, 0)
 
 extern char **environ;
 

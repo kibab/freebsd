@@ -1,4 +1,6 @@
-/*
+/*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1983, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -179,7 +181,7 @@ static void
 clone_Copt_cb(const char *optarg __unused)
 {
 	list_cloners();
-	exit(0);
+	exit(exit_code);
 }
 static struct option clone_Copt = { .opt = "C", .opt_usage = "[-C]", .cb = clone_Copt_cb };
 

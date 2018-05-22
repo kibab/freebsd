@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2005 Marius Strobl <marius@FreeBSD.org>
  * All rights reserved.
  *
@@ -92,6 +94,8 @@ int ofw_bus_msimap(phandle_t, uint16_t, phandle_t *, uint32_t *);
 
 /* Routines for parsing device-tree data into resource lists. */
 int ofw_bus_reg_to_rl(device_t, phandle_t, pcell_t, pcell_t,
+    struct resource_list *);
+int ofw_bus_assigned_addresses_to_rl(device_t, phandle_t, pcell_t, pcell_t,
     struct resource_list *);
 int ofw_bus_intr_to_rl(device_t, phandle_t, struct resource_list *, int *);
 int ofw_bus_intr_by_rid(device_t, phandle_t, int, phandle_t *, int *,

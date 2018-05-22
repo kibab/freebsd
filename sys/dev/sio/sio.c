@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1991 The Regents of the University of California.
  * All rights reserved.
  *
@@ -33,7 +35,6 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
-#include "opt_compat.h"
 #include "opt_gdb.h"
 #include "opt_kdb.h"
 #include "opt_sio.h"
@@ -590,7 +591,7 @@ sioprobe(dev, xrid, rclk, noprobe)
 	 * junk after a (very fast) soft reboot and (apparently) after
 	 * master reset.
 	 * XXX what about the UART bug avoided by waiting in comparam()?
-	 * We don't want to to wait long enough to drain at 2 bps.
+	 * We don't want to wait long enough to drain at 2 bps.
 	 */
 	if (iobase == siocniobase)
 		DELAY((16 + 1) * 1000000 / (comdefaultrate / 10));

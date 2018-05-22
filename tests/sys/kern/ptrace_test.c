@@ -52,6 +52,32 @@ __FBSDID("$FreeBSD$");
 #include <atf-c.h>
 
 /*
+ * Architectures with a user-visible breakpoint().
+ */
+#if defined(__amd64__) || defined(__i386__) || defined(__mips__) ||	\
+    defined(__riscv) || defined(__sparc64__)
+#define	HAVE_BREAKPOINT
+#endif
+
+/*
+ * Adjust PC to skip over a breakpoint when stopped for a breakpoint trap.
+ */
+#ifdef HAVE_BREAKPOINT
+#if defined(__amd64__) || defined(__i386__)
+#define	SKIP_BREAK(reg)
+#elif defined(__mips__)
+#define	SKIP_BREAK(reg)	((reg)->r_regs[PC] += 4)
+#elif defined(__riscv)
+#define	SKIP_BREAK(reg)	((reg)->sepc += 4)
+#elif defined(__sparc64__)
+#define	SKIP_BREAK(reg)	do {						\
+	(reg)->r_tpc = (reg)->r_tnpc + 4;				\
+	(reg)->r_tnpc += 8;						\
+} while (0)
+#endif
+#endif
+
+/*
  * A variant of ATF_REQUIRE that is suitable for use in child
  * processes.  This only works if the parent process is tripped up by
  * the early exit and fails some requirement itself.
@@ -104,6 +130,10 @@ wait_for_zombie(pid_t pid)
 	/*
 	 * Wait for a process to exit.  This is kind of gross, but
 	 * there is not a better way.
+	 *
+	 * Prior to r325719, the kern.proc.pid.<pid> sysctl failed
+	 * with ESRCH.  After that change, a valid struct kinfo_proc
+	 * is returned for zombies with ki_stat set to SZOMB.
 	 */
 	for (;;) {
 		struct kinfo_proc kp;
@@ -116,10 +146,11 @@ wait_for_zombie(pid_t pid)
 		mib[3] = pid;
 		len = sizeof(kp);
 		if (sysctl(mib, nitems(mib), &kp, &len, NULL, 0) == -1) {
-			/* The KERN_PROC_PID sysctl fails for zombies. */
 			ATF_REQUIRE(errno == ESRCH);
 			break;
 		}
+		if (kp.ki_stat == SZOMB)
+			break;
 		usleep(5000);
 	}
 }
@@ -1683,11 +1714,7 @@ ATF_TC_BODY(ptrace__ptrace_vfork_follow, tc)
 	ATF_REQUIRE(errno == ECHILD);
 }
 
-/*
- * XXX: There's nothing inherently platform specific about this test, however a
- * userspace visible breakpoint() is a prerequisite.
- */
- #if defined(__amd64__) || defined(__i386__) || defined(__sparc64__)
+#ifdef HAVE_BREAKPOINT
 /*
  * Verify that no more events are reported after PT_KILL except for the
  * process exit when stopped due to a breakpoint trap.
@@ -1733,7 +1760,7 @@ ATF_TC_BODY(ptrace__PT_KILL_breakpoint, tc)
 	ATF_REQUIRE(wpid == -1);
 	ATF_REQUIRE(errno == ECHILD);
 }
-#endif /* defined(__amd64__) || defined(__i386__) || defined(__sparc64__) */
+#endif /* HAVE_BREAKPOINT */
 
 /*
  * Verify that no more events are reported after PT_KILL except for the
@@ -2953,7 +2980,7 @@ ATF_TC_BODY(ptrace__PT_CONTINUE_with_sigmask, tc)
 /*
  * Verify that if ptrace stops due to a signal but continues with
  * a different signal that the new signal is routed to a thread
- * that can accept it, and that that thread is awakened by the signal
+ * that can accept it, and that the thread is awakened by the signal
  * in a timely manner.
  */
 ATF_TC_WITHOUT_HEAD(ptrace__PT_CONTINUE_with_signal_thread_sigmask);
@@ -3377,6 +3404,369 @@ ATF_TC_BODY(ptrace__PT_ATTACH_with_SBDRY_thread, tc)
 	ATF_REQUIRE(close(fd) == 0);
 }
 
+static void
+sigusr1_step_handler(int sig)
+{
+
+	CHILD_REQUIRE(sig == SIGUSR1);
+	raise(SIGABRT);
+}
+
+/*
+ * Verify that PT_STEP with a signal invokes the signal before
+ * stepping the next instruction (and that the next instruction is
+ * stepped correctly).
+ */
+ATF_TC_WITHOUT_HEAD(ptrace__PT_STEP_with_signal);
+ATF_TC_BODY(ptrace__PT_STEP_with_signal, tc)
+{
+	struct ptrace_lwpinfo pl;
+	pid_t fpid, wpid;
+	int status;
+
+	ATF_REQUIRE((fpid = fork()) != -1);
+	if (fpid == 0) {
+		trace_me();
+		signal(SIGUSR1, sigusr1_step_handler);
+		raise(SIGABRT);
+		exit(1);
+	}
+
+	/* The first wait() should report the stop from SIGSTOP. */
+	wpid = waitpid(fpid, &status, 0);
+	ATF_REQUIRE(wpid == fpid);
+	ATF_REQUIRE(WIFSTOPPED(status));
+	ATF_REQUIRE(WSTOPSIG(status) == SIGSTOP);
+
+	ATF_REQUIRE(ptrace(PT_CONTINUE, fpid, (caddr_t)1, 0) == 0);
+
+	/* The next stop should report the SIGABRT in the child body. */
+	wpid = waitpid(fpid, &status, 0);
+	ATF_REQUIRE(wpid == fpid);
+	ATF_REQUIRE(WIFSTOPPED(status));
+	ATF_REQUIRE(WSTOPSIG(status) == SIGABRT);
+
+	ATF_REQUIRE(ptrace(PT_LWPINFO, wpid, (caddr_t)&pl, sizeof(pl)) != -1);
+	ATF_REQUIRE(pl.pl_flags & PL_FLAG_SI);
+	ATF_REQUIRE(pl.pl_siginfo.si_signo == SIGABRT);
+
+	/* Step the child process inserting SIGUSR1. */
+	ATF_REQUIRE(ptrace(PT_STEP, fpid, (caddr_t)1, SIGUSR1) == 0);
+
+	/* The next stop should report the SIGABRT in the signal handler. */
+	wpid = waitpid(fpid, &status, 0);
+	ATF_REQUIRE(wpid == fpid);
+	ATF_REQUIRE(WIFSTOPPED(status));
+	ATF_REQUIRE(WSTOPSIG(status) == SIGABRT);
+
+	ATF_REQUIRE(ptrace(PT_LWPINFO, wpid, (caddr_t)&pl, sizeof(pl)) != -1);
+	ATF_REQUIRE(pl.pl_flags & PL_FLAG_SI);
+	ATF_REQUIRE(pl.pl_siginfo.si_signo == SIGABRT);
+
+	/* Continue the child process discarding the signal. */
+	ATF_REQUIRE(ptrace(PT_CONTINUE, fpid, (caddr_t)1, 0) == 0);
+
+	/* The next stop should report a trace trap from PT_STEP. */
+	wpid = waitpid(fpid, &status, 0);
+	ATF_REQUIRE(wpid == fpid);
+	ATF_REQUIRE(WIFSTOPPED(status));
+	ATF_REQUIRE(WSTOPSIG(status) == SIGTRAP);
+
+	ATF_REQUIRE(ptrace(PT_LWPINFO, wpid, (caddr_t)&pl, sizeof(pl)) != -1);
+	ATF_REQUIRE(pl.pl_flags & PL_FLAG_SI);
+	ATF_REQUIRE(pl.pl_siginfo.si_signo == SIGTRAP);
+	ATF_REQUIRE(pl.pl_siginfo.si_code == TRAP_TRACE);
+
+	/* Continue the child to let it exit. */
+	ATF_REQUIRE(ptrace(PT_CONTINUE, fpid, (caddr_t)1, 0) == 0);
+
+	/* The last event should be for the child process's exit. */
+	wpid = waitpid(fpid, &status, 0);
+	ATF_REQUIRE(WIFEXITED(status));
+	ATF_REQUIRE(WEXITSTATUS(status) == 1);
+
+	wpid = wait(&status);
+	ATF_REQUIRE(wpid == -1);
+	ATF_REQUIRE(errno == ECHILD);
+}
+
+#ifdef HAVE_BREAKPOINT
+/*
+ * Verify that a SIGTRAP event with the TRAP_BRKPT code is reported
+ * for a breakpoint trap.
+ */
+ATF_TC_WITHOUT_HEAD(ptrace__breakpoint_siginfo);
+ATF_TC_BODY(ptrace__breakpoint_siginfo, tc)
+{
+	struct ptrace_lwpinfo pl;
+	pid_t fpid, wpid;
+	int status;
+
+	ATF_REQUIRE((fpid = fork()) != -1);
+	if (fpid == 0) {
+		trace_me();
+		breakpoint();
+		exit(1);
+	}
+
+	/* The first wait() should report the stop from SIGSTOP. */
+	wpid = waitpid(fpid, &status, 0);
+	ATF_REQUIRE(wpid == fpid);
+	ATF_REQUIRE(WIFSTOPPED(status));
+	ATF_REQUIRE(WSTOPSIG(status) == SIGSTOP);
+
+	/* Continue the child ignoring the SIGSTOP. */
+	ATF_REQUIRE(ptrace(PT_CONTINUE, fpid, (caddr_t)1, 0) == 0);
+
+	/* The second wait() should report hitting the breakpoint. */
+	wpid = waitpid(fpid, &status, 0);
+	ATF_REQUIRE(wpid == fpid);
+	ATF_REQUIRE(WIFSTOPPED(status));
+	ATF_REQUIRE(WSTOPSIG(status) == SIGTRAP);
+
+	ATF_REQUIRE(ptrace(PT_LWPINFO, wpid, (caddr_t)&pl, sizeof(pl)) != -1);
+	ATF_REQUIRE((pl.pl_flags & PL_FLAG_SI) != 0);
+	ATF_REQUIRE(pl.pl_siginfo.si_signo == SIGTRAP);
+	ATF_REQUIRE(pl.pl_siginfo.si_code == TRAP_BRKPT);
+
+	/* Kill the child process. */
+	ATF_REQUIRE(ptrace(PT_KILL, fpid, 0, 0) == 0);
+
+	/* The last wait() should report the SIGKILL. */
+	wpid = waitpid(fpid, &status, 0);
+	ATF_REQUIRE(wpid == fpid);
+	ATF_REQUIRE(WIFSIGNALED(status));
+	ATF_REQUIRE(WTERMSIG(status) == SIGKILL);
+
+	wpid = wait(&status);
+	ATF_REQUIRE(wpid == -1);
+	ATF_REQUIRE(errno == ECHILD);
+}
+#endif /* HAVE_BREAKPOINT */
+
+/*
+ * Verify that a SIGTRAP event with the TRAP_TRACE code is reported
+ * for a single-step trap from PT_STEP.
+ */
+ATF_TC_WITHOUT_HEAD(ptrace__step_siginfo);
+ATF_TC_BODY(ptrace__step_siginfo, tc)
+{
+	struct ptrace_lwpinfo pl;
+	pid_t fpid, wpid;
+	int status;
+
+	ATF_REQUIRE((fpid = fork()) != -1);
+	if (fpid == 0) {
+		trace_me();
+		exit(1);
+	}
+
+	/* The first wait() should report the stop from SIGSTOP. */
+	wpid = waitpid(fpid, &status, 0);
+	ATF_REQUIRE(wpid == fpid);
+	ATF_REQUIRE(WIFSTOPPED(status));
+	ATF_REQUIRE(WSTOPSIG(status) == SIGSTOP);
+
+	/* Step the child ignoring the SIGSTOP. */
+	ATF_REQUIRE(ptrace(PT_STEP, fpid, (caddr_t)1, 0) == 0);
+
+	/* The second wait() should report a single-step trap. */
+	wpid = waitpid(fpid, &status, 0);
+	ATF_REQUIRE(wpid == fpid);
+	ATF_REQUIRE(WIFSTOPPED(status));
+	ATF_REQUIRE(WSTOPSIG(status) == SIGTRAP);
+
+	ATF_REQUIRE(ptrace(PT_LWPINFO, wpid, (caddr_t)&pl, sizeof(pl)) != -1);
+	ATF_REQUIRE((pl.pl_flags & PL_FLAG_SI) != 0);
+	ATF_REQUIRE(pl.pl_siginfo.si_signo == SIGTRAP);
+	ATF_REQUIRE(pl.pl_siginfo.si_code == TRAP_TRACE);
+
+	/* Continue the child process. */
+	ATF_REQUIRE(ptrace(PT_CONTINUE, fpid, (caddr_t)1, 0) == 0);
+
+	/* The last event should be for the child process's exit. */
+	wpid = waitpid(fpid, &status, 0);
+	ATF_REQUIRE(WIFEXITED(status));
+	ATF_REQUIRE(WEXITSTATUS(status) == 1);
+
+	wpid = wait(&status);
+	ATF_REQUIRE(wpid == -1);
+	ATF_REQUIRE(errno == ECHILD);
+}
+
+#if defined(HAVE_BREAKPOINT) && defined(SKIP_BREAK)
+static void *
+continue_thread(void *arg __unused)
+{
+	breakpoint();
+	return (NULL);
+}
+
+static __dead2 void
+continue_thread_main(void)
+{
+	pthread_t threads[2];
+
+	CHILD_REQUIRE(pthread_create(&threads[0], NULL, continue_thread,
+	    NULL) == 0);
+	CHILD_REQUIRE(pthread_create(&threads[1], NULL, continue_thread,
+	    NULL) == 0);
+	CHILD_REQUIRE(pthread_join(threads[0], NULL) == 0);
+	CHILD_REQUIRE(pthread_join(threads[1], NULL) == 0);
+	exit(1);
+}
+
+/*
+ * Ensure that PT_CONTINUE clears the status of the thread that
+ * triggered the stop even if a different thread's LWP was passed to
+ * PT_CONTINUE.
+ */
+ATF_TC_WITHOUT_HEAD(ptrace__PT_CONTINUE_different_thread);
+ATF_TC_BODY(ptrace__PT_CONTINUE_different_thread, tc)
+{
+	struct ptrace_lwpinfo pl;
+	pid_t fpid, wpid;
+	lwpid_t lwps[2];
+	bool hit_break[2];
+	struct reg reg;
+	int i, j, status;
+
+	ATF_REQUIRE((fpid = fork()) != -1);
+	if (fpid == 0) {
+		trace_me();
+		continue_thread_main();
+	}
+
+	/* The first wait() should report the stop from SIGSTOP. */
+	wpid = waitpid(fpid, &status, 0);
+	ATF_REQUIRE(wpid == fpid);
+	ATF_REQUIRE(WIFSTOPPED(status));
+	ATF_REQUIRE(WSTOPSIG(status) == SIGSTOP);
+
+	ATF_REQUIRE(ptrace(PT_LWPINFO, wpid, (caddr_t)&pl,
+	    sizeof(pl)) != -1);
+
+	ATF_REQUIRE(ptrace(PT_LWP_EVENTS, wpid, NULL, 1) == 0);
+
+	/* Continue the child ignoring the SIGSTOP. */
+	ATF_REQUIRE(ptrace(PT_CONTINUE, fpid, (caddr_t)1, 0) == 0);
+
+	/* One of the new threads should report it's birth. */
+	wpid = waitpid(fpid, &status, 0);
+	ATF_REQUIRE(wpid == fpid);
+	ATF_REQUIRE(WIFSTOPPED(status));
+	ATF_REQUIRE(WSTOPSIG(status) == SIGTRAP);
+
+	ATF_REQUIRE(ptrace(PT_LWPINFO, wpid, (caddr_t)&pl, sizeof(pl)) != -1);
+	ATF_REQUIRE((pl.pl_flags & (PL_FLAG_BORN | PL_FLAG_SCX)) ==
+	    (PL_FLAG_BORN | PL_FLAG_SCX));
+	lwps[0] = pl.pl_lwpid;
+
+	/*
+	 * Suspend this thread to ensure both threads are alive before
+	 * hitting the breakpoint.
+	 */
+	ATF_REQUIRE(ptrace(PT_SUSPEND, lwps[0], NULL, 0) != -1);
+
+	ATF_REQUIRE(ptrace(PT_CONTINUE, fpid, (caddr_t)1, 0) == 0);
+
+	/* Second thread should report it's birth. */
+	wpid = waitpid(fpid, &status, 0);
+	ATF_REQUIRE(wpid == fpid);
+	ATF_REQUIRE(WIFSTOPPED(status));
+	ATF_REQUIRE(WSTOPSIG(status) == SIGTRAP);
+
+	ATF_REQUIRE(ptrace(PT_LWPINFO, wpid, (caddr_t)&pl, sizeof(pl)) != -1);
+	ATF_REQUIRE((pl.pl_flags & (PL_FLAG_BORN | PL_FLAG_SCX)) ==
+	    (PL_FLAG_BORN | PL_FLAG_SCX));
+	ATF_REQUIRE(pl.pl_lwpid != lwps[0]);
+	lwps[1] = pl.pl_lwpid;
+
+	/* Resume both threads waiting for breakpoint events. */
+	hit_break[0] = hit_break[1] = false;
+	ATF_REQUIRE(ptrace(PT_RESUME, lwps[0], NULL, 0) != -1);
+	ATF_REQUIRE(ptrace(PT_CONTINUE, fpid, (caddr_t)1, 0) == 0);
+
+	/* One thread should report a breakpoint. */
+	wpid = waitpid(fpid, &status, 0);
+	ATF_REQUIRE(wpid == fpid);
+	ATF_REQUIRE(WIFSTOPPED(status));
+	ATF_REQUIRE(WSTOPSIG(status) == SIGTRAP);
+
+	ATF_REQUIRE(ptrace(PT_LWPINFO, wpid, (caddr_t)&pl, sizeof(pl)) != -1);
+	ATF_REQUIRE((pl.pl_flags & PL_FLAG_SI) != 0);
+	ATF_REQUIRE(pl.pl_siginfo.si_signo == SIGTRAP &&
+	    pl.pl_siginfo.si_code == TRAP_BRKPT);
+	if (pl.pl_lwpid == lwps[0])
+		i = 0;
+	else
+		i = 1;
+	hit_break[i] = true;
+	ATF_REQUIRE(ptrace(PT_GETREGS, pl.pl_lwpid, (caddr_t)&reg, 0) != -1);
+	SKIP_BREAK(&reg);
+	ATF_REQUIRE(ptrace(PT_SETREGS, pl.pl_lwpid, (caddr_t)&reg, 0) != -1);
+
+	/*
+	 * Resume both threads but pass the other thread's LWPID to
+	 * PT_CONTINUE.
+	 */
+	ATF_REQUIRE(ptrace(PT_CONTINUE, lwps[i ^ 1], (caddr_t)1, 0) == 0);
+
+	/*
+	 * Will now get two thread exit events and one more breakpoint
+	 * event.
+	 */
+	for (j = 0; j < 3; j++) {
+		wpid = waitpid(fpid, &status, 0);
+		ATF_REQUIRE(wpid == fpid);
+		ATF_REQUIRE(WIFSTOPPED(status));
+		ATF_REQUIRE(WSTOPSIG(status) == SIGTRAP);
+
+		ATF_REQUIRE(ptrace(PT_LWPINFO, wpid, (caddr_t)&pl,
+		    sizeof(pl)) != -1);
+		
+		if (pl.pl_lwpid == lwps[0])
+			i = 0;
+		else
+			i = 1;
+
+		ATF_REQUIRE_MSG(lwps[i] != 0, "event for exited thread");
+		if (pl.pl_flags & PL_FLAG_EXITED) {
+			ATF_REQUIRE_MSG(hit_break[i],
+			    "exited thread did not report breakpoint");
+			lwps[i] = 0;
+		} else {
+			ATF_REQUIRE((pl.pl_flags & PL_FLAG_SI) != 0);
+			ATF_REQUIRE(pl.pl_siginfo.si_signo == SIGTRAP &&
+			    pl.pl_siginfo.si_code == TRAP_BRKPT);
+			ATF_REQUIRE_MSG(!hit_break[i],
+			    "double breakpoint event");
+			hit_break[i] = true;
+			ATF_REQUIRE(ptrace(PT_GETREGS, pl.pl_lwpid, (caddr_t)&reg,
+			    0) != -1);
+			SKIP_BREAK(&reg);
+			ATF_REQUIRE(ptrace(PT_SETREGS, pl.pl_lwpid, (caddr_t)&reg,
+			    0) != -1);
+		}
+
+		ATF_REQUIRE(ptrace(PT_CONTINUE, fpid, (caddr_t)1, 0) == 0);
+	}
+
+	/* Both threads should have exited. */
+	ATF_REQUIRE(lwps[0] == 0);
+	ATF_REQUIRE(lwps[1] == 0);
+
+	/* The last event should be for the child process's exit. */
+	wpid = waitpid(fpid, &status, 0);
+	ATF_REQUIRE(WIFEXITED(status));
+	ATF_REQUIRE(WEXITSTATUS(status) == 1);
+
+	wpid = wait(&status);
+	ATF_REQUIRE(wpid == -1);
+	ATF_REQUIRE(errno == ECHILD);
+}
+#endif
+
 ATF_TP_ADD_TCS(tp)
 {
 
@@ -3404,7 +3794,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, ptrace__event_mask);
 	ATF_TP_ADD_TC(tp, ptrace__ptrace_vfork);
 	ATF_TP_ADD_TC(tp, ptrace__ptrace_vfork_follow);
-#if defined(__amd64__) || defined(__i386__) || defined(__sparc64__)
+#ifdef HAVE_BREAKPOINT
 	ATF_TP_ADD_TC(tp, ptrace__PT_KILL_breakpoint);
 #endif
 	ATF_TP_ADD_TC(tp, ptrace__PT_KILL_system_call);
@@ -3428,6 +3818,14 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, ptrace__parent_terminate_with_pending_sigstop2);
 	ATF_TP_ADD_TC(tp, ptrace__event_mask_sigkill_discard);
 	ATF_TP_ADD_TC(tp, ptrace__PT_ATTACH_with_SBDRY_thread);
+	ATF_TP_ADD_TC(tp, ptrace__PT_STEP_with_signal);
+#ifdef HAVE_BREAKPOINT
+	ATF_TP_ADD_TC(tp, ptrace__breakpoint_siginfo);
+#endif
+	ATF_TP_ADD_TC(tp, ptrace__step_siginfo);
+#if defined(HAVE_BREAKPOINT) && defined(SKIP_BREAK)
+	ATF_TP_ADD_TC(tp, ptrace__PT_CONTINUE_different_thread);
+#endif
 
 	return (atf_no_error());
 }

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2010-2013 Alexander Motin <mav@FreeBSD.org>
  * All rights reserved.
  *
@@ -270,18 +272,22 @@ getnextevent(void)
 #ifdef SMP
 	int	cpu;
 #endif
+#ifdef KTR
 	int	c;
 
+	c = -1;
+#endif
 	state = DPCPU_PTR(timerstate);
 	event = state->nextevent;
-	c = -1;
 #ifdef SMP
 	if ((timer->et_flags & ET_FLAGS_PERCPU) == 0) {
 		CPU_FOREACH(cpu) {
 			state = DPCPU_ID_PTR(cpu, timerstate);
 			if (event > state->nextevent) {
 				event = state->nextevent;
+#ifdef KTR
 				c = cpu;
+#endif
 			}
 		}
 	}
@@ -692,6 +698,22 @@ cpu_initclocks_ap(void)
 	spinlock_exit();
 }
 
+void
+suspendclock(void)
+{
+	ET_LOCK();
+	configtimer(0);
+	ET_UNLOCK();
+}
+
+void
+resumeclock(void)
+{
+	ET_LOCK();
+	configtimer(1);
+	ET_UNLOCK();
+}
+
 /*
  * Switch to profiling clock rates.
  */
@@ -822,6 +844,8 @@ cpu_new_callout(int cpu, sbintime_t bt, sbintime_t bt_opt)
 	CTR6(KTR_SPARE2, "new co at %d:    on %d at %d.%08x - %d.%08x",
 	    curcpu, cpu, (int)(bt_opt >> 32), (u_int)(bt_opt & 0xffffffff),
 	    (int)(bt >> 32), (u_int)(bt & 0xffffffff));
+
+	KASSERT(!CPU_ABSENT(cpu), ("Absent CPU %d", cpu));
 	state = DPCPU_ID_PTR(cpu, timerstate);
 	ET_HW_LOCK(state);
 

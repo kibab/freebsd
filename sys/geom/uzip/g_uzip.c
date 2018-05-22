@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2004 Max Khon
  * Copyright (c) 2014 Juniper Networks, Inc.
  * Copyright (c) 2006-2016 Maxim Sobolev <sobomax@FreeBSD.org>
@@ -920,3 +922,4 @@ static struct g_class g_uzip_class = {
 
 DECLARE_GEOM_CLASS(g_uzip_class, g_uzip);
 MODULE_DEPEND(g_uzip, zlib, 1, 1, 1);
+MODULE_VERSION(geom_uzip, 0);

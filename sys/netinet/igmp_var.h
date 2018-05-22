@@ -1,4 +1,6 @@
-/*-a
+/*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1988 Stephen Deering.
  * Copyright (c) 1992, 1993
  *	The Regents of the University of California.  All rights reserved.
@@ -212,7 +214,6 @@ struct igmp_ifsoftc {
 	uint32_t igi_qi;	/* IGMPv3 Query Interval (s) */
 	uint32_t igi_qri;	/* IGMPv3 Query Response Interval (s) */
 	uint32_t igi_uri;	/* IGMPv3 Unsolicited Report Interval (s) */
-	SLIST_HEAD(,in_multi)	igi_relinmhead; /* released groups */
 	struct mbufq	igi_gq;		/* general query responses queue */
 };
 

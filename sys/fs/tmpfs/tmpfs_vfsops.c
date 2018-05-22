@@ -1,6 +1,8 @@
 /*	$NetBSD: tmpfs_vfsops.c,v 1.10 2005/12/11 12:24:29 christos Exp $	*/
 
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-NetBSD
+ *
  * Copyright (c) 2005 The NetBSD Foundation, Inc.
  * All rights reserved.
  *
@@ -44,8 +46,10 @@
 __FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
+#include <sys/dirent.h>
 #include <sys/limits.h>
 #include <sys/lock.h>
+#include <sys/mount.h>
 #include <sys/mutex.h>
 #include <sys/proc.h>
 #include <sys/jail.h>
@@ -54,6 +58,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/stat.h>
 #include <sys/systm.h>
 #include <sys/sysctl.h>
+#include <sys/vnode.h>
 
 #include <vm/vm.h>
 #include <vm/vm_object.h>
@@ -136,7 +141,6 @@ tmpfs_mount(struct mount *mp)
 	    sizeof(struct tmpfs_dirent) + sizeof(struct tmpfs_node));
 	struct tmpfs_mount *tmp;
 	struct tmpfs_node *root;
-	struct thread *td = curthread;
 	int error;
 	bool nonc;
 	/* Size counters. */
@@ -149,9 +153,6 @@ tmpfs_mount(struct mount *mp)
 	mode_t root_mode;
 
 	struct vattr va;
-
-	if (!prison_allow(td->td_ucred, PR_ALLOW_MOUNT_TMPFS))
-		return (EPERM);
 
 	if (vfs_filteropt(mp->mnt_optnew, tmpfs_opts))
 		return (EINVAL);
@@ -317,8 +318,6 @@ tmpfs_unmount(struct mount *mp, int mntflags)
 			TMPFS_NODE_UNLOCK(node);
 	}
 
-	clear_unrhdr(tmp->tm_ino_unr);
-
 	mp->mnt_data = NULL;
 	tmpfs_free_tmp(tmp);
 	vfs_write_resume(mp, VR_START_WRITE);
@@ -344,6 +343,7 @@ tmpfs_free_tmp(struct tmpfs_mount *tmp)
 
 	uma_zdestroy(tmp->tm_dirent_pool);
 	uma_zdestroy(tmp->tm_node_pool);
+	clear_unrhdr(tmp->tm_ino_unr);
 	delete_unrhdr(tmp->tm_ino_unr);
 
 	mtx_destroy(&tmp->tm_allnode_lock);

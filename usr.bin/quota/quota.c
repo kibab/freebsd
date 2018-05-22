@@ -1,4 +1,6 @@
 /*
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1980, 1990, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -619,14 +621,14 @@ getnfsquota(struct statfs *fst, struct quotause *qup, long id, int quotatype)
 		gettimeofday(&tv, NULL);
 			/* blocks*/
 		dqp->dqb_bhardlimit =
-		    gq_rslt.getquota_rslt_u.gqr_rquota.rq_bhardlimit *
-		    (gq_rslt.getquota_rslt_u.gqr_rquota.rq_bsize / DEV_BSIZE);
+		    ((uint64_t)gq_rslt.getquota_rslt_u.gqr_rquota.rq_bhardlimit *
+		    gq_rslt.getquota_rslt_u.gqr_rquota.rq_bsize) / DEV_BSIZE;
 		dqp->dqb_bsoftlimit =
-		    gq_rslt.getquota_rslt_u.gqr_rquota.rq_bsoftlimit *
-		    (gq_rslt.getquota_rslt_u.gqr_rquota.rq_bsize / DEV_BSIZE);
+		    ((uint64_t)gq_rslt.getquota_rslt_u.gqr_rquota.rq_bsoftlimit *
+		    gq_rslt.getquota_rslt_u.gqr_rquota.rq_bsize) / DEV_BSIZE;
 		dqp->dqb_curblocks =
-		    gq_rslt.getquota_rslt_u.gqr_rquota.rq_curblocks *
-		    (gq_rslt.getquota_rslt_u.gqr_rquota.rq_bsize / DEV_BSIZE);
+		    ((uint64_t)gq_rslt.getquota_rslt_u.gqr_rquota.rq_curblocks *
+		    gq_rslt.getquota_rslt_u.gqr_rquota.rq_bsize) / DEV_BSIZE;
 			/* inodes */
 		dqp->dqb_ihardlimit =
 			gq_rslt.getquota_rslt_u.gqr_rquota.rq_fhardlimit;
