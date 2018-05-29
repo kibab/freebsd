@@ -758,8 +758,9 @@ static struct spdcache_entry *spdcache_entry_alloc(
 	const struct secpolicyindex *spidx,
 	struct secpolicy *policy);
 static void spdcache_entry_free(struct spdcache_entry *entry);
+#ifdef VIMAGE
 static void spdcache_destroy(void);
-
+#endif
 
 #define	DBG_IPSEC_INITREF(t, p)	do {				\
 	refcount_init(&(p)->refcnt, 1);				\
@@ -929,13 +930,13 @@ key_allocsp(struct secpolicyindex *spidx, u_int dir)
 		if (entry->sp != NULL)
 			SP_ADDREF(sp);
 
-		IPSECSTAT_INC(ips_spdcache_hits);
+		/* IPSECSTAT_INC(ips_spdcache_hits); */
 
 		SPDCACHE_UNLOCK(hashv);
 		goto out;
 	}
 
-	IPSECSTAT_INC(ips_spdcache_misses);
+	/* IPSECSTAT_INC(ips_spdcache_misses); */
 
 	sp = key_do_allocsp(spidx, dir);
 	entry = spdcache_entry_alloc(spidx, sp);
@@ -8282,6 +8283,7 @@ spdcache_clear(void)
 	}
 }
 
+#ifdef VIMAGE
 void
 spdcache_destroy(void)
 {
@@ -8297,7 +8299,7 @@ spdcache_destroy(void)
 		free(V_spdcache_lock, M_IPSEC_SPDCACHE);
 	}
 }
-
+#endif
 void
 key_init(void)
 {

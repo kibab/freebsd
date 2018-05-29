@@ -122,6 +122,8 @@ SYSCTL_INT(_hw_usb_muge, OID_AUTO, debug, CTLFLAG_RWTUN, &muge_debug, 0,
 static const struct usb_device_id lan78xx_devs[] = {
 #define MUGE_DEV(p,i) { USB_VPI(USB_VENDOR_SMC2, USB_PRODUCT_SMC2_##p, i) }
 	MUGE_DEV(LAN7800_ETH, 0),
+	MUGE_DEV(LAN7801_ETH, 0),
+	MUGE_DEV(LAN7850_ETH, 0),
 #undef MUGE_DEV
 };
 
@@ -174,7 +176,8 @@ struct muge_softc {
 	uint32_t		sc_pfilter_table[MUGE_NUM_PFILTER_ADDRS_][2];
 
 	uint32_t		sc_flags;
-#define MUGE_FLAG_LINK	0x0001
+#define	MUGE_FLAG_LINK		0x0001
+#define	MUGE_FLAG_INIT_DONE	0x0002
 };
 
 #define MUGE_IFACE_IDX		0
@@ -950,13 +953,10 @@ static int
 lan78xx_chip_init(struct muge_softc *sc)
 {
 	int err;
-	int locked;
 	uint32_t buf;
 	uint32_t burst_cap;
 
-	locked = mtx_owned(&sc->sc_mtx);
-	if (!locked)
-		MUGE_LOCK(sc);
+	MUGE_LOCK_ASSERT(sc, MA_OWNED);
 
 	/* Enter H/W config mode. */
 	lan78xx_write_reg(sc, ETH_HW_CFG, ETH_HW_CFG_LRST_);
@@ -1125,12 +1125,10 @@ lan78xx_chip_init(struct muge_softc *sc)
 	buf |= ETH_FCT_TX_CTL_EN_;
 	err = lan78xx_write_reg(sc, ETH_FCT_RX_CTL, buf);
 
+	sc->sc_flags |= MUGE_FLAG_INIT_DONE;
 	return (0);
 
 init_failed:
-	if (!locked)
-		MUGE_UNLOCK(sc);
-
 	muge_err_printf(sc, "lan78xx_chip_init failed (err=%d)\n", err);
 	return (err);
 }
@@ -2116,7 +2114,7 @@ muge_attach(device_t dev)
 	    muge_config, MUGE_N_TRANSFER, sc, &sc->sc_mtx);
 	if (err) {
 		device_printf(dev, "error: allocating USB transfers failed\n");
-		goto detach;
+		goto err;
 	}
 
 	ue->ue_sc = sc;
@@ -2128,12 +2126,22 @@ muge_attach(device_t dev)
 	err = uether_ifattach(ue);
 	if (err) {
 		device_printf(dev, "error: could not attach interface\n");
-		goto detach;
+		goto err_usbd;
 	}
+
+	/* Wait for lan78xx_chip_init from post-attach callback to complete. */
+	uether_ifattach_wait(ue);
+	if (!(sc->sc_flags & MUGE_FLAG_INIT_DONE))
+		goto err_attached;
+
 	return (0);
 
-detach:
-	muge_detach(dev);
+err_attached:
+	uether_ifdetach(ue);
+err_usbd:
+	usbd_transfer_unsetup(sc->sc_xfer, MUGE_N_TRANSFER);
+err:
+	mtx_destroy(&sc->sc_mtx);
 	return (ENXIO);
 }
 
