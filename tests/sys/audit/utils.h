@@ -1,8 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
- *
- * Copyright (c) 2003-2005 Joseph Koshy
- * All rights reserved.
+ * Copyright 2018 Aniket Pandey
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -19,41 +16,26 @@
  * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
  * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
  * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
  * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
- * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
+ *
+ * $FreeBSD$
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
-#include <sys/param.h>
-#include <sys/lock.h>
-#include <sys/mutex.h>
-#include <sys/pmc.h>
-#include <sys/pmckern.h>
-#include <sys/smp.h>
-#include <sys/systm.h>
+#ifndef _UTILS_H_
+#define _UTILS_H_
 
-#include <machine/cpufunc.h>
-#include <machine/md_var.h>
-#include <machine/pmc_mdep.h>
+#include <poll.h>
+#include <stdio.h>
+#include <stdbool.h>
+#include <bsm/audit.h>
 
-/*
- * Intel Pentium PMCs
- */
+void check_audit(struct pollfd [], const char *, FILE *);
+FILE *setup(struct pollfd [], const char *);
+void cleanup(void);
 
-int
-pmc_p5_initialize(struct pmc_mdep *pmc_mdep, int ncpus)
-{
-	(void) pmc_mdep; (void) ncpus;
-	return (ENOSYS);		/* nothing here yet */
-}
-
-void
-pmc_p5_finalize(struct pmc_mdep *pmc_mdep)
-{
-	(void) pmc_mdep;
-}
+#endif  /* _SETUP_H_ */

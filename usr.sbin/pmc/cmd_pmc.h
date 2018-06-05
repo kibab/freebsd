@@ -1,6 +1,7 @@
 /*-
- * Copyright (c) 2002 Peter Grehan.
- * All rights reserved.
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
+ * Copyright (c) 2018, Matthew Macy
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -22,48 +23,37 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
+ *
+ * $FreeBSD$
+ *
  */
-/*      $NetBSD: sbrk.S,v 1.8 2000/06/26 06:25:44 kleink Exp $  */
+#ifndef _CMD_PMC_H_
+#define _CMD_PMC_H_
 
-#include <machine/asm.h>
-__FBSDID("$FreeBSD$");
+#define	DEFAULT_DISPLAY_HEIGHT		256	/* file virtual height */
+#define	DEFAULT_DISPLAY_WIDTH		1024	/* file virtual width */
 
-#include "SYS.h"
+extern int pmc_displayheight;
+extern int pmc_displaywidth;
+extern int pmc_kq;
+extern struct pmcstat_args pmc_args;
 
-	.globl	HIDENAME(curbrk)
-	.globl	CNAME(_end)
+typedef int (*cmd_disp_t)(int, char **);
 
-	.data
-	.align 3
-HIDENAME(curbrk):
-	.llong	CNAME(_end)
+#if defined(__cplusplus)
+extern "C" {
+#endif
+	int	cmd_pmc_stat(int, char **);
+	int	cmd_pmc_filter(int, char **);
+	int	cmd_pmc_stat_system(int, char **);
+	int	cmd_pmc_list_events(int, char **);
+#if defined(__cplusplus)
+};
+#endif
+int	pmc_util_get_pid(struct pmcstat_args *);
+void	pmc_util_start_pmcs(struct pmcstat_args *);
+void	pmc_util_cleanup(struct pmcstat_args *);
+void	pmc_util_shutdown_logging(struct pmcstat_args *args);
+void	pmc_util_kill_process(struct pmcstat_args *args);
 
-	.text
-ENTRY(sbrk)
-	addis	%r5,%r2,HIDENAME(curbrk)@toc@ha
-	addi	%r5,%r5,HIDENAME(curbrk)@toc@l
-	ld	%r6,0(%r5)			/* r6 = old break */
-	cmpdi	%r3,0				/* sbrk(0) - return curbrk */
-	beq	1f
-	add	%r3,%r3,%r6
-	mr	%r7,%r3				/* r7 = new break */
-	li	%r0,SYS_break
-	sc					/* break(new_break) */
-	bso	2f
-	std     %r7,0(%r5)
-1:
-	mr      %r3,%r6				/* set return value */
-	blr
-2:
-	mflr	%r0
-	std	%r0,16(%r1)
-	stdu	%r1,-48(%r1)
-	bl	HIDENAME(cerror)
-	nop
-	ld	%r1,0(%r1)
-	ld	%r0,16(%r1)
-	mtlr	%r0
-	blr
-END(sbrk)
-
-	.section .note.GNU-stack,"",%progbits
+#endif
