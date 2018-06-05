@@ -944,8 +944,8 @@ mmc_switch_fill_mmcio(union ccb *ccb,
 }
 
 static int
-mmc_select_card(struct cam_periph *periph, union ccb *ccb, uint32_t rca) {
-
+mmc_select_card(struct cam_periph *periph, union ccb *ccb, uint32_t rca)
+{
 	int flags, err;
 
 	flags = (rca ? MMC_RSP_R1B : MMC_RSP_NONE) | MMC_CMD_AC;
