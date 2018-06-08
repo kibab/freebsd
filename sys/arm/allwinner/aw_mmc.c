@@ -55,13 +55,15 @@ __FBSDID("$FreeBSD$");
 #include <dev/extres/hwreset/hwreset.h>
 #include <dev/extres/regulator/regulator.h>
 
+#include "opt_mmccam.h"
+
+#ifdef MMCCAM
 #include <cam/cam.h>
 #include <cam/cam_ccb.h>
 #include <cam/cam_debug.h>
 #include <cam/cam_sim.h>
 #include <cam/cam_xpt_sim.h>
-
-#include "opt_mmccam.h"
+#endif
 
 #define	AW_MMC_MEMRES		0
 #define	AW_MMC_IRQRES		1
@@ -120,9 +122,14 @@ struct aw_mmc_softc {
 	int			aw_timeout;
 	struct callout		aw_timeoutc;
 	struct mmc_host		aw_host;
-#ifndef MMCCAM
+#ifdef MMCCAM
+	union ccb *		ccb;
+	struct cam_devq *	devq;
+	struct cam_sim * 	sim;
+	struct mtx		sim_mtx;
+#else
 	struct mmc_request *	aw_req;
-#endif /* !MMCCAM */
+#endif
 	struct mtx		aw_mtx;
 	struct resource *	aw_res[AW_MMC_RESSZ];
 	struct aw_mmc_conf *	aw_mmc_conf;
@@ -141,13 +148,6 @@ struct aw_mmc_softc {
 	bus_dmamap_t		aw_dma_buf_map;
 	bus_dma_tag_t		aw_dma_buf_tag;
 	int			aw_dma_map_err;
-#ifdef MMCCAM
-	/* CAM stuff */
-	union ccb		*ccb;
-	struct cam_devq		*devq;
-	struct cam_sim		*sim;
-	struct mtx		sim_mtx;
-#endif
 };
 
 static struct resource_spec aw_mmc_res_spec[] = {
@@ -164,11 +164,19 @@ static int aw_mmc_reset(struct aw_mmc_softc *);
 static int aw_mmc_init(struct aw_mmc_softc *);
 static void aw_mmc_intr(void *);
 static int aw_mmc_update_clock(struct aw_mmc_softc *, uint32_t);
+
 static int aw_mmc_update_ios(device_t, device_t);
-static int aw_mmc_request(device_t bus, device_t child, struct mmc_request *req);
+static int aw_mmc_request(device_t, device_t, struct mmc_request *);
 static int aw_mmc_get_ro(device_t, device_t);
 static int aw_mmc_acquire_host(device_t, device_t);
 static int aw_mmc_release_host(device_t, device_t);
+#ifdef MMCCAM
+static void aw_mmc_cam_action(struct cam_sim *, union ccb *);
+static void aw_mmc_cam_poll(struct cam_sim *);
+static int aw_mmc_cam_settran_settings(struct aw_mmc_softc *, union ccb *);
+static int aw_mmc_cam_request(struct aw_mmc_softc *, union ccb *);
+static void aw_mmc_cam_handle_mmcio(struct cam_sim *, union ccb *);
+#endif
 
 #define	AW_MMC_LOCK(_sc)	mtx_lock(&(_sc)->aw_mtx)
 #define	AW_MMC_UNLOCK(_sc)	mtx_unlock(&(_sc)->aw_mtx)
@@ -178,24 +186,18 @@ static int aw_mmc_release_host(device_t, device_t);
 	bus_write_4((_sc)->aw_res[AW_MMC_MEMRES], _reg, _value)
 
 #ifdef MMCCAM
-void awmmc_cam_action(struct cam_sim *sim, union ccb *ccb);
-void awmmc_cam_poll(struct cam_sim *sim);
-int awmmc_cam_settran_settings(struct aw_mmc_softc *sc, union ccb *ccb);
-int awmmc_cam_request(struct aw_mmc_softc *sc, union ccb *ccb);
-static void awmmc_cam_handle_mmcio(struct cam_sim *sim, union ccb *ccb);
-
 static void
-awmmc_cam_handle_mmcio(struct cam_sim *sim, union ccb *ccb)
+aw_mmc_cam_handle_mmcio(struct cam_sim *sim, union ccb *ccb)
 {
 	struct aw_mmc_softc *sc;
 
 	sc = cam_sim_softc(sim);
 
-	awmmc_cam_request(sc, ccb);
+	aw_mmc_cam_request(sc, ccb);
 }
 
-void
-awmmc_cam_action(struct cam_sim *sim, union ccb *ccb)
+static void
+aw_mmc_cam_action(struct cam_sim *sim, union ccb *ccb)
 {
 	struct aw_mmc_softc *sc;
 
@@ -222,17 +224,17 @@ awmmc_cam_action(struct cam_sim *sim, union ccb *ccb)
 		cpi->max_target = 0;
 		cpi->max_lun = 0;
 		cpi->initiator_id = 1;
-		cpi->maxio = MAXPHYS;
+		cpi->maxio = (sc->aw_mmc_conf->dma_xferlen *
+			      AW_MMC_DMA_SEGS) / MMC_SECTOR_SIZE;
 		strncpy(cpi->sim_vid, "FreeBSD", SIM_IDLEN);
 		strncpy(cpi->hba_vid, "Deglitch Networks", HBA_IDLEN);
 		strncpy(cpi->dev_name, cam_sim_name(sim), DEV_IDLEN);
 		cpi->unit_number = cam_sim_unit(sim);
 		cpi->bus_id = cam_sim_bus(sim);
-		cpi->base_transfer_speed = 100; /* XXX WTF? */
 		cpi->protocol = PROTO_MMCSD;
 		cpi->protocol_version = SCSI_REV_0;
 		cpi->transport = XPORT_MMCSD;
-		cpi->transport_version = 0;
+		cpi->transport_version = 1;
 
 		cpi->ccb_h.status = CAM_REQ_CMP;
 		break;
@@ -261,7 +263,7 @@ awmmc_cam_action(struct cam_sim *sim, union ccb *ccb)
 	{
 		if (bootverbose > 1)
 			device_printf(sc->aw_dev, "Got XPT_SET_TRAN_SETTINGS\n");
-		awmmc_cam_settran_settings(sc, ccb);
+		aw_mmc_cam_settran_settings(sc, ccb);
 		ccb->ccb_h.status = CAM_REQ_CMP;
 		break;
 	}
@@ -279,7 +281,7 @@ awmmc_cam_action(struct cam_sim *sim, union ccb *ccb)
 		 */
 		ccb->ccb_h.status = CAM_REQ_INPROG;
 
-		awmmc_cam_handle_mmcio(sim, ccb);
+		aw_mmc_cam_handle_mmcio(sim, ccb);
 		return;
 		/* NOTREACHED */
 		break;
@@ -291,14 +293,14 @@ awmmc_cam_action(struct cam_sim *sim, union ccb *ccb)
 	return;
 }
 
-void
-awmmc_cam_poll(struct cam_sim *sim)
+static void
+aw_mmc_cam_poll(struct cam_sim *sim)
 {
 	return;
 }
 
-int
-awmmc_cam_settran_settings(struct aw_mmc_softc *sc, union ccb *ccb)
+static int
+aw_mmc_cam_settran_settings(struct aw_mmc_softc *sc, union ccb *ccb)
 {
 	struct mmc_ios *ios;
 	struct mmc_ios *new_ios;
@@ -342,8 +344,8 @@ awmmc_cam_settran_settings(struct aw_mmc_softc *sc, union ccb *ccb)
 	return (aw_mmc_update_ios(sc->aw_dev, NULL));
 }
 
-int
-awmmc_cam_request(struct aw_mmc_softc *sc, union ccb *ccb)
+static int
+aw_mmc_cam_request(struct aw_mmc_softc *sc, union ccb *ccb)
 {
 	struct ccb_mmcio *mmcio;
 
@@ -367,8 +369,6 @@ awmmc_cam_request(struct aw_mmc_softc *sc, union ccb *ccb)
 		return (EBUSY);
 	}
 	sc->ccb = ccb;
-	device_printf(sc->aw_dev, "STARTING REQUEST IS NOT IMPLEMENTED YET\n");
-//	sdhci_start(slot);
 	aw_mmc_request(sc->aw_dev, NULL, NULL);
 	AW_MMC_UNLOCK(sc);
 
@@ -513,13 +513,14 @@ aw_mmc_attach(device_t dev)
 		sc->aw_host.caps |= MMC_CAP_8_BIT_DATA;
 
 #ifdef MMCCAM
-	child = NULL;
+	child = NULL; /* Not used by MMCCAM, need to silence compiler warnings */
+	sc->ccb = NULL;
 	if ((sc->devq = cam_simq_alloc(1)) == NULL) {
 		goto fail;
 	}
 
 	mtx_init(&sc->sim_mtx, "awmmcsim", NULL, MTX_DEF);
-	sc->sim = cam_sim_alloc(awmmc_cam_action, awmmc_cam_poll,
+	sc->sim = cam_sim_alloc(aw_mmc_cam_action, aw_mmc_cam_poll,
 				"aw_mmc_sim", sc, device_get_unit(dev),
 				&sc->sim_mtx, 1, 1, sc->devq);
 
@@ -540,7 +541,7 @@ aw_mmc_attach(device_t dev)
         }
 
         mtx_unlock(&sc->sim_mtx);
-#else
+#else /* !MMCCAM */
 	child = device_add_child(dev, "mmc", -1);
 	if (child == NULL) {
 		device_printf(dev, "attaching MMC bus failed!\n");
@@ -551,7 +552,7 @@ aw_mmc_attach(device_t dev)
 		device_delete_child(dev, child);
 		goto fail;
 	}
-#endif /* !MMCCAM */
+#endif /* MMCCAM */
 	return (0);
 
 fail:
@@ -810,14 +811,17 @@ static void
 aw_mmc_req_done(struct aw_mmc_softc *sc)
 {
 	struct mmc_command *cmd;
-#ifndef MMCCAM
+#ifdef MMCCAM
+	union ccb *ccb;
+#else
 	struct mmc_request *req;
 #endif
 	uint32_t val, mask;
 	int retry;
 
 #ifdef MMCCAM
-	cmd = &sc->ccb->mmcio.cmd;
+	ccb = sc->ccb;
+	cmd = &ccb->mmcio.cmd;
 #else
 	cmd = sc->aw_req->cmd;
 #endif
@@ -846,8 +850,10 @@ aw_mmc_req_done(struct aw_mmc_softc *sc)
 	sc->aw_dma_map_err = 0;
 	sc->aw_intr_wait = 0;
 #ifdef MMCCAM
-	xpt_done(sc->ccb);
 	sc->ccb = NULL;
+	ccb->ccb_h.status =
+		(ccb->mmcio.cmd.error == 0 ? CAM_REQ_CMP : CAM_REQ_CMP_ERR);
+	xpt_done(ccb);
 #else
 	req = sc->aw_req;
 	sc->aw_req = NULL;
@@ -895,7 +901,8 @@ aw_mmc_req_ok(struct aw_mmc_softc *sc)
 }
 
 
-static inline void set_mmc_error(struct aw_mmc_softc *sc, int error_code)
+static inline void
+set_mmc_error(struct aw_mmc_softc *sc, int error_code)
 {
 #ifdef MMCCAM
 	sc->ccb->mmcio.cmd.error = error_code;
@@ -912,21 +919,15 @@ aw_mmc_timeout(void *arg)
 	sc = (struct aw_mmc_softc *)arg;
 #ifdef MMCCAM
 	if (sc->ccb != NULL) {
-		device_printf(sc->aw_dev, "controller timeout\n");
-		sc->ccb->mmcio.cmd.error = MMC_ERR_TIMEOUT;
-		aw_mmc_req_done(sc);
-	} else
-		device_printf(sc->aw_dev,
-		    "Spurious timeout - no active request\n");
 #else
 	if (sc->aw_req != NULL) {
+#endif
 		device_printf(sc->aw_dev, "controller timeout\n");
-		sc->aw_req->cmd->error = MMC_ERR_TIMEOUT;
+		set_mmc_error(sc, MMC_ERR_TIMEOUT);
 		aw_mmc_req_done(sc);
 	} else
 		device_printf(sc->aw_dev,
 		    "Spurious timeout - no active request\n");
-#endif
 }
 
 static void
@@ -954,7 +955,7 @@ aw_mmc_intr(void *arg)
 	if (sc->ccb == NULL) {
 #else
 	if (sc->aw_req == NULL) {
-#endif /* !MMCCAM */
+#endif
 		device_printf(sc->aw_dev,
 		    "Spurious interrupt - no active request, rint: 0x%08X\n",
 		    rint);
