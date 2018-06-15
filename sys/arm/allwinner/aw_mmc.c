@@ -165,6 +165,7 @@ static int aw_mmc_init(struct aw_mmc_softc *);
 static void aw_mmc_intr(void *);
 static int aw_mmc_update_clock(struct aw_mmc_softc *, uint32_t);
 
+static void aw_mmc_print_error(uint32_t);
 static int aw_mmc_update_ios(device_t, device_t);
 static int aw_mmc_request(device_t, device_t, struct mmc_request *);
 static int aw_mmc_get_ro(device_t, device_t);
@@ -243,7 +244,7 @@ aw_mmc_cam_action(struct cam_sim *sim, union ccb *ccb)
 	{
 		struct ccb_trans_settings *cts = &ccb->cts;
 
-		if (bootverbose > 1)
+		if (bootverbose)
 			device_printf(sc->aw_dev, "Got XPT_GET_TRAN_SETTINGS\n");
 
 		cts->protocol = PROTO_MMCSD;
@@ -261,14 +262,14 @@ aw_mmc_cam_action(struct cam_sim *sim, union ccb *ccb)
 	}
 	case XPT_SET_TRAN_SETTINGS:
 	{
-		if (bootverbose > 1)
+		if (bootverbose)
 			device_printf(sc->aw_dev, "Got XPT_SET_TRAN_SETTINGS\n");
 		aw_mmc_cam_settran_settings(sc, ccb);
 		ccb->ccb_h.status = CAM_REQ_CMP;
 		break;
 	}
 	case XPT_RESET_BUS:
-		if (bootverbose > 1)
+		if (bootverbose)
 			device_printf(sc->aw_dev, "Got XPT_RESET_BUS, ACK it...\n");
 		ccb->ccb_h.status = CAM_REQ_CMP;
 		break;
@@ -353,7 +354,7 @@ aw_mmc_cam_request(struct aw_mmc_softc *sc, union ccb *ccb)
 
 	AW_MMC_LOCK(sc);
 
-	if (__predict_false(bootverbose > 1)) {
+	if (__predict_false(bootverbose)) {
 		device_printf(sc->aw_dev, "CMD%u arg %#x flags %#x dlen %u dflags %#x\n",
 			    mmcio->cmd.opcode, mmcio->cmd.arg, mmcio->cmd.flags,
 			    mmcio->cmd.data != NULL ? (unsigned int) mmcio->cmd.data->len : 0,
@@ -369,8 +370,9 @@ aw_mmc_cam_request(struct aw_mmc_softc *sc, union ccb *ccb)
 		return (EBUSY);
 	}
 	sc->ccb = ccb;
-	aw_mmc_request(sc->aw_dev, NULL, NULL);
+	/* aw_mmc_request locks again */
 	AW_MMC_UNLOCK(sc);
+	aw_mmc_request(sc->aw_dev, NULL, NULL);
 
 	return (0);
 }
@@ -825,6 +827,9 @@ aw_mmc_req_done(struct aw_mmc_softc *sc)
 #else
 	cmd = sc->aw_req->cmd;
 #endif
+	if (bootverbose) {
+		device_printf(sc->aw_dev, "%s: cmd %d err %d\n", __func__, cmd->opcode, cmd->error);
+	}
 	if (cmd->error != MMC_ERR_NONE) {
 		/* Reset the FIFO and DMA engines. */
 		mask = AW_MMC_GCTL_FIFO_RST | AW_MMC_GCTL_DMA_RST;
@@ -931,6 +936,28 @@ aw_mmc_timeout(void *arg)
 }
 
 static void
+aw_mmc_print_error(uint32_t err)
+{
+	if(err & AW_MMC_INT_RESP_ERR)
+		printf("AW_MMC_INT_RESP_ERR ");
+	if (err & AW_MMC_INT_RESP_CRC_ERR)
+		printf("AW_MMC_INT_RESP_CRC_ERR ");
+	if (err & AW_MMC_INT_DATA_CRC_ERR)
+		printf("AW_MMC_INT_DATA_CRC_ERR ");
+	if (err & AW_MMC_INT_RESP_TIMEOUT)
+		printf("AW_MMC_INT_RESP_TIMEOUT ");
+	if (err & AW_MMC_INT_FIFO_RUN_ERR)
+		printf("AW_MMC_INT_FIFO_RUN_ERR ");
+	if (err & AW_MMC_INT_CMD_BUSY)
+		printf("AW_MMC_INT_CMD_BUSY ");
+	if (err & AW_MMC_INT_DATA_START_ERR)
+		printf("AW_MMC_INT_DATA_START_ERR ");
+	if (err & AW_MMC_INT_DATA_END_BIT_ERR)
+		printf("AW_MMC_INT_DATA_END_BIT_ERR");
+	printf("\n");
+}
+
+static void
 aw_mmc_intr(void *arg)
 {
 	bus_dmasync_op_t sync_op;
@@ -959,11 +986,13 @@ aw_mmc_intr(void *arg)
 		device_printf(sc->aw_dev,
 		    "Spurious interrupt - no active request, rint: 0x%08X\n",
 		    rint);
+		aw_mmc_print_error(rint);
 		goto end;
 	}
 	if (rint & AW_MMC_INT_ERR_BIT) {
 		if (bootverbose)
 			device_printf(sc->aw_dev, "error rint: 0x%08X\n", rint);
+		aw_mmc_print_error(rint);
 		if (rint & AW_MMC_INT_RESP_TIMEOUT)
 			set_mmc_error(sc, MMC_ERR_TIMEOUT);
 		else
@@ -1031,6 +1060,12 @@ aw_mmc_request(device_t bus, device_t child, struct mmc_request *req)
 	}
 	sc->aw_req = req;
 	cmd = req->cmd;
+
+	if (bootverbose)
+		device_printf(sc->aw_dev, "CMD%u arg %#x flags %#x dlen %u dflags %#x\n",
+			      cmd->opcode, cmd->arg, cmd->flags,
+			      cmd->data != NULL ? (unsigned int)cmd->data->len : 0,
+			      cmd->data != NULL ? cmd->data->flags: 0);
 #endif
 	cmdreg = AW_MMC_CMDR_LOAD;
 	imask = AW_MMC_INT_ERR_BIT;
