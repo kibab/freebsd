@@ -1101,6 +1101,8 @@ soclose(struct socket *so)
 drop:
 	if (so->so_proto->pr_usrreqs->pru_close != NULL)
 		(*so->so_proto->pr_usrreqs->pru_close)(so);
+	if (so->so_dtor != NULL)
+		so->so_dtor(so);
 
 	SOCK_LOCK(so);
 	if ((listening = (so->so_options & SO_ACCEPTCONN))) {
@@ -2160,7 +2162,6 @@ release:
 
 /*
  * Optimized version of soreceive() for stream (TCP) sockets.
- * XXXAO: (MSG_WAITALL | MSG_PEEK) isn't properly handled.
  */
 int
 soreceive_stream(struct socket *so, struct sockaddr **psa, struct uio *uio,
@@ -2175,12 +2176,12 @@ soreceive_stream(struct socket *so, struct sockaddr **psa, struct uio *uio,
 		return (EINVAL);
 	if (psa != NULL)
 		*psa = NULL;
-	if (controlp != NULL)
-		return (EINVAL);
 	if (flagsp != NULL)
 		flags = *flagsp &~ MSG_EOR;
 	else
 		flags = 0;
+	if (controlp != NULL)
+		*controlp = NULL;
 	if (flags & MSG_OOB)
 		return (soreceive_rcvoob(so, uio, flags));
 	if (mp0 != NULL)
@@ -2776,6 +2777,7 @@ sosetopt(struct socket *so, struct sockopt *sopt)
 		case SO_BROADCAST:
 		case SO_REUSEADDR:
 		case SO_REUSEPORT:
+		case SO_REUSEPORT_LB:
 		case SO_OOBINLINE:
 		case SO_TIMESTAMP:
 		case SO_BINTIME:
@@ -2994,6 +2996,7 @@ sogetopt(struct socket *so, struct sockopt *sopt)
 		case SO_KEEPALIVE:
 		case SO_REUSEADDR:
 		case SO_REUSEPORT:
+		case SO_REUSEPORT_LB:
 		case SO_BROADCAST:
 		case SO_OOBINLINE:
 		case SO_ACCEPTCONN:
@@ -3808,6 +3811,17 @@ sodupsockaddr(const struct sockaddr *sa, int mflags)
 	if (sa2)
 		bcopy(sa, sa2, sa->sa_len);
 	return sa2;
+}
+
+/*
+ * Register per-socket destructor.
+ */
+void
+sodtor_set(struct socket *so, so_dtor_t *func)
+{
+
+	SOCK_LOCK_ASSERT(so);
+	so->so_dtor = func;
 }
 
 /*

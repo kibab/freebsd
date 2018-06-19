@@ -52,7 +52,7 @@ __FBSDID("$FreeBSD$");
 
 #include "libpmcinternal.h"
 
-#define	PMCLOG_BUFFER_SIZE			4096
+#define	PMCLOG_BUFFER_SIZE			512*1024
 
 /*
  * API NOTES
@@ -260,6 +260,7 @@ pmclog_get_event(void *cookie, char **data, ssize_t *len,
 	uint32_t h, *le, npc, noop;
 	enum pmclog_parser_state e;
 	struct pmclog_parse_state *ps;
+	struct pmclog_header *ph;
 
 	ps = (struct pmclog_parse_state *) cookie;
 
@@ -278,8 +279,9 @@ pmclog_get_event(void *cookie, char **data, ssize_t *len,
 
 	PMCLOG_INITIALIZE_READER(le, ps->ps_saved);
 	ev->pl_data = le;
-	PMCLOG_READ32(le,h);
+	ph = (struct pmclog_header *)(uintptr_t)le;
 
+	h = ph->pl_header;
 	if (!PMCLOG_HEADER_CHECK_MAGIC(h)) {
 		printf("bad magic\n");
 		ps->ps_state = PL_STATE_ERROR;
@@ -288,8 +290,8 @@ pmclog_get_event(void *cookie, char **data, ssize_t *len,
 	}
 
 	/* copy out the time stamp */
-	PMCLOG_READ32(le,ev->pl_ts.tv_sec);
-	PMCLOG_READ32(le,ev->pl_ts.tv_nsec);
+	ev->pl_ts.tv_sec = ph->pl_tsc;
+	le += sizeof(*ph)/4;
 
 	evlen = PMCLOG_HEADER_TO_LENGTH(h);
 
@@ -310,7 +312,6 @@ pmclog_get_event(void *cookie, char **data, ssize_t *len,
 		PMCLOG_READ32(le,ev->pl_u.pl_cc.pl_tid);
 		PMCLOG_READ32(le,ev->pl_u.pl_cc.pl_pmcid);
 		PMCLOG_READ32(le,ev->pl_u.pl_cc.pl_cpuflags);
-		PMCLOG_READ32(le,ev->pl_u.pl_cc.pl_cpuflags2);
 		PMCLOG_GET_CALLCHAIN_SIZE(ev->pl_u.pl_cc.pl_npc,evlen);
 		for (npc = 0; npc < ev->pl_u.pl_cc.pl_npc; npc++)
 			PMCLOG_READADDR(le,ev->pl_u.pl_cc.pl_pc[npc]);
@@ -326,8 +327,12 @@ pmclog_get_event(void *cookie, char **data, ssize_t *len,
 	case PMCLOG_TYPE_INITIALIZE:
 		PMCLOG_READ32(le,ev->pl_u.pl_i.pl_version);
 		PMCLOG_READ32(le,ev->pl_u.pl_i.pl_arch);
+		PMCLOG_READ64(le,ev->pl_u.pl_i.pl_tsc_freq);
+		memcpy(&ev->pl_u.pl_i.pl_ts, le, sizeof(struct timespec));
+		le += sizeof(struct timespec)/4;
 		PMCLOG_READSTRING(le, ev->pl_u.pl_i.pl_cpuid, PMC_CPUID_LEN);
 		memcpy(ev->pl_u.pl_i.pl_cpuid, le, PMC_CPUID_LEN);
+		ps->ps_cpuid = strdup(ev->pl_u.pl_i.pl_cpuid);
 		ps->ps_version = ev->pl_u.pl_i.pl_version;
 		ps->ps_arch = ev->pl_u.pl_i.pl_arch;
 		ps->ps_initialized = 1;
@@ -335,11 +340,13 @@ pmclog_get_event(void *cookie, char **data, ssize_t *len,
 	case PMCLOG_TYPE_MAP_IN:
 		PMCLOG_GET_PATHLEN(pathlen,evlen,pmclog_map_in);
 		PMCLOG_READ32(le,ev->pl_u.pl_mi.pl_pid);
+		PMCLOG_READ32(le,noop);
 		PMCLOG_READADDR(le,ev->pl_u.pl_mi.pl_start);
 		PMCLOG_READSTRING(le, ev->pl_u.pl_mi.pl_pathname, pathlen);
 		break;
 	case PMCLOG_TYPE_MAP_OUT:
 		PMCLOG_READ32(le,ev->pl_u.pl_mo.pl_pid);
+		PMCLOG_READ32(le,noop);
 		PMCLOG_READADDR(le,ev->pl_u.pl_mo.pl_start);
 		PMCLOG_READADDR(le,ev->pl_u.pl_mo.pl_end);
 		break;
@@ -348,7 +355,8 @@ pmclog_get_event(void *cookie, char **data, ssize_t *len,
 		PMCLOG_READ32(le,ev->pl_u.pl_a.pl_event);
 		PMCLOG_READ32(le,ev->pl_u.pl_a.pl_flags);
 		PMCLOG_READ32(le,noop);
-		ev->pl_u.pl_a.pl_evname = pmc_pmu_event_get_by_idx(ev->pl_u.pl_a.pl_event);
+		PMCLOG_READ64(le,ev->pl_u.pl_a.pl_rate);
+		ev->pl_u.pl_a.pl_evname = pmc_pmu_event_get_by_idx(ps->ps_cpuid, ev->pl_u.pl_a.pl_event);
 		if (ev->pl_u.pl_a.pl_evname != NULL)
 			break;
 		else if ((ev->pl_u.pl_a.pl_evname =
@@ -362,6 +370,7 @@ pmclog_get_event(void *cookie, char **data, ssize_t *len,
 		PMCLOG_READ32(le,ev->pl_u.pl_ad.pl_pmcid);
 		PMCLOG_READ32(le,ev->pl_u.pl_ad.pl_event);
 		PMCLOG_READ32(le,ev->pl_u.pl_ad.pl_flags);
+		PMCLOG_READ32(le,noop);
 		PMCLOG_READSTRING(le,ev->pl_u.pl_ad.pl_evname,PMC_NAME_MAX);
 		break;
 	case PMCLOG_TYPE_PMCATTACH:
@@ -375,8 +384,8 @@ pmclog_get_event(void *cookie, char **data, ssize_t *len,
 		PMCLOG_READ32(le,ev->pl_u.pl_d.pl_pid);
 		break;
 	case PMCLOG_TYPE_PROCCSW:
-		PMCLOG_READ32(le,ev->pl_u.pl_c.pl_pmcid);
 		PMCLOG_READ64(le,ev->pl_u.pl_c.pl_value);
+		PMCLOG_READ32(le,ev->pl_u.pl_c.pl_pmcid);
 		PMCLOG_READ32(le,ev->pl_u.pl_c.pl_pid);
 		PMCLOG_READ32(le,ev->pl_u.pl_c.pl_tid);
 		break;
@@ -384,14 +393,12 @@ pmclog_get_event(void *cookie, char **data, ssize_t *len,
 		PMCLOG_GET_PATHLEN(pathlen,evlen,pmclog_procexec);
 		PMCLOG_READ32(le,ev->pl_u.pl_x.pl_pid);
 		PMCLOG_READ32(le,ev->pl_u.pl_x.pl_pmcid);
-		PMCLOG_READ32(le,noop);
 		PMCLOG_READADDR(le,ev->pl_u.pl_x.pl_entryaddr);
 		PMCLOG_READSTRING(le,ev->pl_u.pl_x.pl_pathname,pathlen);
 		break;
 	case PMCLOG_TYPE_PROCEXIT:
 		PMCLOG_READ32(le,ev->pl_u.pl_e.pl_pmcid);
 		PMCLOG_READ32(le,ev->pl_u.pl_e.pl_pid);
-		PMCLOG_READ32(le,noop);
 		PMCLOG_READ64(le,ev->pl_u.pl_e.pl_value);
 		break;
 	case PMCLOG_TYPE_PROCFORK:
@@ -407,6 +414,7 @@ pmclog_get_event(void *cookie, char **data, ssize_t *len,
 	case PMCLOG_TYPE_THR_CREATE:
 		PMCLOG_READ32(le,ev->pl_u.pl_tc.pl_tid);
 		PMCLOG_READ32(le,ev->pl_u.pl_tc.pl_pid);
+		PMCLOG_READ32(le,ev->pl_u.pl_tc.pl_flags);
 		PMCLOG_READ32(le,noop);
 		memcpy(ev->pl_u.pl_tc.pl_tdname, le, MAXCOMLEN+1);
 		break;
@@ -415,6 +423,7 @@ pmclog_get_event(void *cookie, char **data, ssize_t *len,
 		break;
 	case PMCLOG_TYPE_PROC_CREATE:
 		PMCLOG_READ32(le,ev->pl_u.pl_pc.pl_pid);
+		PMCLOG_READ32(le,ev->pl_u.pl_pc.pl_flags);
 		memcpy(ev->pl_u.pl_pc.pl_pcomm, le, MAXCOMLEN+1);
 		break;
 	default:	/* unknown record type */
@@ -553,6 +562,7 @@ pmclog_open(int fd)
 	ps->ps_count = 0;
 	ps->ps_offset = (off_t) 0;
 	bzero(&ps->ps_saved, sizeof(ps->ps_saved));
+	ps->ps_cpuid = NULL;
 	ps->ps_svcount = 0;
 	ps->ps_fd    = fd;
 	ps->ps_data  = NULL;

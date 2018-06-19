@@ -63,6 +63,8 @@ int	parse(int *argc, char ***argv, const char *str);
 /* boot.c */
 void	autoboot_maybe(void);
 int	getrootmount(char *rootdev);
+int	bootenv_flags(void);
+void	bootenv_set(int);
 
 /* misc.c */
 char	*unargv(int argc, char *argv[]);
@@ -157,6 +159,11 @@ char			*pnp_eisaformat(uint8_t *data);
  *  > 0	- ISA in system, value is read data port address
  */
 extern int			isapnp_readport;
+
+/*
+ * Version information
+ */
+extern char bootprog_info[];
 
 /*
  * Preloaded file metadata header.

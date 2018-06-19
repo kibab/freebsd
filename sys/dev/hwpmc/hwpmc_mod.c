@@ -207,8 +207,7 @@ static int	pmc_debugflags_parse(char *newstr, char *fence);
 #endif
 
 static int	load(struct module *module, int cmd, void *arg);
-static int	pmc_add_sample(int cpu, int ring, struct pmc *pm,
-    struct trapframe *tf, int inuserspace);
+static int	pmc_add_sample(int ring, struct pmc *pm, struct trapframe *tf);
 static void	pmc_add_thread_descriptors_from_proc(struct proc *p,
     struct pmc_process *pp);
 static int	pmc_attach_process(struct proc *p, struct pmc *pm);
@@ -807,6 +806,19 @@ pmc_force_context_switch(void)
 {
 
 	pause("pmcctx", 1);
+}
+
+uint64_t
+pmc_rdtsc(void)
+{
+#if defined(__i386__) || defined(__amd64__)
+	if (__predict_true(amd_feature & AMDID_RDTSCP))
+		return rdtscp();
+	else
+		return rdtsc();
+#else
+	return get_cyclecount();
+#endif
 }
 
 /*
@@ -1821,7 +1833,8 @@ pmc_log_kernel_mappings(struct pmc *pm)
 
 	if (po->po_flags & PMC_PO_INITIAL_MAPPINGS_DONE)
 		return;
-
+	if (PMC_TO_MODE(pm) == PMC_MODE_SS)
+		pmc_process_allproc(pm);
 	/*
 	 * Log the current set of kernel modules.
 	 */
@@ -3925,6 +3938,12 @@ pmc_syscall_handler(struct thread *td, void *syscall_args)
 		pmc->pm_caps  = caps;
 		pmc->pm_flags = pa.pm_flags;
 
+		/* XXX set lower bound on sampling for process counters */
+		if (PMC_IS_SAMPLING_MODE(mode))
+			pmc->pm_sc.pm_reloadcount = pa.pm_count;
+		else
+			pmc->pm_sc.pm_initial = pa.pm_count;
+
 		/* switch thread to CPU 'cpu' */
 		pmc_save_cpu_binding(&pb);
 
@@ -4035,8 +4054,7 @@ pmc_syscall_handler(struct thread *td, void *syscall_args)
 			pmc = NULL;
 			break;
 		}
-		if (mode == PMC_MODE_SS)
-			pmc_process_allproc(pmc);
+
 
 		/*
 		 * Return the allocated index.
@@ -4621,10 +4639,9 @@ pmc_post_callchain_callback(void)
  */
 
 static int
-pmc_add_sample(int cpu, int ring, struct pmc *pm, struct trapframe *tf,
-    int inuserspace)
+pmc_add_sample(int ring, struct pmc *pm, struct trapframe *tf)
 {
-	int error, callchaindepth;
+	int error, cpu, callchaindepth, inuserspace;
 	struct thread *td;
 	struct pmc_sample *ps;
 	struct pmc_samplebuffer *psb;
@@ -4634,8 +4651,9 @@ pmc_add_sample(int cpu, int ring, struct pmc *pm, struct trapframe *tf,
 	/*
 	 * Allocate space for a sample buffer.
 	 */
+	cpu = curcpu;
 	psb = pmc_pcpu[cpu]->pc_sb[ring];
-
+	inuserspace = TRAPF_USERMODE(tf);
 	ps = psb->ps_write;
 	if (ps->ps_nsamples == PMC_SAMPLE_INUSE) {
 		counter_u64_add(ps->ps_pmc->pm_runcount, -1);
@@ -4670,6 +4688,8 @@ pmc_add_sample(int cpu, int ring, struct pmc *pm, struct trapframe *tf,
 	ps->ps_td = td;
 	ps->ps_pid = td->td_proc->p_pid;
 	ps->ps_tid = td->td_tid;
+	ps->ps_tsc = pmc_rdtsc();
+
 	ps->ps_cpu = cpu;
 	ps->ps_flags = inuserspace ? PMC_CC_F_USERSPACE : 0;
 
@@ -4722,19 +4742,18 @@ pmc_add_sample(int cpu, int ring, struct pmc *pm, struct trapframe *tf,
  */
 
 int
-pmc_process_interrupt(int cpu, int ring, struct pmc *pm, struct trapframe *tf,
-    int inuserspace)
+pmc_process_interrupt(int ring, struct pmc *pm, struct trapframe *tf)
 {
 	struct thread *td;
 
 	td = curthread;
 	if ((pm->pm_flags & PMC_F_USERCALLCHAIN) &&
-           (td->td_proc->p_flag & P_KPROC) == 0 &&
-           !inuserspace) {
-		atomic_add_int(&curthread->td_pmcpend, 1);
-		return (pmc_add_sample(cpu, PMC_UR, pm, tf, 0));
+	    (td->td_proc->p_flag & P_KPROC) == 0 &&
+	    !TRAPF_USERMODE(tf)) {
+		atomic_add_int(&td->td_pmcpend, 1);
+		return (pmc_add_sample(PMC_UR, pm, tf));
 	}
-	return (pmc_add_sample(cpu, ring, pm, tf, inuserspace));
+	return (pmc_add_sample(ring, pm, tf));
 }
 
 /*

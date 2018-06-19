@@ -61,8 +61,8 @@
  *
  * The patch version is incremented for every bug fix.
  */
-#define	PMC_VERSION_MAJOR	0x06
-#define	PMC_VERSION_MINOR	0x02
+#define	PMC_VERSION_MAJOR	0x09
+#define	PMC_VERSION_MINOR	0x03
 #define	PMC_VERSION_PATCH	0x0000
 
 #define	PMC_VERSION		(PMC_VERSION_MAJOR << 24 |		\
@@ -439,6 +439,7 @@ struct pmc_op_pmcallocate {
 	uint32_t	pm_flags;	/* additional modifiers PMC_F_* */
 	enum pmc_mode	pm_mode;	/* desired mode */
 	pmc_id_t	pm_pmcid;	/* [return] process pmc id */
+	pmc_value_t	pm_count;	/* initial/sample count */
 
 	union pmc_md_op_pmcallocate pm_md; /* MD layer extensions */
 };
@@ -938,6 +939,7 @@ struct pmc_sample {
 	struct thread		*ps_td;		/* which thread */
 	struct pmc		*ps_pmc;	/* interrupting PMC */
 	uintptr_t		*ps_pc;		/* (const) callchain start */
+	uint64_t		ps_tsc;		/* tsc value */
 };
 
 #define 	PMC_SAMPLE_FREE		((uint16_t) 0)
@@ -1051,7 +1053,7 @@ struct pmc_mdep  {
 	int (*pmd_switch_out)(struct pmc_cpu *_p, struct pmc_process *_pp);
 
 	/* handle a PMC interrupt */
-	int (*pmd_intr)(int _cpu, struct trapframe *_tf);
+	int (*pmd_intr)(struct trapframe *_tf);
 
 	/*
 	 * PMC class dependent information.
@@ -1207,8 +1209,7 @@ MALLOC_DECLARE(M_PMC);
 struct pmc_mdep *pmc_md_initialize(void);	/* MD init function */
 void	pmc_md_finalize(struct pmc_mdep *_md);	/* MD fini function */
 int	pmc_getrowdisp(int _ri);
-int	pmc_process_interrupt(int _cpu, int _ring, struct pmc *_pm,
-    struct trapframe *_tf, int _inuserspace);
+int	pmc_process_interrupt(int _ring, struct pmc *_pm, struct trapframe *_tf);
 int	pmc_save_kernel_callchain(uintptr_t *_cc, int _maxsamples,
     struct trapframe *_tf);
 int	pmc_save_user_callchain(uintptr_t *_cc, int _maxsamples,
@@ -1216,5 +1217,6 @@ int	pmc_save_user_callchain(uintptr_t *_cc, int _maxsamples,
 struct pmc_mdep *pmc_mdep_alloc(int nclasses);
 void pmc_mdep_free(struct pmc_mdep *md);
 void pmc_flush_samples(int cpu);
+uint64_t pmc_rdtsc(void);
 #endif /* _KERNEL */
 #endif /* _SYS_PMC_H_ */

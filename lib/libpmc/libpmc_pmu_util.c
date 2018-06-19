@@ -37,6 +37,7 @@
 #include <string.h>
 #include <pmc.h>
 #include <pmclog.h>
+#include <assert.h>
 #include <libpmcstat.h>
 #include "pmu-events/pmu-events.h"
 
@@ -162,16 +163,14 @@ pmc_pmu_idx_get_by_event(const char *cpuid, const char *event)
 }
 
 const char *
-pmc_pmu_event_get_by_idx(int idx)
+pmc_pmu_event_get_by_idx(const char *cpuid, int idx)
 {
 	const struct pmu_events_map *pme;
-	const struct pmu_event *pe;
-	int i;
 
-	if ((pme = pmu_events_map_get(NULL)) == NULL)
+	if ((pme = pmu_events_map_get(cpuid)) == NULL)
 		return (NULL);
-	for (i = 0, pe = pme->table; (pe->name || pe->desc || pe->event) && i < idx; pe++, i++);
-	return (pe->name);
+	assert(pme->table[idx].name);
+	return (pme->table[idx].name);
 }
 
 static int
@@ -470,7 +469,7 @@ pmc_pmu_pmcallocate(const char *e __unused, struct pmc_op_pmcallocate *p __unuse
 }
 
 const char *
-pmc_pmu_event_get_by_idx(int idx __unused)
+pmc_pmu_event_get_by_idx(const char *c __unused, int idx __unused)
 {
 	return (NULL);
 }
