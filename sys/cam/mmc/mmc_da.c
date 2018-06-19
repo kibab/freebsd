@@ -235,7 +235,8 @@ get_rca(struct cam_periph *periph) {
  * Look at both CAM-level errors and on MMC protocol errors.
 */
 static int
-mmc_handle_reply(union ccb *ccb) {
+mmc_handle_reply(union ccb *ccb)
+{
 
 	if (ccb->ccb_h.func_code != XPT_MMC_IO)
 		panic("__func__: don't know how to handle non-XPT_MMC_IO errors");
