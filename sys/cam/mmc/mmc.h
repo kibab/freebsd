@@ -94,4 +94,5 @@ struct mmc_params {
         uint8_t sdio_func_count;
 } __packed;
 
+#define MMC_PROPOSED_RCA    2
 #endif
