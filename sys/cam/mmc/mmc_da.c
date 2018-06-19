@@ -248,14 +248,14 @@ mmc_handle_reply(union ccb *ccb) {
 			       ccb->mmcio.cmd.opcode,
 			       ccb->mmcio.cmd.error,
 			       mmc_errmsg[ccb->mmcio.cmd.error]);
-			return(EIO);
+			return (EIO);
 		}
 	} else {
 		cam_error_print(ccb, CAM_ESF_ALL, CAM_EPF_ALL);
-		return(EIO);
+		return (EIO);
 	}
 
-	return(0); /* Normal return */
+	return (0); /* Normal return */
 }
 
 
@@ -821,9 +821,9 @@ mmc_exec_app_cmd(struct cam_periph *periph, union ccb *ccb,
 	cam_periph_runccb(ccb, sddaerror, CAM_FLAG_NONE, /*sense_flags*/0, NULL);
 	err = mmc_handle_reply(ccb);
 	if (err != 0)
-		return(err);
+		return (err);
 	if (!(ccb->mmcio.cmd.resp[0] & R1_APP_CMD))
-		return MMC_ERR_FAILED;
+		return (MMC_ERR_FAILED);
 
 	/* Now exec actual command */
 	int flags = 0;
@@ -848,11 +848,11 @@ mmc_exec_app_cmd(struct cam_periph *periph, union ccb *ccb,
 	cam_periph_runccb(ccb, sddaerror, CAM_FLAG_NONE, /*sense_flags*/0, NULL);
 	err = mmc_handle_reply(ccb);
 	if (err != 0)
-		return(err);
+		return (err);
 	memcpy(cmd->resp, ccb->mmcio.cmd.resp, sizeof(cmd->resp));
 	cmd->error = ccb->mmcio.cmd.error;
 
-	return(0);
+	return (0);
 }
 
 static int
@@ -904,7 +904,7 @@ mmc_send_ext_csd(struct cam_periph *periph, union ccb *ccb,
 
 	cam_periph_runccb(ccb, sddaerror, CAM_FLAG_NONE, /*sense_flags*/0, NULL);
 	err = mmc_handle_reply(ccb);
-	return(err);
+	return (err);
 }
 
 static void
@@ -962,7 +962,7 @@ mmc_select_card(struct cam_periph *periph, union ccb *ccb, uint32_t rca)
 
 	cam_periph_runccb(ccb, sddaerror, CAM_FLAG_NONE, /*sense_flags*/0, NULL);
 	err = mmc_handle_reply(ccb);
-	return(err);
+	return (err);
 }
 
 static int
@@ -974,7 +974,7 @@ mmc_switch(struct cam_periph *periph, union ccb *ccb,
 	mmc_switch_fill_mmcio(ccb, set, index, value, timeout);
 	cam_periph_runccb(ccb, sddaerror, CAM_FLAG_NONE, /*sense_flags*/0, NULL);
 	err = mmc_handle_reply(ccb);
-	return(err);
+	return (err);
 }
 
 static uint32_t
@@ -1032,7 +1032,7 @@ mmc_sd_switch(struct cam_periph *periph, union ccb *ccb,
 
 	cam_periph_runccb(ccb, sddaerror, CAM_FLAG_NONE, /*sense_flags*/0, NULL);
 	err = mmc_handle_reply(ccb);
-	return(err);
+	return (err);
 }
 
 static int
