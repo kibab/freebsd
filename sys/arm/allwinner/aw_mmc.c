@@ -270,11 +270,38 @@ aw_mmc_cam_action(struct cam_sim *sim, union ccb *ccb)
 		ccb->ccb_h.status = CAM_REQ_CMP;
 		break;
 	}
-	case XPT_RESET_BUS:
-		if (bootverbose)
-			device_printf(sc->aw_dev, "Got XPT_RESET_BUS, ACK it...\n");
+	case XPT_RESET_BUS: {
+		struct ccb_trans_settings_mmc *cts;
+
+		cts = &ccb->cts.proto_specific.mmc;
+		cts->ios_valid = MMC_PM;
+		cts->ios.power_mode = power_off;
+		/* Power off the MMC bus */
+		if (aw_mmc_cam_settran_settings(sc, ccb) != 0) {
+			device_printf(sc->aw_dev,"cannot power down the MMC bus\n");
+			ccb->ccb_h.status = CAM_REQ_CMP_ERR;
+			break;
+		}
+
+		/* Soft Reset controller and run initialization again */
+		if (aw_mmc_init(sc) != 0) {
+			device_printf(sc->aw_dev, "cannot reset the controller\n");
+			ccb->ccb_h.status = CAM_REQ_CMP_ERR;
+			break;
+		}
+
+		cts->ios_valid = MMC_PM;
+		cts->ios.power_mode = power_on;
+		/* Power off the MMC bus */
+		if (aw_mmc_cam_settran_settings(sc, ccb) != 0) {
+			device_printf(sc->aw_dev, "cannot power on the MMC bus\n");
+			ccb->ccb_h.status = CAM_REQ_CMP_ERR;
+			break;
+		}
+
 		ccb->ccb_h.status = CAM_REQ_CMP;
 		break;
+	}
 	case XPT_MMC_IO:
 		/*
 		 * Here is the HW-dependent part of
