@@ -176,6 +176,7 @@ static void aw_mmc_cam_action(struct cam_sim *, union ccb *);
 static void aw_mmc_cam_poll(struct cam_sim *);
 static int aw_mmc_cam_settran_settings(struct aw_mmc_softc *, union ccb *);
 static int aw_mmc_cam_request(struct aw_mmc_softc *, union ccb *);
+static void aw_mmc_cam_start_discovery(device_t);
 static void aw_mmc_cam_handle_mmcio(struct cam_sim *, union ccb *);
 #endif
 
@@ -414,6 +415,39 @@ aw_mmc_cam_request(struct aw_mmc_softc *sc, union ccb *ccb)
 
 	return (0);
 }
+
+static void
+aw_mmc_cam_start_discovery(device_t dev)
+{
+	struct aw_mmc_softc *sc;
+	union ccb *ccb;
+	uint32_t pathid;
+
+	sc = device_get_softc(dev);
+
+	AW_MMC_LOCK(sc);
+	pathid = cam_sim_path(sc->sim);
+	ccb = xpt_alloc_ccb_nowait();
+	if (ccb == NULL) {
+		device_printf(dev, "Unable to alloc CCB for rescan\n");
+		AW_MMC_UNLOCK(sc);
+		return;
+	}
+
+	/*
+	 * We create a rescan request for BUS:0:0, since the card
+	 * will be at lun 0.
+	 */
+	if (xpt_create_path(&ccb->ccb_h.path, NULL, pathid,
+		/* target */ 0, /* lun */ 0) != CAM_REQ_CMP) {
+		device_printf(dev, "Unable to create path for rescan\n");
+		AW_MMC_UNLOCK(sc);
+		xpt_free_ccb(ccb);
+		return;
+	}
+	AW_MMC_UNLOCK(sc);
+	xpt_rescan(ccb);
+}
 #endif /* MMCCAM */
 
 static int
@@ -580,6 +614,9 @@ aw_mmc_attach(device_t dev)
         }
 
         mtx_unlock(&sc->sim_mtx);
+
+	/* Force rescan */
+	aw_mmc_cam_start_discovery(dev);
 #else /* !MMCCAM */
 	child = device_add_child(dev, "mmc", -1);
 	if (child == NULL) {
