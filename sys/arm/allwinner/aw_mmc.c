@@ -390,12 +390,14 @@ aw_mmc_cam_request(struct aw_mmc_softc *sc, union ccb *ccb)
 
 	AW_MMC_LOCK(sc);
 
+#ifdef DEBUG
 	if (__predict_false(bootverbose)) {
 		device_printf(sc->aw_dev, "CMD%u arg %#x flags %#x dlen %u dflags %#x\n",
 			    mmcio->cmd.opcode, mmcio->cmd.arg, mmcio->cmd.flags,
 			    mmcio->cmd.data != NULL ? (unsigned int) mmcio->cmd.data->len : 0,
 			    mmcio->cmd.data != NULL ? mmcio->cmd.data->flags: 0);
 	}
+#endif
 	if (mmcio->cmd.data != NULL) {
 		if (mmcio->cmd.data->len == 0 || mmcio->cmd.data->flags == 0)
 			panic("data->len = %d, data->flags = %d -- something is b0rked",
@@ -559,8 +561,8 @@ aw_mmc_attach(device_t dev)
 
 	mtx_init(&sc->sim_mtx, "awmmcsim", NULL, MTX_DEF);
 	sc->sim = cam_sim_alloc(aw_mmc_cam_action, aw_mmc_cam_poll,
-				"aw_mmc_sim", sc, device_get_unit(dev),
-				&sc->sim_mtx, 1, 1, sc->devq);
+	    "aw_mmc_sim", sc, device_get_unit(dev),
+	    &sc->sim_mtx, 1, 1, sc->devq);
 
 	if (sc->sim == NULL) {
                 cam_simq_free(sc->devq);
@@ -570,8 +572,7 @@ aw_mmc_attach(device_t dev)
 
 	mtx_lock(&sc->sim_mtx);
         if (xpt_bus_register(sc->sim, sc->aw_dev, 0) != 0) {
-                device_printf(dev,
-			      "cannot register SCSI pass-through bus\n");
+                device_printf(dev, "cannot register SCSI pass-through bus\n");
                 cam_sim_free(sc->sim, FALSE);
                 cam_simq_free(sc->devq);
                 mtx_unlock(&sc->sim_mtx);
@@ -863,9 +864,11 @@ aw_mmc_req_done(struct aw_mmc_softc *sc)
 #else
 	cmd = sc->aw_req->cmd;
 #endif
+#ifdef DEBUG
 	if (bootverbose) {
 		device_printf(sc->aw_dev, "%s: cmd %d err %d\n", __func__, cmd->opcode, cmd->error);
 	}
+#endif
 	if (cmd->error != MMC_ERR_NONE) {
 		/* Reset the FIFO and DMA engines. */
 		mask = AW_MMC_GCTL_FIFO_RST | AW_MMC_GCTL_DMA_RST;
@@ -1097,11 +1100,13 @@ aw_mmc_request(device_t bus, device_t child, struct mmc_request *req)
 	sc->aw_req = req;
 	cmd = req->cmd;
 
+#ifdef DEBUG
 	if (bootverbose)
 		device_printf(sc->aw_dev, "CMD%u arg %#x flags %#x dlen %u dflags %#x\n",
 			      cmd->opcode, cmd->arg, cmd->flags,
 			      cmd->data != NULL ? (unsigned int)cmd->data->len : 0,
 			      cmd->data != NULL ? cmd->data->flags: 0);
+#endif
 #endif
 	cmdreg = AW_MMC_CMDR_LOAD;
 	imask = AW_MMC_INT_ERR_BIT;
