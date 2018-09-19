@@ -372,7 +372,7 @@ bcm_sdhost_reset(device_t dev, struct sdhci_slot *slot)
 
 	DELAY(250000);
 
-	sc->sdhci_present_state = SDHCI_CARD_PRESENT | SDHCI_CARD_STABLE | 
+	sc->sdhci_present_state = SDHCI_CARD_PRESENT | SDHCI_CARD_STABLE |
 		SDHCI_WRITE_PROTECT;
 
 	WR4(sc, HC_CLOCKDIVISOR, HC_CLOCKDIVISOR_MAXVAL);
@@ -406,7 +406,11 @@ bcm_sdhost_attach(device_t dev)
 	dprintf("%s: dev=%p sc=%p unit=%d\n",
 	    __func__, dev, sc, device_get_unit(dev));
 
+<<<<<<< HEAD
 	mtx_init(&sc->mtx, "BCM SDHCI0 mtx", "bcm_sdhost",
+=======
+	mtx_init(&sc->mtx, "BCM SDHOST mtx", "bcm_sdhost",
+>>>>>>> master
 	    MTX_DEF | MTX_RECURSE);
 
 	sc->sc_dev = dev;
@@ -474,7 +478,11 @@ bcm_sdhost_attach(device_t dev)
 	/* XXX ?
 	sc->slot->timeout_clk = ...;
 	*/
+<<<<<<< HEAD
  
+=======
+
+>>>>>>> master
 	sdhci_init_slot(dev, &sc->sc_slot, 0);
 
 	bus_generic_probe(dev);
@@ -591,7 +599,11 @@ bcm_sdhost_intr(void *arg)
 		bcm_sdhost_print_regs(sc, &sc->sc_slot, __LINE__, 1);
 		sc->sdhci_int_status |= SDHCI_INT_ERROR;
 	} else {
+<<<<<<< HEAD
 		sc->sdhci_int_status &= ~SDHCI_INT_ERROR;	
+=======
+		sc->sdhci_int_status &= ~SDHCI_INT_ERROR;
+>>>>>>> master
 	}
 
 	dprintf("%s: hstst=%08x offset=%08lx sdhci_present_state=%08x "
@@ -604,7 +616,11 @@ bcm_sdhost_intr(void *arg)
 	    ~(SDHCI_INT_ERROR|SDHCI_INT_DATA_AVAIL|SDHCI_INT_DATA_END);
 	sc->sdhci_present_state &= ~SDHCI_DATA_AVAILABLE;
 
+<<<<<<< HEAD
 	if ((hstst & HC_HSTST_HAVEDATA) && 
+=======
+	if ((hstst & HC_HSTST_HAVEDATA) &&
+>>>>>>> master
 	    (sc->sdhci_blocksize * sc->sdhci_blockcount == slot->offset)) {
 		dprintf("%s: offset=%08lx sdhci_blocksize=%08x "
 		    "sdhci_blockcount=%08x\n", __func__, slot->offset,
@@ -890,7 +906,11 @@ bcm_sdhost_read_2(device_t dev, struct sdhci_slot *slot, bus_size_t off)
 		break;
 	case SDHCI_CLOCK_CONTROL:
 		val = RD4(sc, HC_CLOCKDIVISOR);
+<<<<<<< HEAD
 		val2 = (val << SDHCI_DIVIDER_SHIFT) | 
+=======
+		val2 = (val << SDHCI_DIVIDER_SHIFT) |
+>>>>>>> master
 		    SDHCI_CLOCK_CARD_EN | SDHCI_CLOCK_INT_EN |
 		    SDHCI_CLOCK_INT_STABLE;
 		dprintf("%s: SDHCI_CLOCK_CONTROL     %04x --> %04x\n",
@@ -1022,12 +1042,17 @@ bcm_sdhost_read_multi_4(device_t dev, struct sdhci_slot *slot, bus_size_t off,
 	for (i = 0; i < count;) {
 		edm = RD4(sc, HC_DEBUG);
 		avail = ((edm >> 4) & 0x1f);
+<<<<<<< HEAD
 		if (i + avail > count) {
 			if (i >= count)
 				return;
 			else
 				avail = count - i;
 		}
+=======
+		if (i + avail > count)
+			avail = count - i;
+>>>>>>> master
 		if (avail > 0)
 			bus_space_read_multi_4(sc->sc_bst, sc->sc_bsh,
 			    HC_DATAPORT, data + i, avail);
@@ -1234,12 +1259,17 @@ bcm_sdhost_write_multi_4(device_t dev, struct sdhci_slot *slot,
 	for (i = 0; i < count;) {
 		edm = RD4(sc, HC_DEBUG);
 		space = HC_FIFO_SIZE - ((edm >> 4) & 0x1f);
+<<<<<<< HEAD
 		if (i + space > count) {
 			if (i >= count)
 				return;
 			else
 				space = count - i;
 		}
+=======
+		if (i + space > count)
+			space = count - i;
+>>>>>>> master
 		if (space > 0)
 			bus_space_write_multi_4(sc->sc_bst, sc->sc_bsh,
 			    HC_DATAPORT, data + i, space);

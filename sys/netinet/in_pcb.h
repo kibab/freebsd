@@ -70,6 +70,7 @@
  */
 CK_LIST_HEAD(inpcbhead, inpcb);
 CK_LIST_HEAD(inpcbporthead, inpcbport);
+CK_LIST_HEAD(inpcblbgrouphead, inpcblbgroup);
 typedef	uint64_t	inp_gen_t;
 
 /*
@@ -122,8 +123,8 @@ struct in_conninfo {
  * Flags for inc_flags.
  */
 #define	INC_ISIPV6	0x01
+#define	INC_IPV6MINMTU	0x02
 
-#define	inc_isipv6	inc_flags	/* temp compatibility */
 #define	inc_fport	inc_ie.ie_fport
 #define	inc_lport	inc_ie.ie_lport
 #define	inc_faddr	inc_ie.ie_faddr
@@ -320,7 +321,7 @@ struct inpcb {
 	CK_LIST_ENTRY(inpcb) inp_portlist;	/* (i/h) */
 	struct	inpcbport *inp_phd;	/* (i/h) head of this list */
 	inp_gen_t	inp_gencnt;	/* (c) generation count */
-	struct llentry	*inp_lle;	/* cached L2 information */
+	void		*spare_ptr;	/* Spare pointer. */
 	rt_gen_t	inp_rt_cookie;	/* generation for route entry */
 	union {				/* cached L3 information */
 		struct route inp_route;
@@ -366,14 +367,11 @@ struct inpcb {
  */
 #ifdef _SYS_SOCKETVAR_H_
 struct xinpcb {
-	size_t		xi_len;		/* length of this structure */
+	ksize_t		xi_len;			/* length of this structure */
 	struct xsocket	xi_socket;		/* (s,p) */
 	struct in_conninfo inp_inc;		/* (s,p) */
 	uint64_t	inp_gencnt;		/* (s,p) */
-	union {
-		void	*inp_ppcb;		/* (s) netstat(1) */
-		int64_t	ph_ppcb;
-	};
+	kvaddr_t	inp_ppcb;		/* (s) netstat(1) */
 	int64_t		inp_spare64[4];
 	uint32_t	inp_flow;		/* (s) */
 	uint32_t	inp_flowid;		/* (s) */
@@ -394,10 +392,12 @@ struct xinpcb {
 } __aligned(8);
 
 struct xinpgen {
-	size_t		xig_len;	/* length of this structure */
+	ksize_t	xig_len;	/* length of this structure */
 	u_int		xig_count;	/* number of PCBs at this time */
+	uint32_t	_xig_spare32;
 	inp_gen_t	xig_gen;	/* generation count at this time */
 	so_gen_t	xig_sogen;	/* socket generation count this time */
+	uint64_t	_xig_spare64[4];
 } __aligned(8);
 #ifdef	_KERNEL
 void	in_pcbtoxinpcb(const struct inpcb *, struct xinpcb *);
@@ -567,7 +567,8 @@ struct inpcbgroup {
  * is dynamically resized as processes bind/unbind to that specific group.
  */
 struct inpcblbgroup {
-	LIST_ENTRY(inpcblbgroup) il_list;
+	CK_LIST_ENTRY(inpcblbgroup) il_list;
+	struct epoch_context il_epoch_ctx;
 	uint16_t	il_lport;			/* (c) */
 	u_char		il_vflag;			/* (c) */
 	u_char		il_pad;
@@ -579,7 +580,6 @@ struct inpcblbgroup {
 	uint32_t	il_inpcnt; /* cur count in il_inp[] (h) */
 	struct inpcb	*il_inp[];			/* (h) */
 };
-LIST_HEAD(inpcblbgrouphead, inpcblbgroup);
 
 #define INP_LOCK_INIT(inp, d, t) \
 	rw_init_flags(&(inp)->inp_lock, (t), RW_RECURSE |  RW_DUPOK)
@@ -632,16 +632,17 @@ int	inp_so_options(const struct inpcb *inp);
 #define INP_INFO_LOCK_INIT(ipi, d) \
 	mtx_init(&(ipi)->ipi_lock, (d), NULL, MTX_DEF| MTX_RECURSE)
 #define INP_INFO_LOCK_DESTROY(ipi)  mtx_destroy(&(ipi)->ipi_lock)
-#define INP_INFO_RLOCK(ipi)	NET_EPOCH_ENTER()
+#define INP_INFO_RLOCK_ET(ipi, et)	NET_EPOCH_ENTER_ET((et))
 #define INP_INFO_WLOCK(ipi) mtx_lock(&(ipi)->ipi_lock)
 #define INP_INFO_TRY_WLOCK(ipi)	mtx_trylock(&(ipi)->ipi_lock)
 #define INP_INFO_WLOCKED(ipi)	mtx_owned(&(ipi)->ipi_lock)
-#define INP_INFO_RUNLOCK(ipi)	NET_EPOCH_EXIT()
+#define INP_INFO_RUNLOCK_ET(ipi, et)	NET_EPOCH_EXIT_ET((et))
+#define INP_INFO_RUNLOCK_TP(ipi, tp)	NET_EPOCH_EXIT_ET(*(tp)->t_inpcb->inp_et)
 #define INP_INFO_WUNLOCK(ipi)	mtx_unlock(&(ipi)->ipi_lock)
-#define	INP_INFO_LOCK_ASSERT(ipi)	MPASS(in_epoch() || mtx_owned(&(ipi)->ipi_lock))
-#define INP_INFO_RLOCK_ASSERT(ipi)	MPASS(in_epoch())
+#define	INP_INFO_LOCK_ASSERT(ipi)	MPASS(in_epoch(net_epoch_preempt) || mtx_owned(&(ipi)->ipi_lock))
+#define INP_INFO_RLOCK_ASSERT(ipi)	MPASS(in_epoch(net_epoch_preempt))
 #define INP_INFO_WLOCK_ASSERT(ipi)	mtx_assert(&(ipi)->ipi_lock, MA_OWNED)
-#define INP_INFO_UNLOCK_ASSERT(ipi)	MPASS(!in_epoch() && !mtx_owned(&(ipi)->ipi_lock))
+#define INP_INFO_UNLOCK_ASSERT(ipi)	MPASS(!in_epoch(net_epoch_preempt) && !mtx_owned(&(ipi)->ipi_lock))
 
 #define INP_LIST_LOCK_INIT(ipi, d) \
         rw_init_flags(&(ipi)->ipi_list_lock, (d), 0)
@@ -664,11 +665,13 @@ int	inp_so_options(const struct inpcb *inp);
 
 #define	INP_HASH_LOCK_INIT(ipi, d) mtx_init(&(ipi)->ipi_hash_lock, (d), NULL, MTX_DEF)
 #define	INP_HASH_LOCK_DESTROY(ipi)	mtx_destroy(&(ipi)->ipi_hash_lock)
-#define	INP_HASH_RLOCK(ipi)		NET_EPOCH_ENTER()
+#define	INP_HASH_RLOCK(ipi)		struct epoch_tracker inp_hash_et; epoch_enter_preempt(net_epoch_preempt, &inp_hash_et)
+#define	INP_HASH_RLOCK_ET(ipi, et)		epoch_enter_preempt(net_epoch_preempt, &(et))
 #define	INP_HASH_WLOCK(ipi)		mtx_lock(&(ipi)->ipi_hash_lock)
-#define	INP_HASH_RUNLOCK(ipi)		NET_EPOCH_EXIT()
+#define	INP_HASH_RUNLOCK(ipi)		NET_EPOCH_EXIT_ET(inp_hash_et)
+#define	INP_HASH_RUNLOCK_ET(ipi, et)		NET_EPOCH_EXIT_ET((et))
 #define	INP_HASH_WUNLOCK(ipi)		mtx_unlock(&(ipi)->ipi_hash_lock)
-#define	INP_HASH_LOCK_ASSERT(ipi)	MPASS(in_epoch() || mtx_owned(&(ipi)->ipi_hash_lock))
+#define	INP_HASH_LOCK_ASSERT(ipi)	MPASS(in_epoch(net_epoch_preempt) || mtx_owned(&(ipi)->ipi_hash_lock))
 #define	INP_HASH_WLOCK_ASSERT(ipi)	mtx_assert(&(ipi)->ipi_hash_lock, MA_OWNED);
 
 #define	INP_GROUP_LOCK_INIT(ipg, d)	mtx_init(&(ipg)->ipg_lock, (d), NULL, \
@@ -742,8 +745,8 @@ int	inp_so_options(const struct inpcb *inp);
 /*
  * Flags for inp_flags2.
  */
-#define	INP_LLE_VALID		0x00000001 /* cached lle is valid */	
-#define	INP_RT_VALID		0x00000002 /* cached rtentry is valid */
+#define	INP_2UNUSED1		0x00000001
+#define	INP_2UNUSED2		0x00000002
 #define	INP_PCBGROUPWILD	0x00000004 /* in pcbgroup wildcard list */
 #define	INP_REUSEPORT		0x00000008 /* SO_REUSEPORT option is set */
 #define	INP_FREED		0x00000010 /* inp itself is not valid */

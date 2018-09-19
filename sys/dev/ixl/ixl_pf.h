@@ -120,7 +120,6 @@ struct ixl_pf {
 	int			rx_itr;
 
 	bool			link_up;
-	u32			link_speed;
 	int			advertised_speed;
 	int			fc; /* link flow ctrl setting */
 	enum ixl_dbg_mask	dbg_mask;
@@ -401,7 +400,5 @@ s32	ixl_write_i2c_byte_aq(struct ixl_pf *pf, u8 byte_offset,
 
 int	ixl_get_fw_lldp_status(struct ixl_pf *pf);
 int	ixl_attach_get_link_status(struct ixl_pf *);
-u64	ixl_max_aq_speed_to_value(u8);
-void	ixl_handle_vflr(void *, int);
 
 #endif /* _IXL_PF_H_ */

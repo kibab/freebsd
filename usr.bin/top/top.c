@@ -21,6 +21,7 @@
 #include <sys/signal.h>
 
 #include <assert.h>
+#include <err.h>
 #include <errno.h>
 #include <getopt.h>
 #include <jail.h>
@@ -67,7 +68,6 @@ static int max_topn;		/* maximum displayable processes */
 
 /* miscellaneous things */
 struct process_select ps;
-const char * myname = "top";
 pid_t mypid;
 
 /* pointers to display routines */
@@ -243,7 +243,6 @@ main(int argc, char *argv[])
     int  preset_argc = 0;
     const char **av = NULL;
     int  ac = -1;
-    bool dostates = false;
     bool do_unames = true;
     char interactive = 2;
     char warnings = 0;
@@ -254,6 +253,7 @@ main(int argc, char *argv[])
     char *order_name = NULL;
     int order_index = 0;
     fd_set readfds;
+	char *nptr;
 
     /* set the buffer for stdout */
 #ifdef DEBUG
@@ -264,24 +264,12 @@ main(int argc, char *argv[])
     setbuffer(stdout, stdoutbuf, Buffersize);
 #endif
 
-    if (argc > 0)
-    {
-	if ((myname = strrchr(argv[0], '/')) == 0)
-	{
-	    myname = argv[0];
-	}
-	else
-	{
-	    myname++;
-	}
-    }
-
     mypid = getpid();
 
     /* get our name */
     /* initialize some selection options */
     ps.idle    = true;
-    ps.self    = false;
+    ps.self    = true;
     ps.system  = false;
     reset_uids();
     ps.thread  = false;
@@ -322,9 +310,8 @@ main(int argc, char *argv[])
 	    switch(i)
 	    {
 	      case 'v':			/* show version number */
-		fprintf(stderr, "%s: version FreeBSD\n", myname);
-		exit(1);
-		break;
+			  errx(0, "version FreeBSD");
+			  break;
 
 	      case 'u':			/* toggle uid/username display */
 		do_unames = !do_unames;
@@ -333,8 +320,7 @@ main(int argc, char *argv[])
 	      case 'U':			/* display only username's processes */
 		if ((ps.uid[0] = userid(optarg)) == -1)
 		{
-		    fprintf(stderr, "%s: unknown user\n", optarg);
-		    exit(1);
+		    errx(1, "%s: unknown user\n", optarg);
 		}
 		break;
 
@@ -362,9 +348,7 @@ main(int argc, char *argv[])
 	      case 'd':			/* number of displays to show */
 		if ((i = atoiwi(optarg)) == Invalid || i == 0)
 		{
-		    fprintf(stderr,
-			"%s: warning: display count should be positive -- option ignored\n",
-			myname);
+		    warnx("warning: display count should be positive -- option ignored");
 		    warnings++;
 		}
 		else
@@ -387,11 +371,14 @@ main(int argc, char *argv[])
 	      }
 
 		  case 's':
-			delay = strtod(optarg, NULL);
+			delay = strtod(optarg, &nptr);
+			if (nptr == optarg) {
+				warnx("warning: invalid delay");
+				delay = 2;
+				warnings++;
+			}
 			if (delay < 0) {
-				fprintf(stderr,
-						"%s: warning: seconds delay should be positive -- using default\n",
-						myname);
+				warnx("warning: seconds delay should be positive -- using default");
 				delay = 2;
 				warnings++;
 			}
@@ -402,8 +389,7 @@ main(int argc, char *argv[])
 			errno = 0;
 			i = setpriority(PRIO_PROCESS, 0, PRIO_MIN);
 			if (i == -1 && errno != 0) {
-				fprintf(stderr,
-						"%s: warning: `-q' option failed (%m)\n", myname);
+				warnx("warning: `-q' option failed (%m)");
 				warnings++;
 			}
 		break;
@@ -414,11 +400,7 @@ main(int argc, char *argv[])
 		} else if (strcmp(optarg, "cpu") == 0) {
 			displaymode = DISP_CPU;
 		} else {
-			fprintf(stderr,
-			"%s: warning: `-m' option can only take args "
-			"'io' or 'cpu'\n",
-			myname);
-			exit(1);
+			errx(1, "warning: `-m' option can only take args 'io' or 'cpu'");
 		}
 		break;
 
@@ -468,11 +450,9 @@ main(int argc, char *argv[])
 		break;
 
 	      default:
-		fprintf(stderr,
-"Usage: %s [-abCHIijnPqStuvwz] [-d count] [-m io | cpu] [-o field] [-p pid]\n"
-"       [-s time] [-J jail] [-U username] [number]\n",
-			myname);
-		exit(1);
+		errx(1, 
+"[-abCHIijnPqStuvwz] [-d count] [-m io | cpu] [-o field] [-p pid]\n"
+"       [-s time] [-J jail] [-U username] [number]");
 	    }
 	}
 
@@ -481,10 +461,8 @@ main(int argc, char *argv[])
 	{
 	    if ((topn = atoiwi(av[optind])) == Invalid)
 	    {
-		fprintf(stderr,
-			"%s: warning: process display count should be non-negative -- using default\n",
-			myname);
-		warnings++;
+			warnx("warning: process display count should be non-negative -- using default");
+			warnings++;
 	    }
             else
 	    {
@@ -519,8 +497,7 @@ main(int argc, char *argv[])
 	{
 	    const char * const *pp;
 
-	    fprintf(stderr, "%s: '%s' is not a recognized sorting order.\n",
-		    myname, order_name);
+	    warnx("'%s' is not a recognized sorting order.", order_name);
 	    fprintf(stderr, "\tTry one of these:");
 	    pp = statics.order_names;
 	    while (*pp != NULL)
@@ -541,17 +518,14 @@ main(int argc, char *argv[])
     /* initialize display interface */
     if ((max_topn = display_init(&statics)) == -1)
     {
-	fprintf(stderr, "%s: can't allocate sufficient memory\n", myname);
-	exit(4);
+		errx(4, "can't allocate sufficient memory");
     }
 
     /* print warning if user requested more processes than we can display */
     if (topn > max_topn)
     {
-	fprintf(stderr,
-		"%s: warning: this terminal can only display %d processes.\n",
-		myname, max_topn);
-	warnings++;
+		warnx("warning: this terminal can only display %d processes.", max_topn);
+		warnings++;
     }
 
     /* adjust for topn == Infinity */
@@ -641,25 +615,7 @@ restart:
 	/* display process state breakdown */
 	(*d_procstates)(system_info.p_total,
 			system_info.procstates);
-
-	/* display the cpu state percentage breakdown */
-	if (dostates)	/* but not the first time */
-	{
-	    (*d_cpustates)(system_info.cpustates);
-	}
-	else
-	{
-	    /* we'll do it next time */
-	    if (smart_terminal)
-	    {
-		z_cpustates();
-	    }
-	    else
-	    {
-		putchar('\n');
-	    }
-	    dostates = true;
-	}
+	(*d_cpustates)(system_info.cpustates);
 
 	/* display memory stats */
 	(*d_memory)(system_info.memory);
@@ -852,13 +808,6 @@ restart:
 				break;
 
 			    case CMD_update:	/* merely update display */
-				/* is the load average high? */
-				if (system_info.load_avg[0] > LoadMax)
-				{
-				    /* yes, go home for visual feedback */
-				    go_home();
-				    fflush(stdout);
-				}
 				break;
 
 			    case CMD_quit:

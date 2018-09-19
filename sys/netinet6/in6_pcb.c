@@ -846,16 +846,10 @@ in6_pcbpurgeif0(struct inpcbinfo *pcbinfo, struct ifnet *ifp)
  * (by a redirect), time to try a default gateway again.
  */
 void
-in6_losing(struct inpcb *in6p)
+in6_losing(struct inpcb *inp)
 {
 
-	if (in6p->inp_route6.ro_rt) {
-		RTFREE(in6p->inp_route6.ro_rt);
-		in6p->inp_route6.ro_rt = (struct rtentry *)NULL;
-	}
-	if (in6p->inp_route.ro_lle)
-		LLE_FREE(in6p->inp_route.ro_lle);	/* zeros ro_lle */
-	return;
+	RO_INVALIDATE_CACHE(&inp->inp_route6);
 }
 
 /*
@@ -863,15 +857,10 @@ in6_losing(struct inpcb *in6p)
  * and allocate a (hopefully) better one.
  */
 struct inpcb *
-in6_rtchange(struct inpcb *inp, int errno)
+in6_rtchange(struct inpcb *inp, int errno __unused)
 {
 
-	if (inp->inp_route6.ro_rt) {
-		RTFREE(inp->inp_route6.ro_rt);
-		inp->inp_route6.ro_rt = (struct rtentry *)NULL;
-	}
-	if (inp->inp_route.ro_lle)
-		LLE_FREE(inp->inp_route.ro_lle);	/* zeros ro_lle */
+	RO_INVALIDATE_CACHE(&inp->inp_route6);
 	return inp;
 }
 
@@ -900,7 +889,11 @@ in6_pcblookup_lbgroup(const struct inpcbinfo *pcbinfo,
 	 * - Load balanced group does not contain jailed sockets.
 	 * - Load balanced does not contain IPv4 mapped INET6 wild sockets.
 	 */
-	LIST_FOREACH(grp, hdr, il_list) {
+	CK_LIST_FOREACH(grp, hdr, il_list) {
+#ifdef INET
+		if (!(grp->il_vflag & INP_IPV6))
+			continue;
+#endif
 		if (grp->il_lport == lport) {
 			idx = 0;
 			int pkt_hash = INP_PCBLBGROUP_PKTHASH(
@@ -1259,40 +1252,35 @@ in6_pcblookup_hash(struct inpcbinfo *pcbinfo, struct in6_addr *faddr,
     struct ifnet *ifp)
 {
 	struct inpcb *inp;
-	bool locked;
 
 	INP_HASH_RLOCK(pcbinfo);
 	inp = in6_pcblookup_hash_locked(pcbinfo, faddr, fport, laddr, lport,
 	    (lookupflags & ~(INPLOOKUP_RLOCKPCB | INPLOOKUP_WLOCKPCB)), ifp);
 	if (inp != NULL) {
-		if (lookupflags & INPLOOKUP_WLOCKPCB)
-			locked = INP_TRY_WLOCK(inp);
-		else if (lookupflags & INPLOOKUP_RLOCKPCB)
-			locked = INP_TRY_RLOCK(inp);
-		else
-			panic("%s: locking bug", __func__);
-		if (!locked)
-			in_pcbref(inp);
-		INP_HASH_RUNLOCK(pcbinfo);
-		if (!locked) {
-			if (lookupflags & INPLOOKUP_WLOCKPCB) {
-				INP_WLOCK(inp);
-				if (in_pcbrele_wlocked(inp))
-					return (NULL);
-			} else {
-				INP_RLOCK(inp);
-				if (in_pcbrele_rlocked(inp))
-					return (NULL);
+		if (lookupflags & INPLOOKUP_WLOCKPCB) {
+			INP_WLOCK(inp);
+			if (__predict_false(inp->inp_flags2 & INP_FREED)) {
+				INP_WUNLOCK(inp);
+				inp = NULL;
 			}
-		}
+		} else if (lookupflags & INPLOOKUP_RLOCKPCB) {
+			INP_RLOCK(inp);
+			if (__predict_false(inp->inp_flags2 & INP_FREED)) {
+				INP_RUNLOCK(inp);
+				inp = NULL;
+			}
+		} else
+			panic("%s: locking bug", __func__);
 #ifdef INVARIANTS
-		if (lookupflags & INPLOOKUP_WLOCKPCB)
-			INP_WLOCK_ASSERT(inp);
-		else
-			INP_RLOCK_ASSERT(inp);
+		if (inp != NULL) {
+			if (lookupflags & INPLOOKUP_WLOCKPCB)
+				INP_WLOCK_ASSERT(inp);
+			else
+				INP_RLOCK_ASSERT(inp);
+		}
 #endif
-	} else
-		INP_HASH_RUNLOCK(pcbinfo);
+	}
+	INP_HASH_RUNLOCK(pcbinfo);
 	return (inp);
 }
 

@@ -12,9 +12,6 @@
 /* Number of lines of header information on the standard screen */
 extern int Header_lines;
 
-/* Maximum number of columns allowed for display */
-#define MAX_COLS	512
-
 /* Special atoi routine returns either a non-negative number or one of: */
 #define Infinity	-1
 #define Invalid		-2
@@ -37,8 +34,6 @@ extern enum displaymodes displaymode;
 extern int pcpu_stats;
 extern int overstrike;
 extern pid_t mypid;
-
-extern const char * myname;
 
 extern int (*compares[])(const void*, const void*);
 

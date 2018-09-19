@@ -41,6 +41,7 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
+#include "opt_acpi.h"
 #include "opt_atpic.h"
 #include "opt_cpu.h"
 #include "opt_ddb.h"
@@ -97,6 +98,8 @@ __FBSDID("$FreeBSD$");
 #include <vm/vm_param.h>
 
 #include <isa/isareg.h>
+
+#include <contrib/dev/acpica/include/acpi.h>
 
 #define	STATE_RUNNING	0x0
 #define	STATE_MWAIT	0x1
@@ -706,6 +709,13 @@ cpu_idle_tun(void *unused __unused)
 
 	if (TUNABLE_STR_FETCH("machdep.idle", tunvar, sizeof(tunvar)))
 		cpu_idle_selector(tunvar);
+	else if (cpu_vendor_id == CPU_VENDOR_AMD &&
+	    CPUID_TO_FAMILY(cpu_id) == 0x17 && CPUID_TO_MODEL(cpu_id) == 0x1) {
+		/* Ryzen erratas 1057, 1109. */
+		cpu_idle_selector("hlt");
+		idle_mwait = 0;
+	}
+
 	if (cpu_vendor_id == CPU_VENDOR_INTEL && cpu_id == 0x506c9) {
 		/*
 		 * Apollo Lake errata APL31 (public errata APL30).
@@ -930,3 +940,23 @@ restore_wp(bool old_wp)
 		load_cr0(rcr0() | CR0_WP);
 }
 
+bool
+acpi_get_fadt_bootflags(uint16_t *flagsp)
+{
+#ifdef DEV_ACPI
+	ACPI_TABLE_FADT *fadt;
+	vm_paddr_t physaddr;
+
+	physaddr = acpi_find_table(ACPI_SIG_FADT);
+	if (physaddr == 0)
+		return (false);
+	fadt = acpi_map_table(physaddr, ACPI_SIG_FADT);
+	if (fadt == NULL)
+		return (false);
+	*flagsp = fadt->BootFlags;
+	acpi_unmap_table(fadt);
+	return (true);
+#else
+	return (false);
+#endif
+}

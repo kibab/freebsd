@@ -44,9 +44,9 @@ static pid_t pid;
 static fhandle_t fht;
 static int filedesc, fhdesc;
 static char extregex[80];
+static char buff[] = "ezio";
 static struct stat statbuff;
 static struct statfs statfsbuff;
-static const char *buff = "ezio";
 static const char *auclass = "fa";
 static const char *name = "authorname";
 static const char *path = "fileforaudit";
@@ -369,6 +369,51 @@ ATF_TC_BODY(getfsstat_failure, tc)
 }
 
 ATF_TC_CLEANUP(getfsstat_failure, tc)
+{
+	cleanup();
+}
+
+
+ATF_TC_WITH_CLEANUP(lgetfh_success);
+ATF_TC_HEAD(lgetfh_success, tc)
+{
+	atf_tc_set_md_var(tc, "descr", "Tests the audit of a successful "
+					"lgetfh(2) call");
+}
+
+ATF_TC_BODY(lgetfh_success, tc)
+{
+	/* Symbolic link needs to exist to get a file-handle */
+	ATF_REQUIRE_EQ(0, symlink("symlink", path));
+	const char *regex = "lgetfh.*return,success";
+	FILE *pipefd = setup(fds, "fa");
+	ATF_REQUIRE_EQ(0, lgetfh(path, &fht));
+	check_audit(fds, regex, pipefd);
+}
+
+ATF_TC_CLEANUP(lgetfh_success, tc)
+{
+	cleanup();
+}
+
+
+ATF_TC_WITH_CLEANUP(lgetfh_failure);
+ATF_TC_HEAD(lgetfh_failure, tc)
+{
+	atf_tc_set_md_var(tc, "descr", "Tests the audit of an unsuccessful "
+					"lgetfh(2) call");
+}
+
+ATF_TC_BODY(lgetfh_failure, tc)
+{
+	const char *regex = "lgetfh.*return,failure";
+	FILE *pipefd = setup(fds, "fa");
+	/* Failure reason: symbolic link does not exist */
+	ATF_REQUIRE_EQ(-1, lgetfh(errpath, &fht));
+	check_audit(fds, regex, pipefd);
+}
+
+ATF_TC_CLEANUP(lgetfh_failure, tc)
 {
 	cleanup();
 }
@@ -1155,6 +1200,8 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, getfsstat_success);
 	ATF_TP_ADD_TC(tp, getfsstat_failure);
 
+	ATF_TP_ADD_TC(tp, lgetfh_success);
+	ATF_TP_ADD_TC(tp, lgetfh_failure);
 	ATF_TP_ADD_TC(tp, fhopen_success);
 	ATF_TP_ADD_TC(tp, fhopen_failure);
 	ATF_TP_ADD_TC(tp, fhstat_success);

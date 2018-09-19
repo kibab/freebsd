@@ -67,7 +67,7 @@ smccc_init(void *dummy)
 		    SMCCC_VERSION_MINOR(smccc_version));
 	}
 }
-SYSINIT(smccc_start, SI_SUB_DRIVERS, SI_ORDER_ANY, smccc_init, NULL);
+SYSINIT(smccc_start, SI_SUB_CONFIGURE, SI_ORDER_ANY, smccc_init, NULL);
 
 int32_t
 smccc_arch_features(uint32_t smccc_func_id)
@@ -90,4 +90,13 @@ smccc_arch_workaround_1(void)
 	KASSERT(smccc_version != SMCCC_VERSION_1_0,
 	    ("SMCCC arch workaround 1 called with an invalid SMCCC interface"));
 	return (psci_call(SMCCC_ARCH_WORKAROUND_1, 0, 0, 0));
+}
+
+int
+smccc_arch_workaround_2(int enable)
+{
+
+	KASSERT(smccc_version != SMCCC_VERSION_1_0,
+	    ("SMCCC arch workaround 2 called with an invalid SMCCC interface"));
+	return (psci_call(SMCCC_ARCH_WORKAROUND_2, enable, 0, 0));
 }

@@ -61,6 +61,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/sx.h>
 #include <sys/sysctl.h>
 #include <sys/sysent.h>
+#include <sys/syslog.h>
 #include <sys/systm.h>
 #include <sys/vnode.h>
 
@@ -84,6 +85,9 @@ __FBSDID("$FreeBSD$");
 #define malloc_domain(size, type, domain, flags) malloc((size), (type), (flags))
 #define free_domain(addr, type) free(addr, type)
 #endif
+
+#define PMC_EPOCH_ENTER() struct epoch_tracker pmc_et; epoch_enter_preempt(global_epoch_preempt, &pmc_et)
+#define PMC_EPOCH_EXIT() epoch_exit_preempt(global_epoch_preempt, &pmc_et)
 
 /*
  * Types
@@ -1752,12 +1756,12 @@ pmc_process_mmap(struct thread *td, struct pmckern_map_in *pkm)
 	const struct pmc_process *pp;
 
 	freepath = fullpath = NULL;
-	MPASS(!in_epoch());
+	MPASS(!in_epoch(global_epoch_preempt));
 	pmc_getfilename((struct vnode *) pkm->pm_file, &fullpath, &freepath);
 
 	pid = td->td_proc->p_pid;
 
-	epoch_enter_preempt(global_epoch_preempt);
+	PMC_EPOCH_ENTER();
 	/* Inform owners of all system-wide sampling PMCs. */
 	CK_LIST_FOREACH(po, &pmc_ss_owners, po_ssnext)
 	    if (po->po_flags & PMC_PO_OWNS_LOGFILE)
@@ -1778,7 +1782,7 @@ pmc_process_mmap(struct thread *td, struct pmckern_map_in *pkm)
   done:
 	if (freepath)
 		free(freepath, M_TEMP);
-	epoch_exit_preempt(global_epoch_preempt);
+	PMC_EPOCH_EXIT();
 }
 
 
@@ -1797,12 +1801,12 @@ pmc_process_munmap(struct thread *td, struct pmckern_map_out *pkm)
 
 	pid = td->td_proc->p_pid;
 
-	epoch_enter_preempt(global_epoch_preempt);
+	PMC_EPOCH_ENTER();
 	CK_LIST_FOREACH(po, &pmc_ss_owners, po_ssnext)
 	    if (po->po_flags & PMC_PO_OWNS_LOGFILE)
 		pmclog_process_map_out(po, pid, pkm->pm_address,
 		    pkm->pm_address + pkm->pm_size);
-	epoch_exit_preempt(global_epoch_preempt);
+	PMC_EPOCH_EXIT();
 
 	if ((pp = pmc_find_process_descriptor(td->td_proc, 0)) == NULL)
 		return;
@@ -1824,7 +1828,7 @@ pmc_log_kernel_mappings(struct pmc *pm)
 	struct pmc_owner *po;
 	struct pmckern_map_in *km, *kmbase;
 
-	MPASS(in_epoch() || sx_xlocked(&pmc_sx));
+	MPASS(in_epoch(global_epoch_preempt) || sx_xlocked(&pmc_sx));
 	KASSERT(PMC_IS_SAMPLING_MODE(PMC_TO_MODE(pm)),
 	    ("[pmc,%d] non-sampling PMC (%p) desires mapping information",
 		__LINE__, (void *) pm));
@@ -2106,13 +2110,13 @@ pmc_hook_handler(struct thread *td, int function, void *arg)
 
 		pk = (struct pmckern_procexec *) arg;
 
-		epoch_enter_preempt(global_epoch_preempt);
+		PMC_EPOCH_ENTER();
 		/* Inform owners of SS mode PMCs of the exec event. */
 		CK_LIST_FOREACH(po, &pmc_ss_owners, po_ssnext)
 		    if (po->po_flags & PMC_PO_OWNS_LOGFILE)
 			    pmclog_process_procexec(po, PMC_ID_INVALID,
 				p->p_pid, pk->pm_entryaddr, fullpath);
-		epoch_exit_preempt(global_epoch_preempt);
+		PMC_EPOCH_EXIT();
 
 		PROC_LOCK(p);
 		is_using_hwpmcs = p->p_flag & P_HWPMC;
@@ -2242,7 +2246,7 @@ pmc_hook_handler(struct thread *td, int function, void *arg)
 		break;
 
 	case PMC_FN_MUNMAP:
-		MPASS(in_epoch() || sx_xlocked(&pmc_sx));
+		MPASS(in_epoch(global_epoch_preempt) || sx_xlocked(&pmc_sx));
 		pmc_process_munmap(td, (struct pmckern_map_out *) arg);
 		break;
 
@@ -2479,7 +2483,7 @@ pmc_find_thread_descriptor(struct pmc_process *pp, struct thread *td,
 	if (mode & PMC_FLAG_ALLOCATE) {
 		if ((ptnew = pmc_thread_descriptor_pool_alloc()) == NULL) {
 			wait_flag = M_WAITOK;
-			if ((mode & PMC_FLAG_NOWAIT) || in_epoch())
+			if ((mode & PMC_FLAG_NOWAIT) || in_epoch(global_epoch_preempt))
 				wait_flag = M_NOWAIT;
 
 			ptnew = malloc(THREADENTRY_SIZE, M_PMC,
@@ -3939,9 +3943,16 @@ pmc_syscall_handler(struct thread *td, void *syscall_args)
 		pmc->pm_flags = pa.pm_flags;
 
 		/* XXX set lower bound on sampling for process counters */
-		if (PMC_IS_SAMPLING_MODE(mode))
-			pmc->pm_sc.pm_reloadcount = pa.pm_count;
-		else
+		if (PMC_IS_SAMPLING_MODE(mode)) {
+			/*
+			 * Don't permit requested sample rate to be less than 1000
+			 */
+			if (pa.pm_count < 1000)
+				log(LOG_WARNING,
+					"pmcallocate: passed sample rate %ju - setting to 1000\n",
+					(uintmax_t)pa.pm_count);
+			pmc->pm_sc.pm_reloadcount = MAX(1000, pa.pm_count);
+		} else
 			pmc->pm_sc.pm_initial = pa.pm_count;
 
 		/* switch thread to CPU 'cpu' */
@@ -4457,9 +4468,16 @@ pmc_syscall_handler(struct thread *td, void *syscall_args)
 			break;
 		}
 
-		if (PMC_IS_SAMPLING_MODE(PMC_TO_MODE(pm)))
-			pm->pm_sc.pm_reloadcount = sc.pm_count;
-		else
+		if (PMC_IS_SAMPLING_MODE(PMC_TO_MODE(pm))) {
+			/*
+			 * Don't permit requested sample rate to be less than 1000
+			 */
+			if (sc.pm_count < 1000)
+				log(LOG_WARNING,
+					"pmcsetcount: passed sample rate %ju - setting to 1000\n",
+					(uintmax_t)sc.pm_count);
+			pm->pm_sc.pm_reloadcount = MAX(1000, sc.pm_count);
+		} else
 			pm->pm_sc.pm_initial = sc.pm_count;
 	}
 	break;
@@ -5070,11 +5088,11 @@ pmc_process_exit(void *arg __unused, struct proc *p)
 	/*
 	 * Log a sysexit event to all SS PMC owners.
 	 */
-	epoch_enter_preempt(global_epoch_preempt);
+	PMC_EPOCH_ENTER();
 	CK_LIST_FOREACH(po, &pmc_ss_owners, po_ssnext)
 	    if (po->po_flags & PMC_PO_OWNS_LOGFILE)
 		    pmclog_process_sysexit(po, p->p_pid);
-	epoch_exit_preempt(global_epoch_preempt);
+	PMC_EPOCH_EXIT();
 
 	if (!is_using_hwpmcs)
 		return;
@@ -5255,13 +5273,13 @@ pmc_process_fork(void *arg __unused, struct proc *p1, struct proc *newproc,
 	 * If there are system-wide sampling PMCs active, we need to
 	 * log all fork events to their owner's logs.
 	 */
-	epoch_enter_preempt(global_epoch_preempt);
+	PMC_EPOCH_ENTER();
 	CK_LIST_FOREACH(po, &pmc_ss_owners, po_ssnext)
 	    if (po->po_flags & PMC_PO_OWNS_LOGFILE) {
 		    pmclog_process_procfork(po, p1->p_pid, newproc->p_pid);
 			pmclog_process_proccreate(po, newproc, 1);
 		}
-	epoch_exit_preempt(global_epoch_preempt);
+	PMC_EPOCH_EXIT();
 
 	if (!is_using_hwpmcs)
 		return;
@@ -5327,11 +5345,11 @@ pmc_process_threadcreate(struct thread *td)
 {
 	struct pmc_owner *po;
 
-	epoch_enter_preempt(global_epoch_preempt);
+	PMC_EPOCH_ENTER();
 	CK_LIST_FOREACH(po, &pmc_ss_owners, po_ssnext)
 	    if (po->po_flags & PMC_PO_OWNS_LOGFILE)
 			pmclog_process_threadcreate(po, td, 1);
-	epoch_exit_preempt(global_epoch_preempt);
+	PMC_EPOCH_EXIT();
 }
 
 static void
@@ -5339,11 +5357,11 @@ pmc_process_threadexit(struct thread *td)
 {
 	struct pmc_owner *po;
 
-	epoch_enter_preempt(global_epoch_preempt);
+	PMC_EPOCH_ENTER();
 	CK_LIST_FOREACH(po, &pmc_ss_owners, po_ssnext)
 	    if (po->po_flags & PMC_PO_OWNS_LOGFILE)
 			pmclog_process_threadexit(po, td);
-	epoch_exit_preempt(global_epoch_preempt);
+	PMC_EPOCH_EXIT();
 }
 
 static void
@@ -5351,11 +5369,11 @@ pmc_process_proccreate(struct proc *p)
 {
 	struct pmc_owner *po;
 
-	epoch_enter_preempt(global_epoch_preempt);
+	PMC_EPOCH_ENTER();
 	CK_LIST_FOREACH(po, &pmc_ss_owners, po_ssnext)
 	    if (po->po_flags & PMC_PO_OWNS_LOGFILE)
 			pmclog_process_proccreate(po, p, 1 /* sync */);
-	epoch_exit_preempt(global_epoch_preempt);
+	PMC_EPOCH_EXIT();
 }
 
 static void
@@ -5388,12 +5406,12 @@ pmc_kld_load(void *arg __unused, linker_file_t lf)
 	/*
 	 * Notify owners of system sampling PMCs about KLD operations.
 	 */
-	epoch_enter_preempt(global_epoch_preempt);
+	PMC_EPOCH_ENTER();
 	CK_LIST_FOREACH(po, &pmc_ss_owners, po_ssnext)
 		if (po->po_flags & PMC_PO_OWNS_LOGFILE)
 			pmclog_process_map_in(po, (pid_t) -1,
 			    (uintfptr_t) lf->address, lf->filename);
-	epoch_exit_preempt(global_epoch_preempt);
+	PMC_EPOCH_EXIT();
 
 	/*
 	 * TODO: Notify owners of (all) process-sampling PMCs too.
@@ -5406,12 +5424,12 @@ pmc_kld_unload(void *arg __unused, const char *filename __unused,
 {
 	struct pmc_owner *po;
 
-	epoch_enter_preempt(global_epoch_preempt);
+	PMC_EPOCH_ENTER();
 	CK_LIST_FOREACH(po, &pmc_ss_owners, po_ssnext)
 		if (po->po_flags & PMC_PO_OWNS_LOGFILE)
 			pmclog_process_map_out(po, (pid_t) -1,
 			    (uintfptr_t) address, (uintfptr_t) address + size);
-	epoch_exit_preempt(global_epoch_preempt);
+	PMC_EPOCH_EXIT();
 
 	/*
 	 * TODO: Notify owners of process-sampling PMCs.
