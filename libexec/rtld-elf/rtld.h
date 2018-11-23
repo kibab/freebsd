@@ -151,7 +151,6 @@ typedef struct Struct_Obj_Entry {
     /* These items are computed by map_object() or by digest_phdr(). */
     caddr_t mapbase;		/* Base address of mapped region */
     size_t mapsize;		/* Size of mapped region in bytes */
-    size_t textsize;		/* Size of text segment in bytes */
     Elf_Addr vaddrbase;		/* Base address in shared object file */
     caddr_t relocbase;		/* Relocation constant = mapbase - vaddrbase */
     const Elf_Dyn *dynamic;	/* Dynamic section */
@@ -236,6 +235,7 @@ typedef struct Struct_Obj_Entry {
     int fini_array_num; 	/* Number of entries in fini_array */
 
     int32_t osrel;		/* OSREL note value */
+    uint32_t fctl0;		/* FEATURE_CONTROL note desc[0] value */
 
     bool mainprog : 1;		/* True if this is the main program */
     bool rtld : 1;		/* True if this is the dynamic linker */
