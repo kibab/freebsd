@@ -38,6 +38,17 @@
 #   xargs -n1 | sort | uniq -d;
 # done
 
+# 20190131: pfil(9) changed
+OLD_FILES+=usr/share/man/man9/pfil_hook_get.9
+OLD_FILES+=usr/share/man/man9/pfil_rlock.9
+OLD_FILES+=usr/share/man/man9/pfil_runlock.9
+OLD_FILES+=usr/share/man/man9/pfil_wlock.9
+OLD_FILES+=usr/share/man/man9/pfil_wunlock.9
+# 20190126: adv(4) / adw(4) removal
+OLD_FILES+=usr/share/man/man4/adv.4.gz
+OLD_FILES+=usr/share/man/man4/adw.4.gz
+# 20190114: old pbuf allocator removed
+OLD_FILES+=usr/share/man/man9/pbuf.9.gz
 # 20181219: ibcs removal
 OLD_FILES+=usr/share/examples/ibcs2/hello.uu
 OLD_FILES+=usr/share/examples/ibcs2/README
@@ -826,7 +837,7 @@ OLD_FILES+=tests/sys/geom/class/eli/integrity_hmac_test.sh
 OLD_FILES+=tests/sys/geom/class/eli/onetime_a_test.sh
 OLD_FILES+=tests/sys/geom/class/eli/onetime_d_test.sh
 # 20171230: Remove /etc/skel from mtree
-OLD_DIRS+=/etc/skel
+OLD_DIRS+=etc/skel
 # 20171208: Remove basename_r(3)
 OLD_FILES+=usr/share/man/man3/basename_r.3.gz
 # 20171204: Move fdformat man page from volume 1 to volume 8.

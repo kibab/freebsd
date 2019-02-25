@@ -480,9 +480,10 @@ SYSCTL_INT(_hw_cxgbe, OID_AUTO, autoneg, CTLFLAG_RDTUN, &t4_autoneg, 0,
 
 /*
  * Firmware auto-install by driver during attach (0, 1, 2 = prohibited, allowed,
- * encouraged respectively).
+ * encouraged respectively).  '-n' is the same as 'n' except the firmware
+ * version used in the checks is read from the firmware bundled with the driver.
  */
-static unsigned int t4_fw_install = 1;
+static int t4_fw_install = 1;
 SYSCTL_INT(_hw_cxgbe, OID_AUTO, fw_install, CTLFLAG_RDTUN, &t4_fw_install, 0,
     "Firmware auto-install (0 = prohibited, 1 = allowed, 2 = encouraged)");
 
@@ -555,7 +556,7 @@ SYSCTL_INT(_hw_cxgbe, OID_AUTO, pcie_relaxed_ordering, CTLFLAG_RDTUN,
 
 static int t4_panic_on_fatal_err = 0;
 SYSCTL_INT(_hw_cxgbe, OID_AUTO, panic_on_fatal_err, CTLFLAG_RDTUN,
-    &t4_panic_on_fatal_err, 0, "panic on fatal firmware errors");
+    &t4_panic_on_fatal_err, 0, "panic on fatal errors");
 
 #ifdef TCP_OFFLOAD
 /*
@@ -647,7 +648,6 @@ static int sysctl_loadavg(SYSCTL_HANDLER_ARGS);
 static int sysctl_cctrl(SYSCTL_HANDLER_ARGS);
 static int sysctl_cim_ibq_obq(SYSCTL_HANDLER_ARGS);
 static int sysctl_cim_la(SYSCTL_HANDLER_ARGS);
-static int sysctl_cim_la_t6(SYSCTL_HANDLER_ARGS);
 static int sysctl_cim_ma_la(SYSCTL_HANDLER_ARGS);
 static int sysctl_cim_pif_la(SYSCTL_HANDLER_ARGS);
 static int sysctl_cim_qcfg(SYSCTL_HANDLER_ARGS);
@@ -1076,6 +1076,7 @@ t4_attach(device_t dev)
 		rc = partition_resources(sc);
 		if (rc != 0)
 			goto done; /* error message displayed already */
+		t4_intr_clear(sc);
 	}
 
 	rc = get_params__post_init(sc);
@@ -2561,15 +2562,37 @@ vcxgbe_detach(device_t dev)
 	return (0);
 }
 
-void
-t4_fatal_err(struct adapter *sc)
+static struct callout fatal_callout;
+
+static void
+delayed_panic(void *arg)
 {
-	t4_set_reg_field(sc, A_SGE_CONTROL, F_GLOBALENABLE, 0);
-	t4_intr_disable(sc);
-	log(LOG_EMERG, "%s: encountered fatal error, adapter stopped.\n",
+	struct adapter *sc = arg;
+
+	panic("%s: panic on fatal error", device_get_nameunit(sc->dev));
+}
+
+void
+t4_fatal_err(struct adapter *sc, bool fw_error)
+{
+
+	t4_shutdown_adapter(sc);
+	log(LOG_ALERT, "%s: encountered fatal error, adapter stopped.\n",
 	    device_get_nameunit(sc->dev));
-	if (t4_panic_on_fatal_err)
-		panic("panic requested on fatal error");
+	if (fw_error) {
+		ASSERT_SYNCHRONIZED_OP(sc);
+		sc->flags |= ADAP_ERR;
+	} else {
+		ADAPTER_LOCK(sc);
+		sc->flags |= ADAP_ERR;
+		ADAPTER_UNLOCK(sc);
+	}
+
+	if (t4_panic_on_fatal_err) {
+		log(LOG_ALERT, "%s: panic on fatal error after 30s",
+		    device_get_nameunit(sc->dev));
+		callout_reset(&fatal_callout, hz * 30, delayed_panic, sc);
+	}
 }
 
 void
@@ -3324,17 +3347,38 @@ restart:
     V_FW_HDR_FW_VER_BUILD(chip##FW_VERSION_BUILD))
 #define FW_INTFVER(chip, intf) (chip##FW_HDR_INTFVER_##intf)
 
+/* Just enough of fw_hdr to cover all version info. */
+struct fw_h {
+	__u8	ver;
+	__u8	chip;
+	__be16	len512;
+	__be32	fw_ver;
+	__be32	tp_microcode_ver;
+	__u8	intfver_nic;
+	__u8	intfver_vnic;
+	__u8	intfver_ofld;
+	__u8	intfver_ri;
+	__u8	intfver_iscsipdu;
+	__u8	intfver_iscsi;
+	__u8	intfver_fcoepdu;
+	__u8	intfver_fcoe;
+};
+/* Spot check a couple of fields. */
+CTASSERT(offsetof(struct fw_h, fw_ver) == offsetof(struct fw_hdr, fw_ver));
+CTASSERT(offsetof(struct fw_h, intfver_nic) == offsetof(struct fw_hdr, intfver_nic));
+CTASSERT(offsetof(struct fw_h, intfver_fcoe) == offsetof(struct fw_hdr, intfver_fcoe));
+
 struct fw_info {
 	uint8_t chip;
 	char *kld_name;
 	char *fw_mod_name;
-	struct fw_hdr fw_hdr;	/* XXX: waste of space, need a sparse struct */
+	struct fw_h fw_h;
 } fw_info[] = {
 	{
 		.chip = CHELSIO_T4,
 		.kld_name = "t4fw_cfg",
 		.fw_mod_name = "t4fw",
-		.fw_hdr = {
+		.fw_h = {
 			.chip = FW_HDR_CHIP_T4,
 			.fw_ver = htobe32(FW_VERSION(T4)),
 			.intfver_nic = FW_INTFVER(T4, NIC),
@@ -3350,7 +3394,7 @@ struct fw_info {
 		.chip = CHELSIO_T5,
 		.kld_name = "t5fw_cfg",
 		.fw_mod_name = "t5fw",
-		.fw_hdr = {
+		.fw_h = {
 			.chip = FW_HDR_CHIP_T5,
 			.fw_ver = htobe32(FW_VERSION(T5)),
 			.intfver_nic = FW_INTFVER(T5, NIC),
@@ -3366,7 +3410,7 @@ struct fw_info {
 		.chip = CHELSIO_T6,
 		.kld_name = "t6fw_cfg",
 		.fw_mod_name = "t6fw",
-		.fw_hdr = {
+		.fw_h = {
 			.chip = FW_HDR_CHIP_T6,
 			.fw_ver = htobe32(FW_VERSION(T6)),
 			.intfver_nic = FW_INTFVER(T6, NIC),
@@ -3398,7 +3442,7 @@ find_fw_info(int chip)
  * with?
  */
 static int
-fw_compatible(const struct fw_hdr *hdr1, const struct fw_hdr *hdr2)
+fw_compatible(const struct fw_h *hdr1, const struct fw_h *hdr2)
 {
 
 	/* short circuit if it's the exact same firmware version */
@@ -3465,14 +3509,19 @@ unload_fw_module(struct adapter *sc, const struct firmware *dcfg,
  * +ve errno means a firmware install was attempted but failed.
  */
 static int
-install_kld_firmware(struct adapter *sc, struct fw_hdr *card_fw,
-    const struct fw_hdr *drv_fw, const char *reason, int *already)
+install_kld_firmware(struct adapter *sc, struct fw_h *card_fw,
+    const struct fw_h *drv_fw, const char *reason, int *already)
 {
 	const struct firmware *cfg, *fw;
 	const uint32_t c = be32toh(card_fw->fw_ver);
-	const uint32_t d = be32toh(drv_fw->fw_ver);
-	uint32_t k;
-	int rc;
+	uint32_t d, k;
+	int rc, fw_install;
+	struct fw_h bundled_fw;
+	bool load_attempted;
+
+	cfg = fw = NULL;
+	load_attempted = false;
+	fw_install = t4_fw_install < 0 ? -t4_fw_install : t4_fw_install;
 
 	if (reason != NULL)
 		goto install;
@@ -3487,7 +3536,23 @@ install_kld_firmware(struct adapter *sc, struct fw_hdr *card_fw,
 		return (0);
 	}
 
-	if (!fw_compatible(card_fw, drv_fw)) {
+	memcpy(&bundled_fw, drv_fw, sizeof(bundled_fw));
+	if (t4_fw_install < 0) {
+		rc = load_fw_module(sc, &cfg, &fw);
+		if (rc != 0 || fw == NULL) {
+			device_printf(sc->dev,
+			    "failed to load firmware module: %d. cfg %p, fw %p;"
+			    " will use compiled-in firmware version for"
+			    "hw.cxgbe.fw_install checks.\n",
+			    rc, cfg, fw);
+		} else {
+			memcpy(&bundled_fw, fw->data, sizeof(bundled_fw));
+		}
+		load_attempted = true;
+	}
+	d = be32toh(bundled_fw.fw_ver);
+
+	if (!fw_compatible(card_fw, &bundled_fw)) {
 		reason = "incompatible or unusable";
 		goto install;
 	}
@@ -3497,25 +3562,64 @@ install_kld_firmware(struct adapter *sc, struct fw_hdr *card_fw,
 		goto install;
 	}
 
-	if (t4_fw_install == 2 && d != c) {
+	if (fw_install == 2 && d != c) {
 		reason = "different than the version bundled with this driver";
 		goto install;
 	}
 
-	return (0);
+	/* No reason to do anything to the firmware already on the card. */
+	rc = 0;
+	goto done;
 
 install:
+	rc = 0;
 	if ((*already)++)
-		return (0);
+		goto done;
 
-	if (t4_fw_install == 0) {
+	if (fw_install == 0) {
 		device_printf(sc->dev, "firmware on card (%u.%u.%u.%u) is %s, "
 		    "but the driver is prohibited from installing a firmware "
 		    "on the card.\n",
 		    G_FW_HDR_FW_VER_MAJOR(c), G_FW_HDR_FW_VER_MINOR(c),
 		    G_FW_HDR_FW_VER_MICRO(c), G_FW_HDR_FW_VER_BUILD(c), reason);
 
-		return (0);
+		goto done;
+	}
+
+	/*
+	 * We'll attempt to install a firmware.  Load the module first (if it
+	 * hasn't been loaded already).
+	 */
+	if (!load_attempted) {
+		rc = load_fw_module(sc, &cfg, &fw);
+		if (rc != 0 || fw == NULL) {
+			device_printf(sc->dev,
+			    "failed to load firmware module: %d. cfg %p, fw %p\n",
+			    rc, cfg, fw);
+			/* carry on */
+		}
+	}
+	if (fw == NULL) {
+		device_printf(sc->dev, "firmware on card (%u.%u.%u.%u) is %s, "
+		    "but the driver cannot take corrective action because it "
+		    "is unable to load the firmware module.\n",
+		    G_FW_HDR_FW_VER_MAJOR(c), G_FW_HDR_FW_VER_MINOR(c),
+		    G_FW_HDR_FW_VER_MICRO(c), G_FW_HDR_FW_VER_BUILD(c), reason);
+		rc = sc->flags & FW_OK ? 0 : ENOENT;
+		goto done;
+	}
+	k = be32toh(((const struct fw_hdr *)fw->data)->fw_ver);
+	if (k != d) {
+		MPASS(t4_fw_install > 0);
+		device_printf(sc->dev,
+		    "firmware in KLD (%u.%u.%u.%u) is not what the driver was "
+		    "expecting (%u.%u.%u.%u) and will not be used.\n",
+		    G_FW_HDR_FW_VER_MAJOR(k), G_FW_HDR_FW_VER_MINOR(k),
+		    G_FW_HDR_FW_VER_MICRO(k), G_FW_HDR_FW_VER_BUILD(k),
+		    G_FW_HDR_FW_VER_MAJOR(d), G_FW_HDR_FW_VER_MINOR(d),
+		    G_FW_HDR_FW_VER_MICRO(d), G_FW_HDR_FW_VER_BUILD(d));
+		rc = sc->flags & FW_OK ? 0 : EINVAL;
+		goto done;
 	}
 
 	device_printf(sc->dev, "firmware on card (%u.%u.%u.%u) is %s, "
@@ -3524,25 +3628,6 @@ install:
 	    G_FW_HDR_FW_VER_MICRO(c), G_FW_HDR_FW_VER_BUILD(c), reason,
 	    G_FW_HDR_FW_VER_MAJOR(d), G_FW_HDR_FW_VER_MINOR(d),
 	    G_FW_HDR_FW_VER_MICRO(d), G_FW_HDR_FW_VER_BUILD(d));
-
-	rc = load_fw_module(sc, &cfg, &fw);
-	if (rc != 0 || fw == NULL) {
-		device_printf(sc->dev,
-		    "failed to load firmware module: %d. cfg %p, fw %p\n", rc,
-		    cfg, fw);
-		rc = sc->flags & FW_OK ? 0 : ENOENT;
-		goto done;
-	}
-	k = be32toh(((const struct fw_hdr *)fw->data)->fw_ver);
-	if (k != d) {
-		device_printf(sc->dev,
-		    "firmware in KLD (%u.%u.%u.%u) is not what the driver was "
-		    "compiled with and will not be used.\n",
-		    G_FW_HDR_FW_VER_MAJOR(k), G_FW_HDR_FW_VER_MINOR(k),
-		    G_FW_HDR_FW_VER_MICRO(k), G_FW_HDR_FW_VER_BUILD(k));
-		rc = sc->flags & FW_OK ? 0 : EINVAL;
-		goto done;
-	}
 
 	rc = -t4_fw_upgrade(sc, sc->mbox, fw->data, fw->datasize, 0);
 	if (rc != 0) {
@@ -3571,7 +3656,7 @@ contact_firmware(struct adapter *sc)
 	enum dev_state state;
 	struct fw_info *fw_info;
 	struct fw_hdr *card_fw;		/* fw on the card */
-	const struct fw_hdr *drv_fw;	/* fw bundled with the driver */
+	const struct fw_h *drv_fw;
 
 	fw_info = find_fw_info(chip_id(sc));
 	if (fw_info == NULL) {
@@ -3580,7 +3665,7 @@ contact_firmware(struct adapter *sc)
 		    chip_id(sc));
 		return (EINVAL);
 	}
-	drv_fw = &fw_info->fw_hdr;
+	drv_fw = &fw_info->fw_h;
 
 	/* Read the header of the firmware on the card */
 	card_fw = malloc(sizeof(*card_fw), M_CXGBE, M_ZERO | M_WAITOK);
@@ -3593,7 +3678,8 @@ restart:
 		goto done;
 	}
 
-	rc = install_kld_firmware(sc, card_fw, drv_fw, NULL, &already);
+	rc = install_kld_firmware(sc, (struct fw_h *)card_fw, drv_fw, NULL,
+	    &already);
 	if (rc == ERESTART)
 		goto restart;
 	if (rc != 0)
@@ -3606,7 +3692,7 @@ restart:
 		    "failed to connect to the firmware: %d, %d.  "
 		    "PCIE_FW 0x%08x\n", rc, state, t4_read_reg(sc, A_PCIE_FW));
 #if 0
-		if (install_kld_firmware(sc, card_fw, drv_fw,
+		if (install_kld_firmware(sc, (struct fw_h *)card_fw, drv_fw,
 		    "not responding properly to HELLO", &already) == ERESTART)
 			goto restart;
 #endif
@@ -3617,7 +3703,8 @@ restart:
 
 	if (rc == sc->pf) {
 		sc->flags |= MASTER_PF;
-		rc = install_kld_firmware(sc, card_fw, drv_fw, NULL, &already);
+		rc = install_kld_firmware(sc, (struct fw_h *)card_fw, drv_fw,
+		    NULL, &already);
 		if (rc == ERESTART)
 			rc = 0;
 		else if (rc != 0)
@@ -5459,6 +5546,8 @@ vi_full_uninit(struct vi_info *vi)
 	struct sge_txq *txq;
 #ifdef TCP_OFFLOAD
 	struct sge_ofld_rxq *ofld_rxq;
+#endif
+#if defined(TCP_OFFLOAD) || defined(RATELIMIT)
 	struct sge_wrq *ofld_txq;
 #endif
 
@@ -5474,7 +5563,7 @@ vi_full_uninit(struct vi_info *vi)
 			quiesce_txq(sc, txq);
 		}
 
-#ifdef TCP_OFFLOAD
+#if defined(TCP_OFFLOAD) || defined(RATELIMIT)
 		for_each_ofld_txq(vi, i, ofld_txq) {
 			quiesce_wrq(sc, ofld_txq);
 		}
@@ -5949,8 +6038,7 @@ t4_sysctls(struct adapter *sc)
 	    sysctl_cim_ibq_obq, "A", "CIM IBQ 5 (NCSI)");
 
 	SYSCTL_ADD_PROC(ctx, children, OID_AUTO, "cim_la",
-	    CTLTYPE_STRING | CTLFLAG_RD, sc, 0,
-	    chip_id(sc) <= CHELSIO_T5 ? sysctl_cim_la : sysctl_cim_la_t6,
+	    CTLTYPE_STRING | CTLFLAG_RD, sc, 0, sysctl_cim_la,
 	    "A", "CIM logic analyzer");
 
 	SYSCTL_ADD_PROC(ctx, children, OID_AUTO, "cim_ma_la",
@@ -6262,15 +6350,9 @@ vi_sysctls(struct vi_info *vi)
 		SYSCTL_ADD_INT(ctx, children, OID_AUTO, "nofldrxq", CTLFLAG_RD,
 		    &vi->nofldrxq, 0,
 		    "# of rx queues for offloaded TCP connections");
-		SYSCTL_ADD_INT(ctx, children, OID_AUTO, "nofldtxq", CTLFLAG_RD,
-		    &vi->nofldtxq, 0,
-		    "# of tx queues for offloaded TCP connections");
 		SYSCTL_ADD_INT(ctx, children, OID_AUTO, "first_ofld_rxq",
 		    CTLFLAG_RD, &vi->first_ofld_rxq, 0,
 		    "index of first TOE rx queue");
-		SYSCTL_ADD_INT(ctx, children, OID_AUTO, "first_ofld_txq",
-		    CTLFLAG_RD, &vi->first_ofld_txq, 0,
-		    "index of first TOE tx queue");
 		SYSCTL_ADD_PROC(ctx, children, OID_AUTO, "holdoff_tmr_idx_ofld",
 		    CTLTYPE_INT | CTLFLAG_RW, vi, 0,
 		    sysctl_holdoff_tmr_idx_ofld, "I",
@@ -6279,6 +6361,16 @@ vi_sysctls(struct vi_info *vi)
 		    CTLTYPE_INT | CTLFLAG_RW, vi, 0,
 		    sysctl_holdoff_pktc_idx_ofld, "I",
 		    "holdoff packet counter index for TOE queues");
+	}
+#endif
+#if defined(TCP_OFFLOAD) || defined(RATELIMIT)
+	if (vi->nofldtxq != 0) {
+		SYSCTL_ADD_INT(ctx, children, OID_AUTO, "nofldtxq", CTLFLAG_RD,
+		    &vi->nofldtxq, 0,
+		    "# of tx queues for TOE/ETHOFLD");
+		SYSCTL_ADD_INT(ctx, children, OID_AUTO, "first_ofld_txq",
+		    CTLFLAG_RD, &vi->first_ofld_txq, 0,
+		    "index of first TOE/ETHOFLD tx queue");
 	}
 #endif
 #ifdef DEV_NETMAP
@@ -7168,35 +7260,10 @@ done:
 	return (rc);
 }
 
-static int
-sysctl_cim_la(SYSCTL_HANDLER_ARGS)
+static void
+sbuf_cim_la4(struct adapter *sc, struct sbuf *sb, uint32_t *buf, uint32_t cfg)
 {
-	struct adapter *sc = arg1;
-	u_int cfg;
-	struct sbuf *sb;
-	uint32_t *buf, *p;
-	int rc;
-
-	MPASS(chip_id(sc) <= CHELSIO_T5);
-
-	rc = -t4_cim_read(sc, A_UP_UP_DBG_LA_CFG, 1, &cfg);
-	if (rc != 0)
-		return (rc);
-
-	rc = sysctl_wire_old_buffer(req, 0);
-	if (rc != 0)
-		return (rc);
-
-	sb = sbuf_new_for_sysctl(NULL, NULL, 4096, req);
-	if (sb == NULL)
-		return (ENOMEM);
-
-	buf = malloc(sc->params.cim_la_size * sizeof(uint32_t), M_CXGBE,
-	    M_ZERO | M_WAITOK);
-
-	rc = -t4_cim_read_la(sc, buf, NULL);
-	if (rc != 0)
-		goto done;
+	uint32_t *p;
 
 	sbuf_printf(sb, "Status   Data      PC%s",
 	    cfg & F_UPDBGLACAPTPCONLY ? "" :
@@ -7221,43 +7288,12 @@ sysctl_cim_la(SYSCTL_HANDLER_ARGS)
 			    p[6], p[7]);
 		}
 	}
-
-	rc = sbuf_finish(sb);
-	sbuf_delete(sb);
-done:
-	free(buf, M_CXGBE);
-	return (rc);
 }
 
-static int
-sysctl_cim_la_t6(SYSCTL_HANDLER_ARGS)
+static void
+sbuf_cim_la6(struct adapter *sc, struct sbuf *sb, uint32_t *buf, uint32_t cfg)
 {
-	struct adapter *sc = arg1;
-	u_int cfg;
-	struct sbuf *sb;
-	uint32_t *buf, *p;
-	int rc;
-
-	MPASS(chip_id(sc) > CHELSIO_T5);
-
-	rc = -t4_cim_read(sc, A_UP_UP_DBG_LA_CFG, 1, &cfg);
-	if (rc != 0)
-		return (rc);
-
-	rc = sysctl_wire_old_buffer(req, 0);
-	if (rc != 0)
-		return (rc);
-
-	sb = sbuf_new_for_sysctl(NULL, NULL, 4096, req);
-	if (sb == NULL)
-		return (ENOMEM);
-
-	buf = malloc(sc->params.cim_la_size * sizeof(uint32_t), M_CXGBE,
-	    M_ZERO | M_WAITOK);
-
-	rc = -t4_cim_read_la(sc, buf, NULL);
-	if (rc != 0)
-		goto done;
+	uint32_t *p;
 
 	sbuf_printf(sb, "Status   Inst    Data      PC%s",
 	    cfg & F_UPDBGLACAPTPCONLY ? "" :
@@ -7284,12 +7320,76 @@ sysctl_cim_la_t6(SYSCTL_HANDLER_ARGS)
 			    p[2], p[1], p[0], p[5], p[4], p[3]);
 		}
 	}
+}
 
-	rc = sbuf_finish(sb);
-	sbuf_delete(sb);
+static int
+sbuf_cim_la(struct adapter *sc, struct sbuf *sb, int flags)
+{
+	uint32_t cfg, *buf;
+	int rc;
+
+	rc = -t4_cim_read(sc, A_UP_UP_DBG_LA_CFG, 1, &cfg);
+	if (rc != 0)
+		return (rc);
+
+	MPASS(flags == M_WAITOK || flags == M_NOWAIT);
+	buf = malloc(sc->params.cim_la_size * sizeof(uint32_t), M_CXGBE,
+	    M_ZERO | flags);
+	if (buf == NULL)
+		return (ENOMEM);
+
+	rc = -t4_cim_read_la(sc, buf, NULL);
+	if (rc != 0)
+		goto done;
+	if (chip_id(sc) < CHELSIO_T6)
+		sbuf_cim_la4(sc, sb, buf, cfg);
+	else
+		sbuf_cim_la6(sc, sb, buf, cfg);
+
 done:
 	free(buf, M_CXGBE);
 	return (rc);
+}
+
+static int
+sysctl_cim_la(SYSCTL_HANDLER_ARGS)
+{
+	struct adapter *sc = arg1;
+	struct sbuf *sb;
+	int rc;
+
+	rc = sysctl_wire_old_buffer(req, 0);
+	if (rc != 0)
+		return (rc);
+	sb = sbuf_new_for_sysctl(NULL, NULL, 4096, req);
+	if (sb == NULL)
+		return (ENOMEM);
+
+	rc = sbuf_cim_la(sc, sb, M_WAITOK);
+	if (rc == 0)
+		rc = sbuf_finish(sb);
+	sbuf_delete(sb);
+	return (rc);
+}
+
+bool
+t4_os_dump_cimla(struct adapter *sc, int arg, bool verbose)
+{
+	struct sbuf sb;
+	int rc;
+
+	if (sbuf_new(&sb, NULL, 4096, SBUF_AUTOEXTEND) != &sb)
+		return (false);
+	rc = sbuf_cim_la(sc, &sb, M_NOWAIT);
+	if (rc == 0) {
+		rc = sbuf_finish(&sb);
+		if (rc == 0) {
+			log(LOG_DEBUG, "%s: CIM LA dump follows.\n%s",
+		    		device_get_nameunit(sc->dev), sbuf_data(&sb));
+		}
+	}
+	sbuf_delete(&sb);
+	return (false);
 }
 
 static int
@@ -7544,19 +7644,18 @@ static const char * const devlog_facility_strings[] = {
 };
 
 static int
-sysctl_devlog(SYSCTL_HANDLER_ARGS)
+sbuf_devlog(struct adapter *sc, struct sbuf *sb, int flags)
 {
-	struct adapter *sc = arg1;
+	int i, j, rc, nentries, first = 0;
 	struct devlog_params *dparams = &sc->params.devlog;
 	struct fw_devlog_e *buf, *e;
-	int i, j, rc, nentries, first = 0;
-	struct sbuf *sb;
 	uint64_t ftstamp = UINT64_MAX;
 
 	if (dparams->addr == 0)
 		return (ENXIO);
 
-	buf = malloc(dparams->size, M_CXGBE, M_NOWAIT);
+	MPASS(flags == M_WAITOK || flags == M_NOWAIT);
+	buf = malloc(dparams->size, M_CXGBE, M_ZERO | flags);
 	if (buf == NULL)
 		return (ENOMEM);
 
@@ -7585,15 +7684,6 @@ sysctl_devlog(SYSCTL_HANDLER_ARGS)
 	if (buf[first].timestamp == 0)
 		goto done;	/* nothing in the log */
 
-	rc = sysctl_wire_old_buffer(req, 0);
-	if (rc != 0)
-		goto done;
-
-	sb = sbuf_new_for_sysctl(NULL, NULL, 4096, req);
-	if (sb == NULL) {
-		rc = ENOMEM;
-		goto done;
-	}
 	sbuf_printf(sb, "%10s  %15s  %8s  %8s  %s\n",
 	    "Seq#", "Tstamp", "Level", "Facility", "Message");
 
@@ -7616,12 +7706,49 @@ sysctl_devlog(SYSCTL_HANDLER_ARGS)
 		if (++i == nentries)
 			i = 0;
 	} while (i != first);
-
-	rc = sbuf_finish(sb);
-	sbuf_delete(sb);
 done:
 	free(buf, M_CXGBE);
 	return (rc);
+}
+
+static int
+sysctl_devlog(SYSCTL_HANDLER_ARGS)
+{
+	struct adapter *sc = arg1;
+	int rc;
+	struct sbuf *sb;
+
+	rc = sysctl_wire_old_buffer(req, 0);
+	if (rc != 0)
+		return (rc);
+	sb = sbuf_new_for_sysctl(NULL, NULL, 4096, req);
+	if (sb == NULL)
+		return (ENOMEM);
+
+	rc = sbuf_devlog(sc, sb, M_WAITOK);
+	if (rc == 0)
+		rc = sbuf_finish(sb);
+	sbuf_delete(sb);
+	return (rc);
+}
+
+void
+t4_os_dump_devlog(struct adapter *sc)
+{
+	int rc;
+	struct sbuf sb;
+
+	if (sbuf_new(&sb, NULL, 4096, SBUF_AUTOEXTEND) != &sb)
+		return;
+	rc = sbuf_devlog(sc, &sb, M_NOWAIT);
+	if (rc == 0) {
+		rc = sbuf_finish(&sb);
+		if (rc == 0) {
+			log(LOG_DEBUG, "%s: device log follows.\n%s",
+		    		device_get_nameunit(sc->dev), sbuf_data(&sb));
+		}
+	}
+	sbuf_delete(&sb);
 }
 
 static int
@@ -9946,7 +10073,7 @@ t4_ioctl(struct cdev *dev, unsigned long cmd, caddr_t data, int fflag,
 					mp_ring_reset_stats(txq->r);
 				}
 
-#ifdef TCP_OFFLOAD
+#if defined(TCP_OFFLOAD) || defined(RATELIMIT)
 				/* nothing to clear for each ofld_rxq */
 
 				for_each_ofld_txq(vi, i, wrq) {
@@ -9996,20 +10123,6 @@ t4_ioctl(struct cdev *dev, unsigned long cmd, caddr_t data, int fflag,
 	}
 
 	return (rc);
-}
-
-void
-t4_db_full(struct adapter *sc)
-{
-
-	CXGBE_UNIMPLEMENTED(__func__);
-}
-
-void
-t4_db_dropped(struct adapter *sc)
-{
-
-	CXGBE_UNIMPLEMENTED(__func__);
 }
 
 #ifdef TCP_OFFLOAD
@@ -10585,6 +10698,7 @@ mod_event(module_t mod, int cmd, void *arg)
 			    do_smt_write_rpl);
 			sx_init(&t4_list_lock, "T4/T5 adapters");
 			SLIST_INIT(&t4_list);
+			callout_init(&fatal_callout, 1);
 #ifdef TCP_OFFLOAD
 			sx_init(&t4_uld_list_lock, "T4/T5 ULDs");
 			SLIST_INIT(&t4_uld_list);

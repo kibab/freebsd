@@ -235,6 +235,7 @@ add_deterministic_cache(int type, int level, int share_count)
  *  - BKDG For AMD Family 10h Processors (Publication # 31116)
  *  - BKDG For AMD Family 15h Models 00h-0Fh Processors (Publication # 42301)
  *  - BKDG For AMD Family 16h Models 00h-0Fh Processors (Publication # 48751)
+ *  - PPR For AMD Family 17h Models 00h-0Fh Processors (Publication # 54945)
  */
 static void
 topo_probe_amd(void)
@@ -1087,8 +1088,8 @@ smp_after_idle_runnable(void *arg __unused)
 
 	for (cpu = 1; cpu < mp_ncpus; cpu++) {
 		idle_td = pcpu_find(cpu)->pc_idlethread;
-		while (idle_td->td_lastcpu == NOCPU &&
-		    idle_td->td_oncpu == NOCPU)
+		while (atomic_load_int(&idle_td->td_lastcpu) == NOCPU &&
+		    atomic_load_int(&idle_td->td_oncpu) == NOCPU)
 			cpu_spinwait();
 		kmem_free((vm_offset_t)bootstacks[cpu], kstack_pages *
 		    PAGE_SIZE);

@@ -175,6 +175,7 @@ struct filecaps;
 struct filemon;
 struct kaioinfo;
 struct kaudit_record;
+struct kcov_info;
 struct kdtrace_proc;
 struct kdtrace_thread;
 struct mqueue_notifier;
@@ -300,6 +301,7 @@ struct thread {
 	sbintime_t	td_sleeptimo;	/* (t) Sleep timeout. */
 	int		td_rtcgen;	/* (s) rtc_generation of abs. sleep */
 	size_t		td_vslock_sz;	/* (k) amount of vslock-ed space */
+	struct kcov_info *td_kcov_info;	/* (*) Kernel code coverage data */
 #define	td_endzero td_sigmask
 
 /* Copied during fork1() or create_thread(). */
@@ -754,6 +756,9 @@ struct proc {
 #define	P2_AST_SU	0x00000008	/* Handles SU ast for kthreads. */
 #define	P2_PTRACE_FSTP	0x00000010 /* SIGSTOP from PT_ATTACH not yet handled. */
 #define	P2_TRAPCAP	0x00000020	/* SIGTRAP on ENOTCAPABLE */
+#define	P2_ASLR_ENABLE	0x00000040	/* Force enable ASLR. */
+#define	P2_ASLR_DISABLE	0x00000080	/* Force disable ASLR. */
+#define	P2_ASLR_IGNSTART 0x00000100	/* Enable ASLR to consume sbrk area. */
 
 /* Flags protected by proctree_lock, kept in p_treeflags. */
 #define	P_TREE_ORPHANED		0x00000001	/* Reparented, on orphan list */

@@ -83,11 +83,13 @@ struct _ip6dn_args {
  * efficient to pass variables around and extend the interface.
  */
 struct ip_fw_args {
-	struct mbuf	*m;		/* the mbuf chain		*/
-	struct ifnet	*oif;		/* output interface		*/
-	struct sockaddr_in *next_hop;	/* forward address		*/
-	struct sockaddr_in6 *next_hop6; /* ipv6 forward address		*/
-
+	uint32_t		flags;
+#define	IPFW_ARGS_ETHER		0x0001	/* has valid ethernet header	*/
+#define	IPFW_ARGS_NH4		0x0002	/* has IPv4 next hop in hopstore */
+#define	IPFW_ARGS_NH6		0x0004	/* has IPv6 next hop in hopstore */
+#define	IPFW_ARGS_NH4PTR	0x0008	/* has IPv4 next hop in next_hop */
+#define	IPFW_ARGS_NH6PTR	0x0010	/* has IPv6 next hop in next_hop6 */
+#define	IPFW_ARGS_REF		0x0020	/* has valid ipfw_rule_ref	*/
 	/*
 	 * On return, it points to the matching rule.
 	 * On entry, rule.slot > 0 means the info is valid and
@@ -95,19 +97,33 @@ struct ip_fw_args {
 	 * If chain_id == chain->id && slot >0 then jump to that slot.
 	 * Otherwise, we locate the first rule >= rulenum:rule_id
 	 */
-	struct ipfw_rule_ref rule;	/* match/restart info		*/
+	struct ipfw_rule_ref	rule;	/* match/restart info		*/
 
-	struct ether_header *eh;	/* for bridged packets		*/
-
-	struct ipfw_flow_id f_id;	/* grabbed from IP header	*/
-	//uint32_t	cookie;		/* a cookie depending on rule action */
-	struct inpcb	*inp;
-
-	struct _ip6dn_args	dummypar; /* dummynet->ip6_output */
-	union {		/* store here if cannot use a pointer */
-		struct sockaddr_in hopstore;
-		struct sockaddr_in6 hopstore6;
+	struct ifnet		*oif;	/* output interface		*/
+	struct inpcb		*inp;
+	union {
+		/*
+		 * We don't support forwarding on layer2, thus we can
+		 * keep eh pointer in this union.
+		 * next_hop[6] pointers can be used to point to next hop
+		 * stored in rule's opcode to avoid copying into hopstore.
+		 * Also, it is expected that all 0x1-0x10 flags are mutually
+		 * exclusive.
+		 */
+		struct ether_header	*eh;	/* for bridged packets	*/
+		struct sockaddr_in	*next_hop;
+		struct sockaddr_in6	*next_hop6;
+		/* ipfw next hop storage */
+		struct sockaddr_in	hopstore;
+		struct ip_fw_nh6 {
+			struct in6_addr sin6_addr;
+			uint32_t	sin6_scope_id;
+			uint16_t	sin6_port;
+		} hopstore6;
 	};
+
+	struct mbuf		*m;	/* the mbuf chain		*/
+	struct ipfw_flow_id	f_id;	/* grabbed from IP header	*/
 };
 
 MALLOC_DECLARE(M_IPFW);
@@ -296,6 +312,8 @@ struct ip_fw_chain {
 	void		**srvstate;	/* runtime service mappings */
 #if defined( __linux__ ) || defined( _WIN32 )
 	spinlock_t rwmtx;
+#else
+	struct rmlock	rwmtx;
 #endif
 	int		static_len;	/* total len of static rules (v0) */
 	uint32_t	gencnt;		/* NAT generation count */
@@ -436,23 +454,25 @@ struct ipfw_ifc {
 #define	IPFW_PF_RUNLOCK(p)		IPFW_RUNLOCK(p)
 #else /* FreeBSD */
 #define	IPFW_LOCK_INIT(_chain) do {			\
+	rm_init_flags(&(_chain)->rwmtx, "IPFW static rules", RM_RECURSE); \
 	rw_init(&(_chain)->uh_lock, "IPFW UH lock");	\
 	} while (0)
 
 #define	IPFW_LOCK_DESTROY(_chain) do {			\
+	rm_destroy(&(_chain)->rwmtx);			\
 	rw_destroy(&(_chain)->uh_lock);			\
 	} while (0)
 
-#define	IPFW_RLOCK_ASSERT(_chain)	rm_assert(&V_pfil_lock, RA_RLOCKED)
-#define	IPFW_WLOCK_ASSERT(_chain)	rm_assert(&V_pfil_lock, RA_WLOCKED)
+#define	IPFW_RLOCK_ASSERT(_chain)	rm_assert(&(_chain)->rwmtx, RA_RLOCKED)
+#define	IPFW_WLOCK_ASSERT(_chain)	rm_assert(&(_chain)->rwmtx, RA_WLOCKED)
 
 #define	IPFW_RLOCK_TRACKER		struct rm_priotracker _tracker
-#define	IPFW_RLOCK(p)			rm_rlock(&V_pfil_lock, &_tracker)
-#define	IPFW_RUNLOCK(p)			rm_runlock(&V_pfil_lock, &_tracker)
-#define	IPFW_WLOCK(p)			rm_wlock(&V_pfil_lock)
-#define	IPFW_WUNLOCK(p)			rm_wunlock(&V_pfil_lock)
-#define	IPFW_PF_RLOCK(p)
-#define	IPFW_PF_RUNLOCK(p)
+#define	IPFW_RLOCK(p)			rm_rlock(&(p)->rwmtx, &_tracker)
+#define	IPFW_RUNLOCK(p)			rm_runlock(&(p)->rwmtx, &_tracker)
+#define	IPFW_WLOCK(p)			rm_wlock(&(p)->rwmtx)
+#define	IPFW_WUNLOCK(p)			rm_wunlock(&(p)->rwmtx)
+#define	IPFW_PF_RLOCK(p)		IPFW_RLOCK(p)
+#define	IPFW_PF_RUNLOCK(p)		IPFW_RUNLOCK(p)
 #endif
 
 #define	IPFW_UH_RLOCK_ASSERT(_chain)	rw_assert(&(_chain)->uh_lock, RA_RLOCKED)

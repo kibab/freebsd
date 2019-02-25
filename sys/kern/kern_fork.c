@@ -466,7 +466,8 @@ do_fork(struct thread *td, struct fork_req *fr, struct proc *p2, struct thread *
 	 * Increase reference counts on shared objects.
 	 */
 	p2->p_flag = P_INMEM;
-	p2->p_flag2 = p1->p_flag2 & (P2_NOTRACE | P2_NOTRACE_EXEC | P2_TRAPCAP);
+	p2->p_flag2 = p1->p_flag2 & (P2_ASLR_DISABLE | P2_ASLR_ENABLE |
+	    P2_ASLR_IGNSTART | P2_NOTRACE | P2_NOTRACE_EXEC | P2_TRAPCAP);
 	p2->p_swtick = ticks;
 	if (p1->p_flag & P_PROFIL)
 		startprofclock(p2);
@@ -882,7 +883,9 @@ fork1(struct thread *td, struct fork_req *fr)
 	 * processes; don't let root exceed the limit.
 	 */
 	nprocs_new = atomic_fetchadd_int(&nprocs, 1) + 1;
-	if ((nprocs_new >= maxproc - 10 && priv_check_cred(td->td_ucred, PRIV_MAXPROC) != 0) || nprocs_new >= maxproc) {
+	if ((nprocs_new >= maxproc - 10 &&
+	    priv_check_cred(td->td_ucred, PRIV_MAXPROC) != 0) ||
+	    nprocs_new >= maxproc) {
 		error = EAGAIN;
 		sx_xlock(&allproc_lock);
 		if (ppsratecheck(&lastfail, &curfail, 1)) {

@@ -3544,10 +3544,10 @@ again:
 			goto out;
 		}
 #ifdef CAPABILITIES
-		if (newfd != AT_FDCWD) {
+		if (newfd != AT_FDCWD && (tond.ni_resflags & NIRES_ABS) == 0) {
 			/*
 			 * If the target already exists we require CAP_UNLINKAT
-			 * from 'newfd'.
+			 * from 'newfd', when newfd was used for the lookup.
 			 */
 			error = cap_check(&tond.ni_filecaps.fc_rights,
 			    &cap_unlinkat_rights);
@@ -4195,7 +4195,7 @@ sys_getfhat(struct thread *td, struct getfhat_args *uap)
 {
 
 	if ((uap->flags & ~(AT_SYMLINK_NOFOLLOW | AT_BENEATH)) != 0)
-	    return (EINVAL);
+		return (EINVAL);
 	return (kern_getfhat(td, uap->flags, uap->fd, uap->path, UIO_USERSPACE,
 	    uap->fhp));
 }

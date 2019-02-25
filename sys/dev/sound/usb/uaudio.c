@@ -1745,7 +1745,7 @@ uaudio_chan_fill_info_sub(struct uaudio_softc *sc, struct usb_device *udev,
 			continue;
 		}
 
-		if ((acdp != NULL) &&
+		if ((acdp != NULL || sc->sc_uq_au_vendor_class != 0) &&
 		    (desc->bDescriptorType == UDESC_CS_INTERFACE) &&
 		    (desc->bDescriptorSubtype == AS_GENERAL) &&
 		    (asid.v1 == NULL)) {
@@ -1761,7 +1761,7 @@ uaudio_chan_fill_info_sub(struct uaudio_softc *sc, struct usb_device *udev,
 				}
 			}
 		}
-		if ((acdp != NULL) &&
+		if ((acdp != NULL || sc->sc_uq_au_vendor_class != 0) &&
 		    (desc->bDescriptorType == UDESC_CS_INTERFACE) &&
 		    (desc->bDescriptorSubtype == FORMAT_TYPE) &&
 		    (asf1d.v1 == NULL)) {
@@ -1800,7 +1800,7 @@ uaudio_chan_fill_info_sub(struct uaudio_softc *sc, struct usb_device *udev,
 				continue;
 			}
 		}
-		if ((acdp != NULL) &&
+		if ((acdp != NULL || sc->sc_uq_au_vendor_class != 0) &&
 		    (desc->bDescriptorType == UDESC_CS_ENDPOINT) &&
 		    (desc->bDescriptorSubtype == AS_GENERAL) &&
 		    (sed.v1 == NULL)) {
@@ -6285,3 +6285,4 @@ MODULE_DEPEND(uaudio, usb, 1, 1, 1);
 MODULE_DEPEND(uaudio, sound, SOUND_MINVER, SOUND_PREFVER, SOUND_MAXVER);
 MODULE_VERSION(uaudio, 1);
 USB_PNP_HOST_INFO(uaudio_devs);
+USB_PNP_HOST_INFO(uaudio_vendor_midi);
