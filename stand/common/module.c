@@ -39,6 +39,10 @@ __FBSDID("$FreeBSD$");
 #include <sys/queue.h>
 #include <sys/stdint.h>
 
+#if defined(LOADER_FDT_SUPPORT)
+#include <fdt_platform.h>
+#endif
+
 #include "bootstrap.h"
 
 #define	MDIR_REMOVED	0x0001
@@ -58,7 +62,9 @@ static char *			file_search(const char *name, char **extlist);
 static struct kernel_module *	file_findmodule(struct preloaded_file *fp, char *modname, struct mod_depend *verinfo);
 static int			file_havepath(const char *name);
 static char			*mod_searchmodule(char *name, struct mod_depend *verinfo);
+static char *			mod_searchmodule_pnpinfo(const char *bus, const char *pnpinfo);
 static void			file_insert_tail(struct preloaded_file *mp);
+static void			file_remove(struct preloaded_file *fp);
 struct file_metadata*		metadata_next(struct file_metadata *base_mp, int type);
 static void			moduledir_readhints(struct moduledir *mdp);
 static void			moduledir_rebuild(void);
@@ -70,10 +76,11 @@ static vm_offset_t	loadaddr = 0;
 static const char	*default_searchpath =
     "/boot/kernel;/boot/modules;/boot/dtb";
 #else
-static const char	*default_searchpath ="/boot/kernel;/boot/modules";
+static const char	*default_searchpath = "/boot/kernel;/boot/modules";
 #endif
 
-static STAILQ_HEAD(, moduledir) moduledir_list = STAILQ_HEAD_INITIALIZER(moduledir_list);
+static STAILQ_HEAD(, moduledir) moduledir_list =
+    STAILQ_HEAD_INITIALIZER(moduledir_list);
 
 struct preloaded_file *preloaded_files = NULL;
 
@@ -159,6 +166,13 @@ command_load(int argc, char *argv[])
 				ve_debug_set(dflag);
 			return (load_manifest(argv[1], prefix, skip, NULL));
 		}
+#ifdef LOADER_VERIEXEC_PASS_MANIFEST
+		if (strncmp(typestr, "pass_manifest", 13) == 0) {
+			if (dflag > 0)
+				ve_debug_set(dflag);
+		    return (pass_manifest(argv[1], prefix));
+		}
+#endif
 #endif
 
 		fp = file_findfile(argv[1], typestr);
@@ -334,6 +348,186 @@ command_lsmod(int argc, char *argv[])
 	return(CMD_OK);
 }
 
+COMMAND_SET(pnpmatch, "pnpmatch", "list matched modules based on pnpinfo", command_pnpmatch);
+
+static int pnp_dump_flag = 0;
+static int pnp_unbound_flag = 0;
+static int pnp_verbose_flag = 0;
+
+static int
+command_pnpmatch(int argc, char *argv[])
+{
+	char *module;
+	int ch;
+
+	pnp_verbose_flag = 0;
+	pnp_dump_flag = 0;
+	optind = 1;
+	optreset = 1;
+	while ((ch = getopt(argc, argv, "vd")) != -1) {
+		switch(ch) {
+		case 'v':
+			pnp_verbose_flag = 1;
+			break;
+		case 'd':
+			pnp_dump_flag = 1;
+			break;
+		case '?':
+		default:
+			/* getopt has already reported an error */
+			return(CMD_OK);
+		}
+	}
+	argv += (optind - 1);
+	argc -= (optind - 1);
+
+	module = mod_searchmodule_pnpinfo(argv[1], argv[2]);
+	if (module)
+		printf("Matched module: %s\n", module);
+	else if(argv[1])
+		printf("No module matches %s\n", argv[1]);
+
+	return (CMD_OK);
+}
+
+COMMAND_SET(pnpload, "pnpload", "load matched modules based on pnpinfo", command_pnpload);
+
+static int
+command_pnpload(int argc, char *argv[])
+{
+	char *module;
+	int ch, error;
+
+	pnp_verbose_flag = 0;
+	pnp_dump_flag = 0;
+	optind = 1;
+	optreset = 1;
+	while ((ch = getopt(argc, argv, "vd")) != -1) {
+		switch(ch) {
+		case 'v':
+			pnp_verbose_flag = 1;
+			break;
+		case 'd':
+			pnp_dump_flag = 1;
+			break;
+		case '?':
+		default:
+			/* getopt has already reported an error */
+			return(CMD_OK);
+		}
+	}
+	argv += (optind - 1);
+	argc -= (optind - 1);
+
+	if (argc != 2)
+		return (CMD_ERROR);
+
+	module = mod_searchmodule_pnpinfo(argv[1], argv[2]);
+
+	error = mod_load(module, NULL, 0, NULL);
+	if (error == EEXIST) {
+		snprintf(command_errbuf, sizeof(command_errbuf),
+		  "warning: module '%s' already loaded", argv[1]);
+		return (CMD_WARN);
+	}
+
+	return (error == 0 ? CMD_OK : CMD_CRIT);
+}
+
+#if defined(LOADER_FDT_SUPPORT)
+static void
+pnpautoload_simplebus(void) {
+	const char *pnpstring;
+	const char *compatstr;
+	char *pnpinfo = NULL;
+	char *module = NULL;
+	int tag = 0, len, pnplen;
+	int error;
+
+	while (1) {
+		pnpstring = fdt_devmatch_next(&tag, &len);
+		if (pnpstring == NULL)
+			return;
+
+		compatstr = pnpstring;
+		for (pnplen = 0; pnplen != len; compatstr = pnpstring + pnplen) {
+			pnplen += strlen(compatstr) + 1;
+			asprintf(&pnpinfo, "compat=%s", compatstr);
+
+			module = mod_searchmodule_pnpinfo("simplebus", pnpinfo);
+			if (module) {
+				error = mod_loadkld(module, 0, NULL);
+				if (error)
+					printf("Cannot load module %s\n", module);
+				break;
+			}
+		}
+		free(pnpinfo);
+		free(module);
+	}
+}
+#endif
+
+struct pnp_bus {
+	const char *name;
+	void (*load)(void);
+};
+
+struct pnp_bus pnp_buses[] = {
+#if defined(LOADER_FDT_SUPPORT)
+	{"simplebus", pnpautoload_simplebus},
+#endif
+};
+
+COMMAND_SET(pnpautoload, "pnpautoload", "auto load modules based on pnpinfo", command_pnpautoload);
+
+static int
+command_pnpautoload(int argc, char *argv[])
+{
+	int i;
+	int verbose;
+	int ch, match;
+
+	pnp_verbose_flag = 0;
+	pnp_dump_flag = 0;
+	verbose = 0;
+	optind = 1;
+	optreset = 1;
+	match = 0;
+	while ((ch = getopt(argc, argv, "v")) != -1) {
+		switch(ch) {
+		case 'v':
+			verbose = 1;
+			break;
+		case '?':
+		default:
+			/* getopt has already reported an error */
+			return(CMD_OK);
+		}
+	}
+	argv += (optind - 1);
+	argc -= (optind - 1);
+
+	if (argc > 2)
+		return (CMD_ERROR);
+
+	for (i = 0; i < nitems(pnp_buses); i++) {
+		if (argc == 2 && strcmp(argv[1], pnp_buses[i].name) != 0) {
+			if (verbose)
+				printf("Skipping bus %s\n", pnp_buses[i].name);
+			continue;
+		}
+		if (verbose)
+			printf("Autoloading modules for simplebus\n");
+		pnp_buses[i].load();
+		match = 1;
+	}
+	if (match == 0)
+		printf("Unsupported bus %s\n", argv[1]);
+
+	return (CMD_OK);
+}
+
 /*
  * File level interface, functions file_*
  */
@@ -489,7 +683,14 @@ file_loadraw(const char *fname, char *type, int insert)
 
 	/* Looks OK so far; create & populate control structure */
 	fp = file_alloc();
-	fp->f_name = strdup(name);
+	if (fp == NULL) {
+		snprintf(command_errbuf, sizeof (command_errbuf),
+		    "no memory to load %s", name);
+		free(name);
+		close(fd);
+		return (NULL);
+	}
+	fp->f_name = name;
 	fp->f_type = strdup(type);
 	fp->f_args = NULL;
 	fp->f_metadata = NULL;
@@ -497,6 +698,13 @@ file_loadraw(const char *fname, char *type, int insert)
 	fp->f_addr = loadaddr;
 	fp->f_size = laddr - loadaddr;
 
+	if (fp->f_type == NULL) {
+		snprintf(command_errbuf, sizeof (command_errbuf),
+		    "no memory to load %s", name);
+		free(name);
+		close(fd);
+		return (NULL);
+	}
 	/* recognise space consumption */
 	loadaddr = laddr;
 
@@ -527,8 +735,7 @@ mod_load(char *modname, struct mod_depend *verinfo, int argc, char *argv[])
 	mp = file_findmodule(NULL, modname, verinfo);
 	if (mp) {
 #ifdef moduleargs
-		if (mp->m_args)
-			free(mp->m_args);
+		free(mp->m_args);
 		mp->m_args = unargv(argc, argv);
 #endif
 		snprintf(command_errbuf, sizeof(command_errbuf),
@@ -543,6 +750,7 @@ mod_load(char *modname, struct mod_depend *verinfo, int argc, char *argv[])
 		return (ENOENT);
 	}
 	err = mod_loadkld(filename, argc, argv);
+	free(filename);
 	return (err);
 }
 
@@ -553,9 +761,10 @@ mod_load(char *modname, struct mod_depend *verinfo, int argc, char *argv[])
 int
 mod_loadkld(const char *kldname, int argc, char *argv[])
 {
-	struct preloaded_file	*fp, *last_file;
-	int				err;
+	struct preloaded_file	*fp;
+	int			err;
 	char			*filename;
+	vm_offset_t		loadaddr_saved;
 
 	/*
 	 * Get fully qualified KLD name
@@ -576,22 +785,19 @@ mod_loadkld(const char *kldname, int argc, char *argv[])
 		free(filename);
 		return (0);
 	}
-	for (last_file = preloaded_files;
-	     last_file != NULL && last_file->f_next != NULL;
-	     last_file = last_file->f_next)
-		;
 
 	do {
 		err = file_load(filename, loadaddr, &fp);
 		if (err)
 			break;
 		fp->f_args = unargv(argc, argv);
+		loadaddr_saved = loadaddr;
 		loadaddr = fp->f_addr + fp->f_size;
-		file_insert_tail(fp);		/* Add to the list of loaded files */
+		file_insert_tail(fp);	/* Add to the list of loaded files */
 		if (file_load_dependencies(fp) != 0) {
 			err = ENOENT;
-			last_file->f_next = NULL;
-			loadaddr = last_file->f_addr + last_file->f_size;
+			file_remove(fp);
+			loadaddr = loadaddr_saved;
 			fp = NULL;
 			break;
 		}
@@ -600,7 +806,7 @@ mod_loadkld(const char *kldname, int argc, char *argv[])
 		snprintf(command_errbuf, sizeof(command_errbuf),
 		  "don't know how to load module '%s'", filename);
 	}
-	if (err && fp)
+	if (err)
 		file_discard(fp);
 	free(filename);
 	return (err);
@@ -671,10 +877,12 @@ file_addmetadata(struct preloaded_file *fp, int type, size_t size, void *p)
 	struct file_metadata	*md;
 
 	md = malloc(sizeof(struct file_metadata) - sizeof(md->md_data) + size);
-	md->md_size = size;
-	md->md_type = type;
-	bcopy(p, md->md_data, size);
-	md->md_next = fp->f_metadata;
+	if (md != NULL) {
+		md->md_size = size;
+		md->md_type = type;
+		bcopy(p, md->md_data, size);
+		md->md_next = fp->f_metadata;
+	}
 	fp->f_metadata = md;
 }
 
@@ -884,6 +1092,284 @@ bad:
 	return result;
 }
 
+static int
+getint(void **ptr)
+{
+	int *p = *ptr;
+	int rv;
+
+	p = (int *)roundup2((intptr_t)p, sizeof(int));
+	rv = *p++;
+	*ptr = p;
+	return rv;
+}
+
+static void
+getstr(void **ptr, char *val)
+{
+	int *p = *ptr;
+	char *c = (char *)p;
+	int len = *(uint8_t *)c;
+
+	memcpy(val, c + 1, len);
+	val[len] = 0;
+	c += len + 1;
+	*ptr = (void *)c;
+}
+
+static int
+pnpval_as_int(const char *val, const char *pnpinfo)
+{
+	int rv;
+	char key[256];
+	char *cp;
+
+	if (pnpinfo == NULL)
+		return -1;
+
+	cp = strchr(val, ';');
+	key[0] = ' ';
+	if (cp == NULL)
+		strlcpy(key + 1, val, sizeof(key) - 1);
+	else {
+		memcpy(key + 1, val, cp - val);
+		key[cp - val + 1] = '\0';
+	}
+	strlcat(key, "=", sizeof(key));
+	if (strncmp(key + 1, pnpinfo, strlen(key + 1)) == 0)
+		rv = strtol(pnpinfo + strlen(key + 1), NULL, 0);
+	else {
+		cp = strstr(pnpinfo, key);
+		if (cp == NULL)
+			rv = -1;
+		else
+			rv = strtol(cp + strlen(key), NULL, 0);
+	}
+	return rv;
+}
+
+static void
+quoted_strcpy(char *dst, const char *src)
+{
+	char q = ' ';
+
+	if (*src == '\'' || *src == '"')
+		q = *src++;
+	while (*src && *src != q)
+		*dst++ = *src++; // XXX backtick quoting
+	*dst++ = '\0';
+	// XXX overflow
+}
+
+static char *
+pnpval_as_str(const char *val, const char *pnpinfo)
+{
+	static char retval[256];
+	char key[256];
+	char *cp;
+
+	if (pnpinfo == NULL) {
+		*retval = '\0';
+		return retval;
+	}
+
+	cp = strchr(val, ';');
+	key[0] = ' ';
+	if (cp == NULL)
+		strlcpy(key + 1, val, sizeof(key) - 1);
+	else {
+		memcpy(key + 1, val, cp - val);
+		key[cp - val + 1] = '\0';
+	}
+	strlcat(key, "=", sizeof(key));
+	if (strncmp(key + 1, pnpinfo, strlen(key + 1)) == 0)
+		quoted_strcpy(retval, pnpinfo + strlen(key + 1));
+	else {
+		cp = strstr(pnpinfo, key);
+		if (cp == NULL)
+			strcpy(retval, "MISSING");
+		else
+			quoted_strcpy(retval, cp + strlen(key));
+	}
+	return retval;
+}
+
+static char *
+devmatch_search_hints(struct moduledir *mdp, const char *bus, const char *dev, const char *pnpinfo)
+{
+	char val1[256], val2[256];
+	int ival, len, ents, i, notme, mask, bit, v, found;
+	void *ptr, *walker, *hints_end;
+	char *lastmod = NULL, *cp, *s;
+
+	moduledir_readhints(mdp);
+	found = 0;
+	if (mdp->d_hints == NULL)
+		goto bad;
+	walker = mdp->d_hints;
+	hints_end = walker + mdp->d_hintsz;
+	while (walker < hints_end && !found) {
+		len = getint(&walker);
+		ival = getint(&walker);
+		ptr = walker;
+		switch (ival) {
+		case MDT_VERSION:
+			getstr(&ptr, val1);
+			ival = getint(&ptr);
+			getstr(&ptr, val2);
+			if (pnp_dump_flag || pnp_verbose_flag)
+				printf("Version: if %s.%d kmod %s\n", val1, ival, val2);
+			break;
+		case MDT_MODULE:
+			getstr(&ptr, val1);
+			getstr(&ptr, val2);
+			if (lastmod)
+				free(lastmod);
+			lastmod = strdup(val2);
+			if (pnp_dump_flag || pnp_verbose_flag)
+				printf("module %s in %s\n", val1, val1);
+			break;
+		case MDT_PNP_INFO:
+			if (!pnp_dump_flag && !pnp_unbound_flag && lastmod && strcmp(lastmod, "kernel") == 0)
+				break;
+			getstr(&ptr, val1);
+			getstr(&ptr, val2);
+			ents = getint(&ptr);
+			if (pnp_dump_flag || pnp_verbose_flag)
+				printf("PNP info for bus %s format %s %d entries (%s)\n",
+				    val1, val2, ents, lastmod);
+			if (strcmp(val1, "usb") == 0) {
+				if (pnp_verbose_flag)
+					printf("Treating usb as uhub -- bug in source table still?\n");
+				strcpy(val1, "uhub");
+			}
+			if (bus && strcmp(val1, bus) != 0) {
+				if (pnp_verbose_flag)
+					printf("Skipped because table for bus %s, looking for %s\n",
+					    val1, bus);
+				break;
+			}
+			for (i = 0; i < ents; i++) {
+				if (pnp_verbose_flag)
+					printf("---------- Entry %d ----------\n", i);
+				if (pnp_dump_flag)
+					printf("   ");
+				cp = val2;
+				notme = 0;
+				mask = -1;
+				bit = -1;
+				do {
+					switch (*cp) {
+						/* All integer fields */
+					case 'I':
+					case 'J':
+					case 'G':
+					case 'L':
+					case 'M':
+						ival = getint(&ptr);
+						if (pnp_dump_flag) {
+							printf("%#x:", ival);
+							break;
+						}
+						if (bit >= 0 && ((1 << bit) & mask) == 0)
+							break;
+						v = pnpval_as_int(cp + 2, pnpinfo);
+						if (pnp_verbose_flag)
+							printf("Matching %s (%c) table=%#x tomatch=%#x\n",
+							    cp + 2, *cp, v, ival);
+						switch (*cp) {
+						case 'J':
+							if (ival == -1)
+								break;
+							/*FALLTHROUGH*/
+						case 'I':
+							if (v != ival)
+								notme++;
+							break;
+						case 'G':
+							if (v < ival)
+								notme++;
+							break;
+						case 'L':
+							if (v > ival)
+								notme++;
+							break;
+						case 'M':
+							mask = ival;
+							break;
+						}
+						break;
+						/* String fields */
+					case 'D':
+					case 'Z':
+						getstr(&ptr, val1);
+						if (pnp_dump_flag) {
+							printf("'%s':", val1);
+							break;
+						}
+						if (*cp == 'D')
+							break;
+						s = pnpval_as_str(cp + 2, pnpinfo);
+						if (strcmp(s, val1) != 0)
+							notme++;
+						break;
+						/* Key override fields, required to be last in the string */
+					case 'T':
+						/*
+						 * This is imperfect and only does one key and will be redone
+						 * to be more general for multiple keys. Currently, nothing
+						 * does that.
+						 */
+						if (pnp_dump_flag)				/* No per-row data stored */
+							break;
+						if (cp[strlen(cp) - 1] == ';')		/* Skip required ; at end */
+							cp[strlen(cp) - 1] = '\0';	/* in case it's not there */
+						if ((s = strstr(pnpinfo, cp + 2)) == NULL)
+							notme++;
+						else if (s > pnpinfo && s[-1] != ' ')
+							notme++;
+						break;
+					default:
+						printf("Unknown field type %c\n:", *cp);
+						break;
+					}
+					bit++;
+					cp = strchr(cp, ';');
+					if (cp)
+						cp++;
+				} while (cp && *cp);
+				if (pnp_dump_flag)
+					printf("\n");
+				else if (!notme) {
+					if (!pnp_unbound_flag) {
+						if (pnp_verbose_flag)
+							printf("Matches --- %s ---\n", lastmod);
+					}
+					found++;
+				}
+			}
+			break;
+		default:
+			break;
+		}
+		walker = (void *)(len - sizeof(int) + (intptr_t)walker);
+	}
+	if (pnp_unbound_flag && found == 0 && *pnpinfo) {
+		if (pnp_verbose_flag)
+			printf("------------------------- ");
+		printf("%s on %s pnpinfo %s", *dev ? dev : "unattached", bus, pnpinfo);
+		if (pnp_verbose_flag)
+			printf(" -------------------------");
+		printf("\n");
+	}
+	if (found != 0)
+		return (lastmod);
+	free(lastmod);
+
+bad:
+	return (NULL);
+}
+
 /*
  * Attempt to locate the file containing the module (name)
  */
@@ -907,6 +1393,26 @@ mod_searchmodule(char *name, struct mod_depend *verinfo)
 	return(result);
 }
 
+static char *
+mod_searchmodule_pnpinfo(const char *bus, const char *pnpinfo)
+{
+	struct	moduledir *mdp;
+	char	*result;
+
+	moduledir_rebuild();
+	/*
+	 * Now we ready to lookup module in the given directories
+	 */
+	result = NULL;
+	STAILQ_FOREACH(mdp, &moduledir_list, d_link) {
+		result = devmatch_search_hints(mdp, bus, NULL, pnpinfo);
+		if (result)
+			break;
+	}
+
+	return(result);
+}
+
 int
 file_addmodule(struct preloaded_file *fp, char *modname, int version,
 	struct kernel_module **newmp)
@@ -919,11 +1425,14 @@ file_addmodule(struct preloaded_file *fp, char *modname, int version,
 	mp = file_findmodule(fp, modname, &mdepend);
 	if (mp)
 		return (EEXIST);
-	mp = malloc(sizeof(struct kernel_module));
+	mp = calloc(1, sizeof(struct kernel_module));
 	if (mp == NULL)
 		return (ENOMEM);
-	bzero(mp, sizeof(struct kernel_module));
 	mp->m_name = strdup(modname);
+	if (mp->m_name == NULL) {
+		free(mp);
+		return (ENOMEM);
+	}
 	mp->m_version = version;
 	mp->m_fp = fp;
 	mp->m_next = fp->f_modules;
@@ -951,18 +1460,14 @@ file_discard(struct preloaded_file *fp)
 	}
 	mp = fp->f_modules;
 	while (mp) {
-		if (mp->m_name)
-			free(mp->m_name);
+		free(mp->m_name);
 		mp1 = mp;
 		mp = mp->m_next;
 		free(mp1);
 	}
-	if (fp->f_name != NULL)
-		free(fp->f_name);
-	if (fp->f_type != NULL)
-		free(fp->f_type);
-	if (fp->f_args != NULL)
-		free(fp->f_args);
+	free(fp->f_name);
+	free(fp->f_type);
+	free(fp->f_args);
 	free(fp);
 }
 
@@ -973,12 +1478,8 @@ file_discard(struct preloaded_file *fp)
 struct preloaded_file *
 file_alloc(void)
 {
-	struct preloaded_file	*fp;
 
-	if ((fp = malloc(sizeof(struct preloaded_file))) != NULL) {
-		bzero(fp, sizeof(struct preloaded_file));
-	}
-	return (fp);
+	return (calloc(1, sizeof(struct preloaded_file)));
 }
 
 /*
@@ -997,6 +1498,29 @@ file_insert_tail(struct preloaded_file *fp)
 		for (cm = preloaded_files; cm->f_next != NULL; cm = cm->f_next)
 			;
 		cm->f_next = fp;
+	}
+}
+
+/*
+ * Remove module from the chain
+ */
+static void
+file_remove(struct preloaded_file *fp)
+{
+	struct preloaded_file   *cm;
+
+	if (preloaded_files == NULL)
+		return;
+
+	if (preloaded_files == fp) {
+		preloaded_files = fp->f_next;
+		return;
+        }
+        for (cm = preloaded_files; cm->f_next != NULL; cm = cm->f_next) {
+		if (cm->f_next == fp) {
+			cm->f_next = fp->f_next;
+			return;
+		}
 	}
 }
 
@@ -1049,10 +1573,8 @@ moduledir_readhints(struct moduledir *mdp)
 	return;
 bad:
 	close(fd);
-	if (mdp->d_hints) {
-		free(mdp->d_hints);
-		mdp->d_hints = NULL;
-	}
+	free(mdp->d_hints);
+	mdp->d_hints = NULL;
 	mdp->d_flags |= MDIR_NOHINTS;
 	return;
 }
@@ -1113,8 +1635,7 @@ moduledir_rebuild(void)
 		if ((mdp->d_flags & MDIR_REMOVED) == 0) {
 			mdp = STAILQ_NEXT(mdp, d_link);
 		} else {
-			if (mdp->d_hints)
-				free(mdp->d_hints);
+			free(mdp->d_hints);
 			mtmp = mdp;
 			mdp = STAILQ_NEXT(mdp, d_link);
 			STAILQ_REMOVE(&moduledir_list, mtmp, moduledir, d_link);

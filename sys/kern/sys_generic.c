@@ -561,9 +561,6 @@ dofilewrite(struct thread *td, int fd, struct file *fp, struct uio *auio,
 		ktruio = cloneuio(auio);
 #endif
 	cnt = auio->uio_resid;
-	if (fp->f_type == DTYPE_VNODE &&
-	    (fp->f_vnread_flags & FDEVFS_VNODE) == 0)
-		bwillwrite();
 	if ((error = fo_write(fp, auio, td->td_ucred, flags, td))) {
 		if (auio->uio_resid != cnt && (error == ERESTART ||
 		    error == EINTR || error == EWOULDBLOCK))
@@ -757,7 +754,11 @@ kern_ioctl(struct thread *td, int fd, u_long com, caddr_t data)
 		fp = NULL;	/* fhold() was not called yet */
 		goto out;
 	}
-	fhold(fp);
+	if (!fhold(fp)) {
+		error = EBADF;
+		fp = NULL;
+		goto out;
+	}
 	if (locked == LA_SLOCKED) {
 		FILEDESC_SUNLOCK(fdp);
 		locked = LA_UNLOCKED;

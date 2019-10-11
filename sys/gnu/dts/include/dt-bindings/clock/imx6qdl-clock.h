@@ -1,9 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright 2014 Freescale Semiconductor, Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #ifndef __DT_BINDINGS_CLOCK_IMX6QDL_H
@@ -274,6 +271,8 @@
 #define IMX6QDL_CLK_EPIT1			261
 #define IMX6QDL_CLK_EPIT2			262
 #define IMX6QDL_CLK_MMDC_P0_IPG			263
-#define IMX6QDL_CLK_END				264
+#define IMX6QDL_CLK_DCIC1			264
+#define IMX6QDL_CLK_DCIC2			265
+#define IMX6QDL_CLK_END				266
 
 #endif /* __DT_BINDINGS_CLOCK_IMX6QDL_H */

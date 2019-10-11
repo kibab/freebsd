@@ -425,7 +425,6 @@ ixgbe_if_tx_queues_alloc(if_ctx_t ctx, caddr_t *vaddrs, uint64_t *paddrs,
 		    i);
 
 		txr->adapter = que->adapter = adapter;
-		adapter->active_queues |= (u64)1 << txr->me;
 
 		/* Allocate report status array */
 		txr->tx_rsq = (qidx_t *)malloc(sizeof(qidx_t) * scctx->isc_ntxd[0], M_IXGBE, M_NOWAIT | M_ZERO);
@@ -796,6 +795,8 @@ ixgbe_initialize_transmit_units(if_ctx_t ctx)
 		IXGBE_WRITE_REG(hw, IXGBE_TDT(j), 0);
 
 		/* Cache the tail address */
+		txr->tail = IXGBE_TDT(txr->me);
+
 		txr->tx_rs_cidx = txr->tx_rs_pidx;
 		txr->tx_cidx_processed = scctx->isc_ntxd[0] - 1;
 		for (int k = 0; k < scctx->isc_ntxd[0]; k++)
@@ -1011,12 +1012,13 @@ ixgbe_if_attach_pre(if_ctx_t ctx)
 	    CSUM_IP6_TCP | CSUM_IP6_UDP | CSUM_IP6_TSO;
 	if (adapter->hw.mac.type == ixgbe_mac_82598EB) {
 		scctx->isc_tx_nsegments = IXGBE_82598_SCATTER;
-		scctx->isc_msix_bar = PCIR_BAR(MSIX_82598_BAR);
 	} else {
 		scctx->isc_tx_csum_flags |= CSUM_SCTP |CSUM_IP6_SCTP;
 		scctx->isc_tx_nsegments = IXGBE_82599_SCATTER;
-		scctx->isc_msix_bar = PCIR_BAR(MSIX_82599_BAR);
 	}
+
+	scctx->isc_msix_bar = pci_msix_table_bar(dev);
+
 	scctx->isc_tx_tso_segments_max = scctx->isc_tx_nsegments;
 	scctx->isc_tx_tso_size_max = IXGBE_TSO_SIZE;
 	scctx->isc_tx_tso_segsize_max = PAGE_SIZE;
@@ -2002,7 +2004,6 @@ ixgbe_if_msix_intr_assign(if_ctx_t ctx, int msix)
 		}
 
 		rx_que->msix = vector;
-		adapter->active_queues |= (u64)(1 << rx_que->msix);
 		if (adapter->feat_en & IXGBE_FEATURE_RSS) {
 			/*
 			 * The queue ID is used as the RSS layer bucket ID.
@@ -2880,10 +2881,7 @@ ixgbe_if_init(if_ctx_t ctx)
 	ixgbe_if_multi_set(ctx);
 
 	/* Determine the correct mbuf pool, based on frame size */
-	if (adapter->max_frame_size <= MCLBYTES)
-		adapter->rx_mbuf_sz = MCLBYTES;
-	else
-		adapter->rx_mbuf_sz = MJUMPAGESIZE;
+	adapter->rx_mbuf_sz = iflib_get_rx_mbuf_sz(ctx);
 
 	/* Configure RX settings */
 	ixgbe_initialize_receive_units(ctx);
@@ -3690,7 +3688,7 @@ ixgbe_if_rx_queue_intr_enable(if_ctx_t ctx, uint16_t rxqid)
 	struct adapter     *adapter = iflib_get_softc(ctx);
 	struct ix_rx_queue *que = &adapter->rx_queues[rxqid];
 
-	ixgbe_enable_queue(adapter, que->rxr.me);
+	ixgbe_enable_queue(adapter, que->msix);
 
 	return (0);
 } /* ixgbe_if_rx_queue_intr_enable */
@@ -3702,7 +3700,7 @@ static void
 ixgbe_enable_queue(struct adapter *adapter, u32 vector)
 {
 	struct ixgbe_hw *hw = &adapter->hw;
-	u64             queue = (u64)(1 << vector);
+	u64             queue = 1ULL << vector;
 	u32             mask;
 
 	if (hw->mac.type == ixgbe_mac_82598EB) {
@@ -3725,7 +3723,7 @@ static void
 ixgbe_disable_queue(struct adapter *adapter, u32 vector)
 {
 	struct ixgbe_hw *hw = &adapter->hw;
-	u64             queue = (u64)(1 << vector);
+	u64             queue = 1ULL << vector;
 	u32             mask;
 
 	if (hw->mac.type == ixgbe_mac_82598EB) {

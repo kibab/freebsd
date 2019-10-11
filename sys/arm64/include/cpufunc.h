@@ -38,6 +38,63 @@ breakpoint(void)
 
 #ifdef _KERNEL
 
+#define	HAVE_INLINE_FFS
+
+static __inline __pure2 int
+ffs(int mask)
+{
+
+	return (__builtin_ffs(mask));
+}
+
+#define	HAVE_INLINE_FFSL
+
+static __inline __pure2 int
+ffsl(long mask)
+{
+
+	return (__builtin_ffsl(mask));
+}
+
+#define	HAVE_INLINE_FFSLL
+
+static __inline __pure2 int
+ffsll(long long mask)
+{
+
+	return (__builtin_ffsll(mask));
+}
+
+#define	HAVE_INLINE_FLS
+
+static __inline __pure2 int
+fls(int mask)
+{
+
+	return (mask == 0 ? 0 :
+	    8 * sizeof(mask) - __builtin_clz((u_int)mask));
+}
+
+#define	HAVE_INLINE_FLSL
+
+static __inline __pure2 int
+flsl(long mask)
+{
+
+	return (mask == 0 ? 0 :
+	    8 * sizeof(mask) - __builtin_clzl((u_long)mask));
+}
+
+#define	HAVE_INLINE_FLSLL
+
+static __inline __pure2 int
+flsll(long long mask)
+{
+
+	return (mask == 0 ? 0 :
+	    8 * sizeof(mask) - __builtin_clzll((unsigned long long)mask));
+}
+
 #include <machine/armreg.h>
 
 void pan_enable(void);
@@ -143,7 +200,6 @@ extern int64_t dczva_line_size;
 void arm64_nullop(void);
 void arm64_setttb(vm_offset_t);
 void arm64_tlb_flushID(void);
-void arm64_tlb_flushID_SE(vm_offset_t);
 void arm64_icache_sync_range(vm_offset_t, vm_size_t);
 int arm64_icache_sync_range_checked(vm_offset_t, vm_size_t);
 void arm64_idcache_wbinv_range(vm_offset_t, vm_size_t);

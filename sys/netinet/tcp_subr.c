@@ -37,6 +37,7 @@ __FBSDID("$FreeBSD$");
 #include "opt_inet.h"
 #include "opt_inet6.h"
 #include "opt_ipsec.h"
+#include "opt_kern_tls.h"
 #include "opt_tcpdebug.h"
 
 #include <sys/param.h>
@@ -49,6 +50,9 @@ __FBSDID("$FreeBSD$");
 #include <sys/kernel.h>
 #ifdef TCP_HHOOK
 #include <sys/khelp.h>
+#endif
+#ifdef KERN_TLS
+#include <sys/ktls.h>
 #endif
 #include <sys/sysctl.h>
 #include <sys/jail.h>
@@ -122,7 +126,7 @@ __FBSDID("$FreeBSD$");
 #include <netipsec/ipsec_support.h>
 
 #include <machine/in_cksum.h>
-#include <sys/md5.h>
+#include <crypto/siphash/siphash.h>
 
 #include <security/mac/mac_framework.h>
 
@@ -195,6 +199,11 @@ SYSCTL_INT(_net_inet_tcp, TCPCTL_DO_RFC1323, rfc1323, CTLFLAG_VNET | CTLFLAG_RW,
     &VNET_NAME(tcp_do_rfc1323), 0,
     "Enable rfc1323 (high performance TCP) extensions");
 
+VNET_DEFINE(int, tcp_ts_offset_per_conn) = 1;
+SYSCTL_INT(_net_inet_tcp, OID_AUTO, ts_offset_per_conn, CTLFLAG_VNET | CTLFLAG_RW,
+    &VNET_NAME(tcp_ts_offset_per_conn), 0,
+    "Initialize TCP timestamps per connection instead of per host pair");
+
 static int	tcp_log_debug = 0;
 SYSCTL_INT(_net_inet_tcp, OID_AUTO, log_debug, CTLFLAG_RW,
     &tcp_log_debug, 0, "Log errors caused by incoming TCP segments");
@@ -233,7 +242,7 @@ VNET_DEFINE(uma_zone_t, sack_hole_zone);
 VNET_DEFINE(struct hhook_head *, tcp_hhh[HHOOK_TCP_LAST+1]);
 #endif
 
-#define TS_OFFSET_SECRET_LENGTH 32
+#define TS_OFFSET_SECRET_LENGTH SIPHASH_KEY_LENGTH
 VNET_DEFINE_STATIC(u_char, ts_offset_secret[TS_OFFSET_SECRET_LENGTH]);
 #define	V_ts_offset_secret	VNET(ts_offset_secret)
 
@@ -798,8 +807,12 @@ register_tcp_functions_as_names(struct tcp_function_block *blk, int wait,
 		}
 	}
 
+	if (blk->tfb_flags & TCP_FUNC_BEING_REMOVED) {
+		*num_names = 0;
+		return (EINVAL);
+	}
+
 	refcount_init(&blk->tfb_refcnt, 0);
-	blk->tfb_flags = 0;
 	blk->tfb_id = atomic_fetchadd_int(&next_tcp_stack_id, 1);
 	for (i = 0; i < *num_names; i++) {
 		n = malloc(sizeof(struct tcp_function), M_TCPFUNCTIONS, wait);
@@ -1065,6 +1078,9 @@ tcp_init(void)
 	tcp_keepintvl = TCPTV_KEEPINTVL;
 	tcp_maxpersistidle = TCPTV_KEEP_IDLE;
 	tcp_msl = TCPTV_MSL;
+	tcp_rexmit_initial = TCPTV_RTOBASE;
+	if (tcp_rexmit_initial < 1)
+		tcp_rexmit_initial = 1;
 	tcp_rexmit_min = TCPTV_MIN;
 	if (tcp_rexmit_min < 1)
 		tcp_rexmit_min = 1;
@@ -1109,6 +1125,13 @@ tcp_init(void)
 		SHUTDOWN_PRI_DEFAULT);
 	EVENTHANDLER_REGISTER(maxsockets_change, tcp_zone_change, NULL,
 		EVENTHANDLER_PRI_ANY);
+
+	tcp_inp_lro_direct_queue = counter_u64_alloc(M_WAITOK);
+	tcp_inp_lro_wokeup_queue = counter_u64_alloc(M_WAITOK);
+	tcp_inp_lro_compressed = counter_u64_alloc(M_WAITOK);
+	tcp_inp_lro_single_push = counter_u64_alloc(M_WAITOK);
+	tcp_inp_lro_locks_taken = counter_u64_alloc(M_WAITOK);
+	tcp_inp_lro_sack_wake = counter_u64_alloc(M_WAITOK);
 #ifdef TCPPCAP
 	tcp_pcap_init();
 #endif
@@ -1645,9 +1668,9 @@ tcp_newtcpcb(struct inpcb *inp)
 	 * reasonable initial retransmit time.
 	 */
 	tp->t_srtt = TCPTV_SRTTBASE;
-	tp->t_rttvar = ((TCPTV_RTOBASE - TCPTV_SRTTBASE) << TCP_RTTVAR_SHIFT) / 4;
+	tp->t_rttvar = ((tcp_rexmit_initial - TCPTV_SRTTBASE) << TCP_RTTVAR_SHIFT) / 4;
 	tp->t_rttmin = tcp_rexmit_min;
-	tp->t_rxtcur = TCPTV_RTOBASE;
+	tp->t_rxtcur = tcp_rexmit_initial;
 	tp->snd_cwnd = TCP_MAXWIN << TCP_MAX_WINSHIFT;
 	tp->snd_ssthresh = TCP_MAXWIN << TCP_MAX_WINSHIFT;
 	tp->t_rcvtime = ticks;
@@ -2598,36 +2621,48 @@ out:
 static uint32_t
 tcp_keyed_hash(struct in_conninfo *inc, u_char *key, u_int len)
 {
-	MD5_CTX ctx;
-	uint32_t hash[4];
+	SIPHASH_CTX ctx;
+	uint32_t hash[2];
 
-	MD5Init(&ctx);
-	MD5Update(&ctx, &inc->inc_fport, sizeof(uint16_t));
-	MD5Update(&ctx, &inc->inc_lport, sizeof(uint16_t));
+	KASSERT(len >= SIPHASH_KEY_LENGTH,
+	    ("%s: keylen %u too short ", __func__, len));
+	SipHash24_Init(&ctx);
+	SipHash_SetKey(&ctx, (uint8_t *)key);
+	SipHash_Update(&ctx, &inc->inc_fport, sizeof(uint16_t));
+	SipHash_Update(&ctx, &inc->inc_lport, sizeof(uint16_t));
 	switch (inc->inc_flags & INC_ISIPV6) {
 #ifdef INET
 	case 0:
-		MD5Update(&ctx, &inc->inc_faddr, sizeof(struct in_addr));
-		MD5Update(&ctx, &inc->inc_laddr, sizeof(struct in_addr));
+		SipHash_Update(&ctx, &inc->inc_faddr, sizeof(struct in_addr));
+		SipHash_Update(&ctx, &inc->inc_laddr, sizeof(struct in_addr));
 		break;
 #endif
 #ifdef INET6
 	case INC_ISIPV6:
-		MD5Update(&ctx, &inc->inc6_faddr, sizeof(struct in6_addr));
-		MD5Update(&ctx, &inc->inc6_laddr, sizeof(struct in6_addr));
+		SipHash_Update(&ctx, &inc->inc6_faddr, sizeof(struct in6_addr));
+		SipHash_Update(&ctx, &inc->inc6_laddr, sizeof(struct in6_addr));
 		break;
 #endif
 	}
-	MD5Update(&ctx, key, len);
-	MD5Final((unsigned char *)hash, &ctx);
+	SipHash_Final((uint8_t *)hash, &ctx);
 
-	return (hash[0]);
+	return (hash[0] ^ hash[1]);
 }
 
 uint32_t
 tcp_new_ts_offset(struct in_conninfo *inc)
 {
-	return (tcp_keyed_hash(inc, V_ts_offset_secret,
+	struct in_conninfo inc_store, *local_inc;
+
+	if (!V_tcp_ts_offset_per_conn) {
+		memcpy(&inc_store, inc, sizeof(struct in_conninfo));
+		inc_store.inc_lport = 0;
+		inc_store.inc_fport = 0;
+		local_inc = &inc_store;
+	} else {
+		local_inc = inc;
+	}
+	return (tcp_keyed_hash(local_inc, V_ts_offset_secret,
 	    sizeof(V_ts_offset_secret)));
 }
 
@@ -2678,7 +2713,7 @@ tcp_new_ts_offset(struct in_conninfo *inc)
 #define ISN_BYTES_PER_SECOND 1048576
 #define ISN_STATIC_INCREMENT 4096
 #define ISN_RANDOM_INCREMENT (4096 - 1)
-#define ISN_SECRET_LENGTH    32
+#define ISN_SECRET_LENGTH    SIPHASH_KEY_LENGTH
 
 VNET_DEFINE_STATIC(u_char, isn_secret[ISN_SECRET_LENGTH]);
 VNET_DEFINE_STATIC(int, isn_last);
@@ -2707,7 +2742,7 @@ tcp_new_isn(struct in_conninfo *inc)
 		V_isn_last_reseed = ticks;
 	}
 
-	/* Compute the md5 hash and return the ISN. */
+	/* Compute the hash and return the ISN. */
 	new_isn = (tcp_seq)tcp_keyed_hash(inc, V_isn_secret,
 	    sizeof(V_isn_secret));
 	V_isn_offset += ISN_STATIC_INCREMENT +
@@ -3053,6 +3088,120 @@ sysctl_drop(SYSCTL_HANDLER_ARGS)
 SYSCTL_PROC(_net_inet_tcp, TCPCTL_DROP, drop,
     CTLFLAG_VNET | CTLTYPE_STRUCT | CTLFLAG_WR | CTLFLAG_SKIP, NULL,
     0, sysctl_drop, "", "Drop TCP connection");
+
+#ifdef KERN_TLS
+static int
+sysctl_switch_tls(SYSCTL_HANDLER_ARGS)
+{
+	/* addrs[0] is a foreign socket, addrs[1] is a local one. */
+	struct sockaddr_storage addrs[2];
+	struct inpcb *inp;
+	struct sockaddr_in *fin, *lin;
+	struct epoch_tracker et;
+#ifdef INET6
+	struct sockaddr_in6 *fin6, *lin6;
+#endif
+	int error;
+
+	inp = NULL;
+	fin = lin = NULL;
+#ifdef INET6
+	fin6 = lin6 = NULL;
+#endif
+	error = 0;
+
+	if (req->oldptr != NULL || req->oldlen != 0)
+		return (EINVAL);
+	if (req->newptr == NULL)
+		return (EPERM);
+	if (req->newlen < sizeof(addrs))
+		return (ENOMEM);
+	error = SYSCTL_IN(req, &addrs, sizeof(addrs));
+	if (error)
+		return (error);
+
+	switch (addrs[0].ss_family) {
+#ifdef INET6
+	case AF_INET6:
+		fin6 = (struct sockaddr_in6 *)&addrs[0];
+		lin6 = (struct sockaddr_in6 *)&addrs[1];
+		if (fin6->sin6_len != sizeof(struct sockaddr_in6) ||
+		    lin6->sin6_len != sizeof(struct sockaddr_in6))
+			return (EINVAL);
+		if (IN6_IS_ADDR_V4MAPPED(&fin6->sin6_addr)) {
+			if (!IN6_IS_ADDR_V4MAPPED(&lin6->sin6_addr))
+				return (EINVAL);
+			in6_sin6_2_sin_in_sock((struct sockaddr *)&addrs[0]);
+			in6_sin6_2_sin_in_sock((struct sockaddr *)&addrs[1]);
+			fin = (struct sockaddr_in *)&addrs[0];
+			lin = (struct sockaddr_in *)&addrs[1];
+			break;
+		}
+		error = sa6_embedscope(fin6, V_ip6_use_defzone);
+		if (error)
+			return (error);
+		error = sa6_embedscope(lin6, V_ip6_use_defzone);
+		if (error)
+			return (error);
+		break;
+#endif
+#ifdef INET
+	case AF_INET:
+		fin = (struct sockaddr_in *)&addrs[0];
+		lin = (struct sockaddr_in *)&addrs[1];
+		if (fin->sin_len != sizeof(struct sockaddr_in) ||
+		    lin->sin_len != sizeof(struct sockaddr_in))
+			return (EINVAL);
+		break;
+#endif
+	default:
+		return (EINVAL);
+	}
+	INP_INFO_RLOCK_ET(&V_tcbinfo, et);
+	switch (addrs[0].ss_family) {
+#ifdef INET6
+	case AF_INET6:
+		inp = in6_pcblookup(&V_tcbinfo, &fin6->sin6_addr,
+		    fin6->sin6_port, &lin6->sin6_addr, lin6->sin6_port,
+		    INPLOOKUP_WLOCKPCB, NULL);
+		break;
+#endif
+#ifdef INET
+	case AF_INET:
+		inp = in_pcblookup(&V_tcbinfo, fin->sin_addr, fin->sin_port,
+		    lin->sin_addr, lin->sin_port, INPLOOKUP_WLOCKPCB, NULL);
+		break;
+#endif
+	}
+	INP_INFO_RUNLOCK_ET(&V_tcbinfo, et);
+	if (inp != NULL) {
+		if ((inp->inp_flags & (INP_TIMEWAIT | INP_DROPPED)) != 0 ||
+		    inp->inp_socket == NULL) {
+			error = ECONNRESET;
+			INP_WUNLOCK(inp);
+		} else {
+			struct socket *so;
+	
+			so = inp->inp_socket;
+			soref(so);
+			error = ktls_set_tx_mode(so,
+			    arg2 == 0 ? TCP_TLS_MODE_SW : TCP_TLS_MODE_IFNET);
+			INP_WUNLOCK(inp);
+			SOCK_LOCK(so);
+			sorele(so);
+		}
+	} else
+		error = ESRCH;
+	return (error);
+}
+
+SYSCTL_PROC(_net_inet_tcp, OID_AUTO, switch_to_sw_tls,
+    CTLFLAG_VNET | CTLTYPE_STRUCT | CTLFLAG_WR | CTLFLAG_SKIP, NULL,
+    0, sysctl_switch_tls, "", "Switch TCP connection to SW TLS");
+SYSCTL_PROC(_net_inet_tcp, OID_AUTO, switch_to_ifnet_tls,
+    CTLFLAG_VNET | CTLTYPE_STRUCT | CTLFLAG_WR | CTLFLAG_SKIP, NULL,
+    1, sysctl_switch_tls, "", "Switch TCP connection to ifnet TLS");
+#endif
 
 /*
  * Generate a standardized TCP log line for use throughout the

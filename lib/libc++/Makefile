@@ -11,6 +11,8 @@ CXXINCLUDEDIR=	${INCLUDEDIR}/c++/v${SHLIB_MAJOR}
 STATIC_CXXFLAGS+= -mlong-calls
 .endif
 
+ALLOW_MIPS_SHARED_TEXTREL=
+
 .PATH: ${SRCDIR}
 
 LIB=		c++
@@ -23,8 +25,12 @@ SRCS+=		bind.cpp
 SRCS+=		charconv.cpp
 SRCS+=		chrono.cpp
 SRCS+=		condition_variable.cpp
+SRCS+=		condition_variable_destructor.cpp
 SRCS+=		debug.cpp
 SRCS+=		exception.cpp
+SRCS+=		filesystem/directory_iterator.cpp
+SRCS+=		filesystem/int128_builtins.cpp
+SRCS+=		filesystem/operations.cpp
 SRCS+=		functional.cpp
 SRCS+=		future.cpp
 SRCS+=		hash.cpp
@@ -33,6 +39,7 @@ SRCS+=		iostream.cpp
 SRCS+=		locale.cpp
 SRCS+=		memory.cpp
 SRCS+=		mutex.cpp
+SRCS+=		mutex_destructor.cpp
 SRCS+=		new.cpp
 SRCS+=		optional.cpp
 SRCS+=		random.cpp
@@ -48,9 +55,6 @@ SRCS+=		utility.cpp
 SRCS+=		valarray.cpp
 SRCS+=		variant.cpp
 SRCS+=		vector.cpp
-SRCS+=		filesystem/directory_iterator.cpp
-SRCS+=		filesystem/int128_builtins.cpp
-SRCS+=		filesystem/operations.cpp
 
 CXXRT_SRCS+=	auxhelper.cc
 CXXRT_SRCS+=	dynamic_cast.cc
@@ -76,9 +80,7 @@ CFLAGS+=	-nostdinc++
 CFLAGS+=	-nostdlib
 CFLAGS+=	-D_LIBCPP_BUILDING_LIBRARY
 CFLAGS+=	-DLIBCXXRT
-.if empty(CXXFLAGS:M-std=*)
-CXXFLAGS+=	-std=c++11
-.endif
+CXXSTD?=	c++11
 
 LIBADD+=	cxxrt
 INCSGROUPS=	STD EXP EXT
@@ -147,6 +149,7 @@ STD_HEADERS+=	cwctype
 STD_HEADERS+=	deque
 STD_HEADERS+=	errno.h
 STD_HEADERS+=	exception
+STD_HEADERS+=	fenv.h
 STD_HEADERS+=	filesystem
 STD_HEADERS+=	float.h
 STD_HEADERS+=	forward_list
@@ -230,8 +233,6 @@ STDDIR=		${CXXINCLUDEDIR}
 EXP_HEADERS+=	__config
 EXP_HEADERS+=	__memory
 EXP_HEADERS+=	algorithm
-EXP_HEADERS+=	any
-EXP_HEADERS+=	chrono
 EXP_HEADERS+=	coroutine
 EXP_HEADERS+=	deque
 EXP_HEADERS+=	filesystem
@@ -241,17 +242,11 @@ EXP_HEADERS+=	iterator
 EXP_HEADERS+=	list
 EXP_HEADERS+=	map
 EXP_HEADERS+=	memory_resource
-EXP_HEADERS+=	numeric
-EXP_HEADERS+=	optional
 EXP_HEADERS+=	propagate_const
-EXP_HEADERS+=	ratio
 EXP_HEADERS+=	regex
 EXP_HEADERS+=	set
 EXP_HEADERS+=	simd
 EXP_HEADERS+=	string
-EXP_HEADERS+=	string_view
-EXP_HEADERS+=	system_error
-EXP_HEADERS+=	tuple
 EXP_HEADERS+=	type_traits
 EXP_HEADERS+=	unordered_map
 EXP_HEADERS+=	unordered_set

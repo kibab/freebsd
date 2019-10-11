@@ -4,7 +4,11 @@
 # The user-driven targets are:
 #
 # universe            - *Really* build *everything* (buildworld and
-#                       all kernels on all architectures).
+#                       all kernels on all architectures).  Define
+#                       MAKE_JUST_KERNELS to only build kernels,
+#                       MAKE_JUST_WORLDS to only build userland, and/or
+#                       MAKE_OBSOLETE_GCC to also build architectures
+#                       unsupported by clang using in-tree gcc.
 # tinderbox           - Same as universe, but presents a list of failed build
 #                       targets and exits with an error if there were any.
 # buildworld          - Rebuild *everything*, including glue to help do
@@ -33,6 +37,7 @@
 # targets             - Print a list of supported TARGET/TARGET_ARCH pairs
 #                       for world and kernel targets.
 # toolchains          - Build a toolchain for all world and kernel targets.
+# makeman             - Regenerate src.conf(5)
 # sysent              - (Re)build syscall entries from syscalls.master.
 # xdev                - xdev-build + xdev-install for the architecture
 #                       specified with TARGET and TARGET_ARCH.
@@ -45,12 +50,6 @@
 # native-xtools-install
 #                     - Install the files to the given DESTDIR/NXTP where
 #                       NXTP defaults to /nxb-bin.
-# 
-# "quick" way to test all kernel builds:
-# 	_jflag=`sysctl -n hw.ncpu`
-# 	_jflag=$(($_jflag * 2))
-# 	[ $_jflag -gt 12 ] && _jflag=12
-# 	make universe -DMAKE_JUST_KERNELS JFLAG=-j${_jflag}
 #
 # This makefile is simple by design. The FreeBSD make automatically reads
 # the /usr/share/mk/sys.mk unless the -m argument is specified on the
@@ -85,7 +84,7 @@
 #  5.  `reboot'        (in single user mode: boot -s from the loader prompt).
 #  6.  `mergemaster -p'
 #  7.  `make installworld'
-#  8.  `mergemaster'		(you may wish to use -i, along with -U or -F).
+#  8.  `mergemaster'            (you may wish to use -i, along with -U or -F).
 #  9.  `make delete-old'
 # 10.  `reboot'
 # 11.  `make delete-old-libs' (in case no 3rd party program uses them anymore)
@@ -137,13 +136,13 @@ TGTS=	all all-man buildenv buildenvvars buildkernel buildworld \
 	reinstallkernel reinstallkernel.debug \
 	installworld kernel-toolchain libraries maninstall \
 	obj objlink showconfig tags toolchain update \
-	sysent \
+	makeman sysent \
 	_worldtmp _legacy _bootstrap-tools _cleanobj _obj \
 	_build-tools _build-metadata _cross-tools _includes _libraries \
 	build32 distribute32 install32 buildsoft distributesoft installsoft \
 	builddtb xdev xdev-build xdev-install \
 	xdev-links native-xtools native-xtools-install stageworld stagekernel \
-	stage-packages \
+	stage-packages stage-packages-kernel stage-packages-world \
 	create-packages-world create-packages-kernel create-packages \
 	packages installconfig real-packages sign-packages package-pkg \
 	print-dir test-system-compiler test-system-linker
@@ -485,7 +484,14 @@ worlds: .PHONY
 #
 .if make(universe) || make(universe_kernels) || make(tinderbox) || \
     make(targets) || make(universe-toolchain)
-TARGETS?=amd64 arm arm64 i386 mips powerpc riscv sparc64
+#
+# By default, build only the known-good clang-supporting platforms.
+# If MAKE_OBSOLETE_GCC is defined, built all the old GCC architectures.
+# In all cases, if the user specifies TARGETS on the command line,
+# honor that most of all.
+#
+_OBSOLETE_GCC_TARGETS=mips powerpc sparc64
+TARGETS?=amd64 arm arm64 i386 riscv ${_OBSOLETE_GCC_TARGETS}
 _UNIVERSE_TARGETS=	${TARGETS}
 TARGET_ARCHES_arm?=	arm armv6 armv7
 TARGET_ARCHES_arm64?=	aarch64
@@ -498,11 +504,23 @@ TARGET_ARCHES_${target}?= ${target}
 .endfor
 
 MAKE_PARAMS_riscv?=	CROSS_TOOLCHAIN=riscv64-gcc
+.if !defined(MAKE_OBSOLETE_GCC)
+OBSOLETE_GCC_TARGETS=${_OBSOLETE_GCC_TARGETS}
+MAKE_PARAMS_mips?=	CROSS_TOOLCHAIN=mips-gcc
+MAKE_PARAMS_powerpc?=	CROSS_TOOLCHAIN=powerpc-gcc
+MAKE_PARAMS_sparc64?=	CROSS_TOOLCHAIN=sparc64-gcc
+.endif
 
-# XXX Remove architectures only supported by external toolchain from universe
-# if required toolchain packages are missing.
+TOOLCHAINS_mips=	mips
+TOOLCHAINS_powerpc=	powerpc64
 TOOLCHAINS_riscv=	riscv64
-.for target in riscv
+TOOLCHAINS_sparc64=	sparc64
+
+# Remove architectures only supported by external toolchain from
+# universe if required toolchain packages are missing. riscv requires
+# an out-of-tree toolchain. When MAKE_OBSOLETE_GCC is not defined,
+# the same logic appleis to the obsolete gcc targets.
+.for target in riscv ${OBSOLETE_GCC_TARGETS}
 .if ${_UNIVERSE_TARGETS:M${target}}
 .for toolchain in ${TOOLCHAINS_${target}}
 .if !exists(/usr/local/share/toolchains/${toolchain}-gcc.mk)
@@ -570,7 +588,7 @@ universe-toolchain: .PHONY universe_prologue
 	    false; \
 	fi
 	@if [ ! -e "${HOST_OBJTOP}/tmp/usr/bin/ld" ]; then \
-	    echo "Missing host linker at ${HOST_OBJTOP}/tmp/usr/bin/cc?" >&2; \
+	    echo "Missing host linker at ${HOST_OBJTOP}/tmp/usr/bin/ld?" >&2; \
 	    false; \
 	fi
 	@echo "--------------------------------------------------------------"

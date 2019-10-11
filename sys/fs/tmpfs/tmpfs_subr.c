@@ -190,8 +190,6 @@ tmpfs_alloc_node(struct mount *mp, struct tmpfs_mount *tmp, enum vtype type,
 	/* If the root directory of the 'tmp' file system is not yet
 	 * allocated, this must be the request to do it. */
 	MPASS(IMPLIES(tmp->tm_root == NULL, parent == NULL && type == VDIR));
-	KASSERT(tmp->tm_root == NULL || mp->mnt_writeopcount > 0,
-	    ("creating node not under vn_start_write"));
 
 	MPASS(IFF(type == VLNK, target != NULL));
 	MPASS(IFF(type == VBLK || type == VCHR, rdev != VNOVAL));
@@ -218,6 +216,8 @@ tmpfs_alloc_node(struct mount *mp, struct tmpfs_mount *tmp, enum vtype type,
 		 */
 		return (EBUSY);
 	}
+	if ((mp->mnt_kern_flag & MNT_RDONLY) != 0)
+		return (EROFS);
 
 	nnode = (struct tmpfs_node *)uma_zalloc_arg(tmp->tm_node_pool, tmp,
 	    M_WAITOK);
@@ -486,6 +486,8 @@ tmpfs_destroy_vobject(struct vnode *vp, vm_object_t obj)
 	VI_LOCK(vp);
 	vm_object_clear_flag(obj, OBJ_TMPFS);
 	obj->un_pager.swp.swp_tmpfs = NULL;
+	if (vp->v_writecount < 0)
+		vp->v_writecount = 0;
 	VI_UNLOCK(vp);
 	VM_OBJECT_WUNLOCK(obj);
 }
@@ -1108,7 +1110,8 @@ tmpfs_dir_destroy(struct tmpfs_mount *tmp, struct tmpfs_node *dnode)
  * error happens.
  */
 static int
-tmpfs_dir_getdotdent(struct tmpfs_node *node, struct uio *uio)
+tmpfs_dir_getdotdent(struct tmpfs_mount *tm, struct tmpfs_node *node,
+    struct uio *uio)
 {
 	int error;
 	struct dirent dent;
@@ -1128,7 +1131,7 @@ tmpfs_dir_getdotdent(struct tmpfs_node *node, struct uio *uio)
 	else
 		error = uiomove(&dent, dent.d_reclen, uio);
 
-	tmpfs_set_status(node, TMPFS_NODE_ACCESSED);
+	tmpfs_set_status(tm, node, TMPFS_NODE_ACCESSED);
 
 	return (error);
 }
@@ -1141,10 +1144,12 @@ tmpfs_dir_getdotdent(struct tmpfs_node *node, struct uio *uio)
  * error happens.
  */
 static int
-tmpfs_dir_getdotdotdent(struct tmpfs_node *node, struct uio *uio)
+tmpfs_dir_getdotdotdent(struct tmpfs_mount *tm, struct tmpfs_node *node,
+    struct uio *uio)
 {
-	int error;
+	struct tmpfs_node *parent;
 	struct dirent dent;
+	int error;
 
 	TMPFS_VALIDATE_DIR(node);
 	MPASS(uio->uio_offset == TMPFS_DIRCOOKIE_DOTDOT);
@@ -1153,12 +1158,13 @@ tmpfs_dir_getdotdotdent(struct tmpfs_node *node, struct uio *uio)
 	 * Return ENOENT if the current node is already removed.
 	 */
 	TMPFS_ASSERT_LOCKED(node);
-	if (node->tn_dir.tn_parent == NULL)
+	parent = node->tn_dir.tn_parent;
+	if (parent == NULL)
 		return (ENOENT);
 
-	TMPFS_NODE_LOCK(node->tn_dir.tn_parent);
-	dent.d_fileno = node->tn_dir.tn_parent->tn_id;
-	TMPFS_NODE_UNLOCK(node->tn_dir.tn_parent);
+	TMPFS_NODE_LOCK(parent);
+	dent.d_fileno = parent->tn_id;
+	TMPFS_NODE_UNLOCK(parent);
 
 	dent.d_type = DT_DIR;
 	dent.d_namlen = 2;
@@ -1172,7 +1178,7 @@ tmpfs_dir_getdotdotdent(struct tmpfs_node *node, struct uio *uio)
 	else
 		error = uiomove(&dent, dent.d_reclen, uio);
 
-	tmpfs_set_status(node, TMPFS_NODE_ACCESSED);
+	tmpfs_set_status(tm, node, TMPFS_NODE_ACCESSED);
 
 	return (error);
 }
@@ -1185,8 +1191,8 @@ tmpfs_dir_getdotdotdent(struct tmpfs_node *node, struct uio *uio)
  * error code if another error happens.
  */
 int
-tmpfs_dir_getdents(struct tmpfs_node *node, struct uio *uio, int maxcookies,
-    u_long *cookies, int *ncookies)
+tmpfs_dir_getdents(struct tmpfs_mount *tm, struct tmpfs_node *node,
+    struct uio *uio, int maxcookies, u_long *cookies, int *ncookies)
 {
 	struct tmpfs_dir_cursor dc;
 	struct tmpfs_dirent *de;
@@ -1207,7 +1213,7 @@ tmpfs_dir_getdents(struct tmpfs_node *node, struct uio *uio, int maxcookies,
 	 */
 	switch (uio->uio_offset) {
 	case TMPFS_DIRCOOKIE_DOT:
-		error = tmpfs_dir_getdotdent(node, uio);
+		error = tmpfs_dir_getdotdent(tm, node, uio);
 		if (error != 0)
 			return (error);
 		uio->uio_offset = TMPFS_DIRCOOKIE_DOTDOT;
@@ -1215,7 +1221,7 @@ tmpfs_dir_getdents(struct tmpfs_node *node, struct uio *uio, int maxcookies,
 			cookies[(*ncookies)++] = off = uio->uio_offset;
 		/* FALLTHROUGH */
 	case TMPFS_DIRCOOKIE_DOTDOT:
-		error = tmpfs_dir_getdotdotdent(node, uio);
+		error = tmpfs_dir_getdotdotdent(tm, node, uio);
 		if (error != 0)
 			return (error);
 		de = tmpfs_dir_first(node, &dc);
@@ -1317,7 +1323,7 @@ tmpfs_dir_getdents(struct tmpfs_node *node, struct uio *uio, int maxcookies,
 	node->tn_dir.tn_readdir_lastn = off;
 	node->tn_dir.tn_readdir_lastp = de;
 
-	tmpfs_set_status(node, TMPFS_NODE_ACCESSED);
+	tmpfs_set_status(tm, node, TMPFS_NODE_ACCESSED);
 	return error;
 }
 
@@ -1412,7 +1418,6 @@ retry:
 					goto retry;
 				rv = vm_pager_get_pages(uobj, &m, 1, NULL,
 				    NULL);
-				vm_page_lock(m);
 				if (rv == VM_PAGER_OK) {
 					/*
 					 * Since the page was not resident,
@@ -1422,12 +1427,12 @@ retry:
 					 * current operation is not regarded
 					 * as an access.
 					 */
+					vm_page_lock(m);
 					vm_page_launder(m);
 					vm_page_unlock(m);
 					vm_page_xunbusy(m);
 				} else {
 					vm_page_free(m);
-					vm_page_unlock(m);
 					if (ignerr)
 						m = NULL;
 					else {
@@ -1772,10 +1777,10 @@ tmpfs_chtimes(struct vnode *vp, struct vattr *vap,
 }
 
 void
-tmpfs_set_status(struct tmpfs_node *node, int status)
+tmpfs_set_status(struct tmpfs_mount *tm, struct tmpfs_node *node, int status)
 {
 
-	if ((node->tn_status & status) == status)
+	if ((node->tn_status & status) == status || tm->tm_ronly)
 		return;
 	TMPFS_NODE_LOCK(node);
 	node->tn_status |= status;

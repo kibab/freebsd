@@ -238,8 +238,9 @@ static int
 mmc_handle_reply(union ccb *ccb)
 {
 
-	if (ccb->ccb_h.func_code != XPT_MMC_IO)
-		panic("__func__: don't know how to handle non-XPT_MMC_IO errors");
+	KASSERT(ccb->ccb_h.func_code == XPT_MMC_IO,
+	    ("ccb %p: cannot handle non-XPT_MMC_IO errors, got func_code=%d",
+		ccb, ccb->ccb_h.func_code));
 
 	/* TODO: maybe put MMC-specific handling into cam.c/cam_error_print altogether */
 	if (((ccb->ccb_h.status & CAM_STATUS_MASK) == CAM_REQ_CMP)) {
@@ -790,6 +791,11 @@ sddaregister(struct cam_periph *periph, void *arg)
 	softc->state = SDDA_STATE_INIT;
 	softc->mmcdata =
 		(struct mmc_data *)malloc(sizeof(struct mmc_data), M_DEVBUF, M_NOWAIT|M_ZERO);
+	if (softc->mmcdata == NULL) {
+		printf("sddaregister: Unable to probe new device. "
+		    "Unable to allocate mmcdata\n");
+		return (CAM_REQ_CMP_ERR);
+	}
 	periph->softc = softc;
 	softc->periph = periph;
 
@@ -824,7 +830,7 @@ mmc_exec_app_cmd(struct cam_periph *periph, union ccb *ccb,
 	if (err != 0)
 		return (err);
 	if (!(ccb->mmcio.cmd.resp[0] & R1_APP_CMD))
-		return (MMC_ERR_FAILED);
+		return (EIO);
 
 	/* Now exec actual command */
 	int flags = 0;
@@ -888,6 +894,7 @@ mmc_send_ext_csd(struct cam_periph *periph, union ccb *ccb,
 	struct mmc_data d;
 
 	KASSERT(buf_len == 512, ("Buffer for ext csd must be 512 bytes"));
+	memset(&d, 0, sizeof(d));
 	d.data = rawextcsd;
 	d.len = buf_len;
 	d.flags = MMC_DATA_READ;
@@ -1012,6 +1019,7 @@ mmc_sd_switch(struct cam_periph *periph, union ccb *ccb,
 	int err;
 
 	memset(res, 0, 64);
+	memset(&mmc_d, 0, sizeof(mmc_d));
 	mmc_d.len = 64;
 	mmc_d.data = res;
 	mmc_d.flags = MMC_DATA_READ;
@@ -1512,8 +1520,8 @@ sdda_add_part(struct cam_periph *periph, u_int type, const char *name,
 	part->disk->d_name = part->name;
 	part->disk->d_drv1 = part;
 	part->disk->d_maxsize =
-	        sdda_get_max_data(periph, (union ccb *)&cpi) * mmc_get_sector_size(periph);
-
+	    MIN(MAXPHYS, sdda_get_max_data(periph,
+		    (union ccb *)&cpi) * mmc_get_sector_size(periph));
 	part->disk->d_unit = cnt;
 	part->disk->d_flags = 0;
 	strlcpy(part->disk->d_descr, sc->card_id_string,
@@ -1803,6 +1811,7 @@ sddastart(struct cam_periph *periph, union ccb *start_ccb)
 
 		mmcio->cmd.flags = MMC_RSP_R1 | MMC_CMD_ADTC;
 		mmcio->cmd.data = softc->mmcdata;
+		memset(mmcio->cmd.data, 0, sizeof(struct mmc_data));
 		mmcio->cmd.data->data = bp->bio_data;
 		mmcio->cmd.data->len = 512 * count;
 		mmcio->cmd.data->flags = (bp->bio_cmd == BIO_READ ? MMC_DATA_READ : MMC_DATA_WRITE);

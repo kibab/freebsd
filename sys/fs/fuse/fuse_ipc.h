@@ -32,6 +32,11 @@
  * 
  * Copyright (C) 2005 Csaba Henk.
  * All rights reserved.
+ *
+ * Copyright (c) 2019 The FreeBSD Foundation
+ *
+ * Portions of this software were developed by BFF Storage Systems, LLC under
+ * sponsorship from the FreeBSD Foundation.
  * 
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -62,6 +67,12 @@
 
 #include <sys/param.h>
 #include <sys/refcount.h>
+
+enum fuse_data_cache_mode {
+	FUSE_CACHE_UC,
+	FUSE_CACHE_WT,
+	FUSE_CACHE_WB,
+};
 
 struct fuse_iov {
 	void   *base;
@@ -103,6 +114,12 @@ struct fuse_ticket {
 	struct fuse_data		*tk_data;
 	int				tk_flag;
 	u_int				tk_refcount;
+	/* 
+	 * If this ticket's operation has been interrupted, this will hold the
+	 * unique value of the FUSE_INTERRUPT operation.  Otherwise, it will be
+	 * 0.
+	 */
+	uint64_t			irq_unique;
 
 	/* fields for initiating an upgoing message */
 	struct fuse_iov			tk_ms_fiov;
@@ -136,7 +153,6 @@ fticket_resp(struct fuse_ticket *ftick)
 static inline bool
 fticket_answered(struct fuse_ticket *ftick)
 {
-	DEBUGX(FUSE_DEBUG_IPC, "-> ftick=%p\n", ftick);
 	mtx_assert(&ftick->tk_aw_mtx, MA_OWNED);
 	return (ftick->tk_flag & FT_ANSW);
 }
@@ -144,21 +160,23 @@ fticket_answered(struct fuse_ticket *ftick)
 static inline void
 fticket_set_answered(struct fuse_ticket *ftick)
 {
-	DEBUGX(FUSE_DEBUG_IPC, "-> ftick=%p\n", ftick);
 	mtx_assert(&ftick->tk_aw_mtx, MA_OWNED);
 	ftick->tk_flag |= FT_ANSW;
+}
+
+static inline struct fuse_in_header*
+fticket_in_header(struct fuse_ticket *ftick)
+{
+	return (struct fuse_in_header *)(ftick->tk_ms_fiov.base);
 }
 
 static inline enum fuse_opcode
 fticket_opcode(struct fuse_ticket *ftick)
 {
-	DEBUGX(FUSE_DEBUG_IPC, "-> ftick=%p\n", ftick);
-	return (((struct fuse_in_header *)(ftick->tk_ms_fiov.base))->opcode);
+	return fticket_in_header(ftick)->opcode;
 }
 
 int fticket_pull(struct fuse_ticket *ftick, struct uio *uio);
-
-enum mountpri { FM_NOMOUNTED, FM_PRIMARY, FM_SECONDARY };
 
 /*
  * The data representing a FUSE session.
@@ -173,10 +191,16 @@ struct fuse_data {
 
 	struct mtx			ms_mtx;
 	STAILQ_HEAD(, fuse_ticket)	ms_head;
+	int				ms_count;
 
 	struct mtx			aw_mtx;
 	TAILQ_HEAD(, fuse_ticket)	aw_head;
 
+	/* 
+	 * Holds the next value of the FUSE operation unique value.
+	 * Also, serves as a wakeup channel to prevent any operations from
+	 * being created before INIT completes.
+	 */
 	u_long				ticketer;
 
 	struct sx			rename_lock;
@@ -184,6 +208,7 @@ struct fuse_data {
 	uint32_t			fuse_libabi_major;
 	uint32_t			fuse_libabi_minor;
 
+	uint32_t			max_readahead_blocks;
 	uint32_t			max_write;
 	uint32_t			max_read;
 	uint32_t			subtype;
@@ -192,34 +217,27 @@ struct fuse_data {
 	struct selinfo			ks_rsel;
 
 	int				daemon_timeout;
+	unsigned			time_gran;
 	uint64_t			notimpl;
+	uint64_t			mnt_flag;
+	enum fuse_data_cache_mode	cache_mode;
 };
 
 #define FSESS_DEAD                0x0001 /* session is to be closed */
-#define FSESS_UNUSED0             0x0002 /* unused */
 #define FSESS_INITED              0x0004 /* session has been inited */
 #define FSESS_DAEMON_CAN_SPY      0x0010 /* let non-owners access this fs */
                                          /* (and being observed by the daemon) */
 #define FSESS_PUSH_SYMLINKS_IN    0x0020 /* prefix absolute symlinks with mp */
 #define FSESS_DEFAULT_PERMISSIONS 0x0040 /* kernel does permission checking */
-#define FSESS_NO_ATTRCACHE        0x0080 /* no attribute caching */
-#define FSESS_NO_READAHEAD        0x0100 /* no readaheads */
-#define FSESS_NO_DATACACHE        0x0200 /* disable buffer cache */
-#define FSESS_NO_NAMECACHE        0x0400 /* disable name cache */
-#define FSESS_NO_MMAP             0x0800 /* disable mmap */
-#define FSESS_BROKENIO            0x1000 /* fix broken io */
-
-enum fuse_data_cache_mode {
-	FUSE_CACHE_UC,
-	FUSE_CACHE_WT,
-	FUSE_CACHE_WB,
-};
+#define FSESS_ASYNC_READ          0x1000 /* allow multiple reads of some file */
+#define FSESS_POSIX_LOCKS         0x2000 /* daemon supports POSIX locks */
+#define FSESS_EXPORT_SUPPORT      0x10000 /* daemon supports NFS-style lookups */
+#define FSESS_INTR                0x20000 /* interruptible mounts */
+#define FSESS_MNTOPTS_MASK	( \
+	FSESS_DAEMON_CAN_SPY | FSESS_PUSH_SYMLINKS_IN | \
+	FSESS_DEFAULT_PERMISSIONS | FSESS_INTR)
 
 extern int fuse_data_cache_mode;
-extern int fuse_data_cache_invalidate;
-extern int fuse_mmap_enable;
-extern int fuse_sync_resize;
-extern int fuse_fix_broken_io;
 
 static inline struct fuse_data *
 fuse_get_mpdata(struct mount *mp)
@@ -248,36 +266,41 @@ fsess_opt_datacache(struct mount *mp)
 {
 	struct fuse_data *data = fuse_get_mpdata(mp);
 
-	return (fuse_data_cache_mode != FUSE_CACHE_UC &&
-	    (data->dataflags & FSESS_NO_DATACACHE) == 0);
+	return (data->cache_mode != FUSE_CACHE_UC);
 }
 
 static inline bool
 fsess_opt_mmap(struct mount *mp)
 {
-	struct fuse_data *data = fuse_get_mpdata(mp);
-
-	if (!fuse_mmap_enable || fuse_data_cache_mode == FUSE_CACHE_UC)
-		return (false);
-	return ((data->dataflags & (FSESS_NO_DATACACHE | FSESS_NO_MMAP)) == 0);
+	return (fsess_opt_datacache(mp));
 }
 
 static inline bool
-fsess_opt_brokenio(struct mount *mp)
+fsess_opt_writeback(struct mount *mp)
 {
 	struct fuse_data *data = fuse_get_mpdata(mp);
 
-	return (fuse_fix_broken_io || (data->dataflags & FSESS_BROKENIO));
+	return (data->cache_mode == FUSE_CACHE_WB);
 }
 
+/* Insert a new upgoing message */
 static inline void
 fuse_ms_push(struct fuse_ticket *ftick)
 {
-	DEBUGX(FUSE_DEBUG_IPC, "ftick=%p refcount=%d\n", ftick,
-	    ftick->tk_refcount + 1);
 	mtx_assert(&ftick->tk_data->ms_mtx, MA_OWNED);
 	refcount_acquire(&ftick->tk_refcount);
 	STAILQ_INSERT_TAIL(&ftick->tk_data->ms_head, ftick, tk_ms_link);
+	ftick->tk_data->ms_count++;
+}
+
+/* Insert a new upgoing message to the front of the queue */
+static inline void
+fuse_ms_push_head(struct fuse_ticket *ftick)
+{
+	mtx_assert(&ftick->tk_data->ms_mtx, MA_OWNED);
+	refcount_acquire(&ftick->tk_refcount);
+	STAILQ_INSERT_HEAD(&ftick->tk_data->ms_head, ftick, tk_ms_link);
+	ftick->tk_data->ms_count++;
 }
 
 static inline struct fuse_ticket *
@@ -289,12 +312,12 @@ fuse_ms_pop(struct fuse_data *data)
 
 	if ((ftick = STAILQ_FIRST(&data->ms_head))) {
 		STAILQ_REMOVE_HEAD(&data->ms_head, tk_ms_link);
+		data->ms_count--;
 #ifdef INVARIANTS
+		MPASS(data->ms_count >= 0);
 		ftick->tk_ms_link.stqe_next = NULL;
 #endif
 	}
-	DEBUGX(FUSE_DEBUG_IPC, "ftick=%p refcount=%d\n", ftick,
-	    ftick ? ftick->tk_refcount : -1);
 
 	return (ftick);
 }
@@ -302,8 +325,6 @@ fuse_ms_pop(struct fuse_data *data)
 static inline void
 fuse_aw_push(struct fuse_ticket *ftick)
 {
-	DEBUGX(FUSE_DEBUG_IPC, "ftick=%p refcount=%d\n", ftick,
-	    ftick->tk_refcount + 1);
 	mtx_assert(&ftick->tk_data->aw_mtx, MA_OWNED);
 	refcount_acquire(&ftick->tk_refcount);
 	TAILQ_INSERT_TAIL(&ftick->tk_data->aw_head, ftick, tk_aw_link);
@@ -312,8 +333,6 @@ fuse_aw_push(struct fuse_ticket *ftick)
 static inline void
 fuse_aw_remove(struct fuse_ticket *ftick)
 {
-	DEBUGX(FUSE_DEBUG_IPC, "ftick=%p refcount=%d\n",
-	    ftick, ftick->tk_refcount);
 	mtx_assert(&ftick->tk_data->aw_mtx, MA_OWNED);
 	TAILQ_REMOVE(&ftick->tk_data->aw_head, ftick, tk_aw_link);
 #ifdef INVARIANTS
@@ -331,8 +350,6 @@ fuse_aw_pop(struct fuse_data *data)
 
 	if ((ftick = TAILQ_FIRST(&data->aw_head)) != NULL)
 		fuse_aw_remove(ftick);
-	DEBUGX(FUSE_DEBUG_IPC, "ftick=%p refcount=%d\n", ftick,
-	    ftick ? ftick->tk_refcount : -1);
 
 	return (ftick);
 }
@@ -340,7 +357,7 @@ fuse_aw_pop(struct fuse_data *data)
 struct fuse_ticket *fuse_ticket_fetch(struct fuse_data *data);
 int fuse_ticket_drop(struct fuse_ticket *ftick);
 void fuse_insert_callback(struct fuse_ticket *ftick, fuse_handler_t *handler);
-void fuse_insert_message(struct fuse_ticket *ftick);
+void fuse_insert_message(struct fuse_ticket *ftick, bool irq);
 
 static inline bool
 fuse_libabi_geq(struct fuse_data *data, uint32_t abi_maj, uint32_t abi_min)
@@ -374,7 +391,6 @@ struct fuse_dispatcher {
 static inline void
 fdisp_init(struct fuse_dispatcher *fdisp, size_t iosize)
 {
-	DEBUGX(FUSE_DEBUG_IPC, "-> fdisp=%p, iosize=%zx\n", fdisp, iosize);
 	fdisp->iosize = iosize;
 	fdisp->tick = NULL;
 }
@@ -382,20 +398,21 @@ fdisp_init(struct fuse_dispatcher *fdisp, size_t iosize)
 static inline void
 fdisp_destroy(struct fuse_dispatcher *fdisp)
 {
-	DEBUGX(FUSE_DEBUG_IPC, "-> fdisp=%p, ftick=%p\n", fdisp, fdisp->tick);
 	fuse_ticket_drop(fdisp->tick);
 #ifdef INVARIANTS
 	fdisp->tick = NULL;
 #endif
 }
 
+void fdisp_refresh(struct fuse_dispatcher *fdip);
+
 void fdisp_make(struct fuse_dispatcher *fdip, enum fuse_opcode op,
     struct mount *mp, uint64_t nid, struct thread *td, struct ucred *cred);
 
-void fdisp_make_pid(struct fuse_dispatcher *fdip, enum fuse_opcode op,
-    struct mount *mp, uint64_t nid, pid_t pid, struct ucred *cred);
-
 void fdisp_make_vp(struct fuse_dispatcher *fdip, enum fuse_opcode op,
+    struct vnode *vp, struct thread *td, struct ucred *cred);
+
+void fdisp_refresh_vp(struct fuse_dispatcher *fdip, enum fuse_opcode op,
     struct vnode *vp, struct thread *td, struct ucred *cred);
 
 int fdisp_wait_answ(struct fuse_dispatcher *fdip);
@@ -404,7 +421,6 @@ static inline int
 fdisp_simple_putget_vp(struct fuse_dispatcher *fdip, enum fuse_opcode op,
     struct vnode *vp, struct thread *td, struct ucred *cred)
 {
-	DEBUGX(FUSE_DEBUG_IPC, "-> fdip=%p, opcode=%d, vp=%p\n", fdip, op, vp);
 	fdisp_make_vp(fdip, op, vp, td, cred);
 	return (fdisp_wait_answ(fdip));
 }

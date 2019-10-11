@@ -40,12 +40,14 @@ __FBSDID("$FreeBSD$");
 #include "opt_ddb.h"
 
 #include <sys/param.h>
+#include <sys/gsb_crc32.h>
 #include <sys/systm.h>
 #include <sys/namei.h>
 #include <sys/priv.h>
 #include <sys/proc.h>
 #include <sys/taskqueue.h>
 #include <sys/kernel.h>
+#include <sys/ktr.h>
 #include <sys/vnode.h>
 #include <sys/mount.h>
 #include <sys/bio.h>
@@ -107,7 +109,8 @@ static struct vfsops ufs_vfsops = {
 	.vfs_mount =		ffs_mount,
 	.vfs_cmount =		ffs_cmount,
 	.vfs_quotactl =		ufs_quotactl,
-	.vfs_root =		ufs_root,
+	.vfs_root =		vfs_cache_root,
+	.vfs_cachedroot =	ufs_root,
 	.vfs_statfs =		ffs_statfs,
 	.vfs_sync =		ffs_sync,
 	.vfs_uninit =		ffs_uninit,
@@ -143,7 +146,7 @@ static struct buf_ops ffs_ops = {
 static const char *ffs_opts[] = { "acls", "async", "noatime", "noclusterr",
     "noclusterw", "noexec", "export", "force", "from", "groupquota",
     "multilabel", "nfsv4acls", "fsckpid", "snapshot", "nosuid", "suiddir",
-    "nosymfollow", "sync", "union", "userquota", NULL };
+    "nosymfollow", "sync", "union", "userquota", "untrusted", NULL };
 
 static int
 ffs_mount(struct mount *mp)
@@ -154,7 +157,7 @@ ffs_mount(struct mount *mp)
 	struct fs *fs;
 	pid_t fsckpid = 0;
 	int error, error1, flags;
-	uint64_t mntorflags;
+	uint64_t mntorflags, saved_mnt_flag;
 	accmode_t accmode;
 	struct nameidata ndp;
 	char *fspec;
@@ -182,6 +185,9 @@ ffs_mount(struct mount *mp)
 		return (error);
 
 	mntorflags = 0;
+	if (vfs_getopt(mp->mnt_optnew, "untrusted", NULL, NULL) == 0)
+		mntorflags |= MNT_UNTRUSTED;
+
 	if (vfs_getopt(mp->mnt_optnew, "acls", NULL, NULL) == 0)
 		mntorflags |= MNT_ACLS;
 
@@ -371,25 +377,40 @@ ffs_mount(struct mount *mp)
 				return (error);
 			if ((error = vn_start_write(NULL, &mp, V_WAIT)) != 0)
 				return (error);
+			error = vfs_write_suspend_umnt(mp);
+			if (error != 0)
+				return (error);
 			fs->fs_ronly = 0;
 			MNT_ILOCK(mp);
-			mp->mnt_flag &= ~MNT_RDONLY;
+			saved_mnt_flag = MNT_RDONLY;
+			if (MOUNTEDSOFTDEP(mp) && (mp->mnt_flag &
+			    MNT_ASYNC) != 0)
+				saved_mnt_flag |= MNT_ASYNC;
+			mp->mnt_flag &= ~saved_mnt_flag;
 			MNT_IUNLOCK(mp);
 			fs->fs_mtime = time_second;
 			/* check to see if we need to start softdep */
 			if ((fs->fs_flags & FS_DOSOFTDEP) &&
 			    (error = softdep_mount(devvp, mp, fs, td->td_ucred))){
-				vn_finished_write(mp);
+				fs->fs_ronly = 1;
+				MNT_ILOCK(mp);
+				mp->mnt_flag |= saved_mnt_flag;
+				MNT_IUNLOCK(mp);
+				vfs_write_resume(mp, 0);
 				return (error);
 			}
 			fs->fs_clean = 0;
 			if ((error = ffs_sbupdate(ump, MNT_WAIT, 0)) != 0) {
-				vn_finished_write(mp);
+				fs->fs_ronly = 1;
+				MNT_ILOCK(mp);
+				mp->mnt_flag |= saved_mnt_flag;
+				MNT_IUNLOCK(mp);
+				vfs_write_resume(mp, 0);
 				return (error);
 			}
 			if (fs->fs_snapinum[0] != 0)
 				ffs_snapshot_mount(mp);
-			vn_finished_write(mp);
+			vfs_write_resume(mp, 0);
 		}
 		/*
 		 * Soft updates is incompatible with "async",
@@ -899,6 +920,10 @@ ffs_mountfs(devvp, mp, td)
 	ump->um_ifree = ffs_ifree;
 	ump->um_rdonly = ffs_rdonly;
 	ump->um_snapgone = ffs_snapgone;
+	if ((mp->mnt_flag & MNT_UNTRUSTED) != 0)
+		ump->um_check_blkno = ffs_check_blkno;
+	else
+		ump->um_check_blkno = NULL;
 	mtx_init(UFS_MTX(ump), "FFS", "FFS Lock", MTX_DEF);
 	ffs_oldfscompat_read(fs, ump, fs->fs_sblockloc);
 	fs->fs_ronly = ronly;
@@ -1647,9 +1672,17 @@ ffs_vgetf(mp, ino, flags, vpp, ffs_flags)
 	struct vnode *vp;
 	int error;
 
+	MPASS((ffs_flags & FFSV_REPLACE) == 0 || (flags & LK_EXCLUSIVE) != 0);
+
 	error = vfs_hash_get(mp, ino, flags, curthread, vpp, NULL, NULL);
-	if (error || *vpp != NULL)
+	if (error != 0)
 		return (error);
+	if (*vpp != NULL) {
+		if ((ffs_flags & FFSV_REPLACE) == 0)
+			return (0);
+		vgone(*vpp);
+		vput(*vpp);
+	}
 
 	/*
 	 * We must promote to an exclusive lock for vnode creation.  This
@@ -1711,8 +1744,19 @@ ffs_vgetf(mp, ino, flags, vpp, ffs_flags)
 	}
 	vp->v_vflag &= ~VV_FORCEINSMQ;
 	error = vfs_hash_insert(vp, ino, flags, curthread, vpp, NULL, NULL);
-	if (error || *vpp != NULL)
+	if (error != 0)
 		return (error);
+	if (*vpp != NULL) {
+		/*
+		 * Calls from ffs_valloc() (i.e. FFSV_REPLACE set)
+		 * operate on empty inode, which must not be found by
+		 * other threads until fully filled.  Vnode for empty
+		 * inode must be not re-inserted on the hash by other
+		 * thread, after removal by us at the beginning.
+		 */
+		MPASS((ffs_flags & FFSV_REPLACE) == 0);
+		return (0);
+	}
 
 	/* Read in the disk contents for the inode, copy into the inode. */
 	error = bread(ump->um_devvp, fsbtodb(fs, ino_to_fsba(fs, ino)),
@@ -1724,7 +1768,6 @@ ffs_vgetf(mp, ino, flags, vpp, ffs_flags)
 		 * still zero, it will be unlinked and returned to the free
 		 * list by vput().
 		 */
-		brelse(bp);
 		vput(vp);
 		*vpp = NULL;
 		return (error);
@@ -1838,7 +1881,7 @@ ffs_fhtovp(mp, fhp, flags, vpp)
 	if (fs->fs_magic != FS_UFS2_MAGIC)
 		return (ufs_fhtovp(mp, ufhp, flags, vpp));
 	cg = ino_to_cg(fs, ino);
-	if ((error = ffs_getcg(fs, ump->um_devvp, cg, &bp, &cgp)) != 0)
+	if ((error = ffs_getcg(fs, ump->um_devvp, cg, 0, &bp, &cgp)) != 0)
 		return (error);
 	if (ino >= cg * fs->fs_ipg + cgp->cg_initediblk) {
 		brelse(bp);
@@ -1974,7 +2017,13 @@ ffs_use_bwrite(void *devfd, off_t loc, void *buf, int size)
 	if (MOUNTEDSOFTDEP(ump->um_mountp))
 		softdep_setup_sbupdate(ump, (struct fs *)bp->b_data, bp);
 	bcopy((caddr_t)fs, bp->b_data, (u_int)fs->fs_sbsize);
-	ffs_oldfscompat_write((struct fs *)bp->b_data, ump);
+	fs = (struct fs *)bp->b_data;
+	ffs_oldfscompat_write(fs, ump);
+	/*
+	 * Because we may have made changes to the superblock, we need to
+	 * recompute its check-hash.
+	 */
+	fs->fs_ckhash = ffs_calc_sbhash(fs);
 	if (devfdp->suspended)
 		bp->b_flags |= B_VALIDSUSPWRT;
 	if (devfdp->waitfor != MNT_WAIT)

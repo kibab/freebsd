@@ -72,7 +72,7 @@ static void iso8601_usage(const char *);
 static void multipleformats(void);
 static void printdate(const char *);
 static void printisodate(struct tm *);
-static void setthetime(const char *, const char *, int, int);
+static void setthetime(const char *, const char *, int);
 static void usage(void);
 
 static const struct iso8601_fmt {
@@ -92,7 +92,7 @@ int
 main(int argc, char *argv[])
 {
 	int ch, rflag;
-	bool Iflag, jflag, nflag, Rflag;
+	bool Iflag, jflag, Rflag;
 	const char *format;
 	char buf[1024];
 	char *fmt;
@@ -107,7 +107,7 @@ main(int argc, char *argv[])
 	fmt = NULL;
 	(void) setlocale(LC_TIME, "");
 	rflag = 0;
-	Iflag = jflag = nflag = Rflag = 0;
+	Iflag = jflag = Rflag = 0;
 	while ((ch = getopt(argc, argv, "f:I::jnRr:uv:")) != -1)
 		switch((char)ch) {
 		case 'f':
@@ -132,8 +132,7 @@ main(int argc, char *argv[])
 		case 'j':
 			jflag = 1;	/* don't set time */
 			break;
-		case 'n':		/* don't set network */
-			nflag = 1;
+		case 'n':
 			break;
 		case 'R':		/* RFC 2822 datetime format */
 			if (Iflag)
@@ -179,7 +178,7 @@ main(int argc, char *argv[])
 	}
 
 	if (*argv) {
-		setthetime(fmt, *argv, jflag, nflag);
+		setthetime(fmt, *argv, jflag);
 		++argv;
 	} else if (fmt != NULL)
 		usage();
@@ -250,7 +249,7 @@ printisodate(struct tm *lt)
 #define	ATOI2(s)	((s) += 2, ((s)[-2] - '0') * 10 + ((s)[-1] - '0'))
 
 static void
-setthetime(const char *fmt, const char *p, int jflag, int nflag)
+setthetime(const char *fmt, const char *p, int jflag)
 {
 	struct utmpx utx;
 	struct tm *lt;
@@ -343,20 +342,17 @@ setthetime(const char *fmt, const char *p, int jflag, int nflag)
 		errx(1, "nonexistent time");
 
 	if (!jflag) {
-		/* set the time */
-		if (nflag) {
-			utx.ut_type = OLD_TIME;
-			memset(utx.ut_id, 0, sizeof(utx.ut_id));
-			(void)gettimeofday(&utx.ut_tv, NULL);
-			pututxline(&utx);
-			tv.tv_sec = tval;
-			tv.tv_usec = 0;
-			if (settimeofday(&tv, NULL) != 0)
-				err(1, "settimeofday (timeval)");
-			utx.ut_type = NEW_TIME;
-			(void)gettimeofday(&utx.ut_tv, NULL);
-			pututxline(&utx);
-		}
+		utx.ut_type = OLD_TIME;
+		memset(utx.ut_id, 0, sizeof(utx.ut_id));
+		(void)gettimeofday(&utx.ut_tv, NULL);
+		pututxline(&utx);
+		tv.tv_sec = tval;
+		tv.tv_usec = 0;
+		if (settimeofday(&tv, NULL) != 0)
+			err(1, "settimeofday (timeval)");
+		utx.ut_type = NEW_TIME;
+		(void)gettimeofday(&utx.ut_tv, NULL);
+		pututxline(&utx);
 
 		if ((p = getlogin()) == NULL)
 			p = "???";

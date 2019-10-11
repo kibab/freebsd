@@ -2,7 +2,7 @@
 -- SPDX-License-Identifier: BSD-2-Clause-FreeBSD
 --
 -- Copyright (c) 2015 Pedro Souza <pedrosouza@freebsd.org>
--- Copyright (C) 2018 Kyle Evans <kevans@FreeBSD.org>
+-- Copyright (c) 2018 Kyle Evans <kevans@FreeBSD.org>
 -- All rights reserved.
 --
 -- Redistribution and use in source and binary forms, with or without
@@ -39,6 +39,12 @@ local INCORRECT_PASSWORD = "loader: incorrect password"
 local show_password_mask = false
 local twiddle_chars = {"/", "-", "\\", "|"}
 local screen_setup = false
+
+local function setup_screen()
+	screen.clear()
+	screen.defcursor()
+	screen_setup = true
+end
 
 -- Module exports
 function password.read(prompt_length)
@@ -90,9 +96,7 @@ function password.check()
 		end
 
 		if not screen_setup then
-			screen.clear()
-			screen.defcursor()
-			screen_setup = true
+			setup_screen()
 		end
 
 		while true do
@@ -131,6 +135,11 @@ function password.check()
 	local pwd = loader.getenv("password")
 	if pwd ~= nil then
 		core.autoboot()
+		-- The autoboot sequence was interrupted, so we'll need to
+		-- prompt for a password.  Put the screen back into a known
+		-- good state, otherwise we're drawing back a couple lines
+		-- in the middle of other text.
+		setup_screen()
 	end
 	compare("Loader password:", pwd)
 end

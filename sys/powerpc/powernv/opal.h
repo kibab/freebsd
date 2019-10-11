@@ -31,6 +31,7 @@
 
 #include <sys/cdefs.h>
 #include <sys/types.h>
+#include <sys/_eventhandler.h>
 
 /* Check if OPAL is correctly instantiated. Will try to instantiate it. */
 int opal_check(void);
@@ -44,6 +45,8 @@ int opal_call(uint64_t token, ...);
 #define OPAL_RTC_WRITE			4
 #define	OPAL_CEC_POWER_DOWN		5
 #define	OPAL_CEC_REBOOT			6
+#define	OPAL_READ_NVRAM			7
+#define	OPAL_WRITE_NVRAM		8
 #define	OPAL_HANDLE_INTERRUPT		9
 #define	OPAL_POLL_EVENTS		10
 #define	OPAL_PCI_CONFIG_READ_BYTE	13
@@ -52,6 +55,7 @@ int opal_call(uint64_t token, ...);
 #define	OPAL_PCI_CONFIG_WRITE_BYTE	16
 #define	OPAL_PCI_CONFIG_WRITE_HALF_WORD	17
 #define	OPAL_PCI_CONFIG_WRITE_WORD	18
+#define	OPAL_PCI_EEH_FREEZE_STATUS	23
 #define	OPAL_PCI_EEH_FREEZE_CLEAR	26
 #define	OPAL_PCI_PHB_MMIO_ENABLE	27
 #define	OPAL_PCI_SET_PHB_MEM_WINDOW	28
@@ -71,14 +75,17 @@ int opal_call(uint64_t token, ...);
 #define	OPAL_PCI_MAP_PE_DMA_WINDOW_REAL	45
 #define	OPAL_RETURN_CPU			69
 #define	OPAL_REINIT_CPUS		70
+#define	OPAL_CHECK_TOKEN		80
+#define	OPAL_GET_MSG			85
 #define	OPAL_CHECK_ASYNC_COMPLETION	86
 #define	OPAL_SENSOR_READ		88
+#define	OPAL_HANDLE_HMI			98
 #define	OPAL_IPMI_SEND			107
 #define	OPAL_IPMI_RECV			108
 #define	OPAL_I2C_REQUEST		109
 #define	OPAL_FLASH_READ			110
 #define	OPAL_FLASH_WRITE		111
-#define	OPAL_FLASH_ERASE		111
+#define	OPAL_FLASH_ERASE		112
 #define	OPAL_INT_GET_XIRR		122
 #define	OPAL_INT_SET_CPPR		123
 #define	OPAL_INT_EOI			124
@@ -102,6 +109,7 @@ int opal_call(uint64_t token, ...);
 #define	OPAL_SENSOR_GROUP_CLEAR		156
 #define	OPAL_SENSOR_READ_U64		162
 #define	OPAL_SENSOR_GROUP_ENABLE	163
+#define	OPAL_HANDLE_HMI2		166
 
 /* For OPAL_PCI_SET_PE */
 #define	OPAL_UNMAP_PE			0
@@ -133,6 +141,28 @@ int opal_call(uint64_t token, ...);
 #define	OPAL_EMPTY			-16
 #define	OPAL_XIVE_PROVISIONING		-31
 #define	OPAL_XIVE_FREE_ACTIVE		-32
+
+#define	OPAL_TOKEN_ABSENT		0
+#define	OPAL_TOKEN_PRESENT		1
+
+#define	OPAL_EVENT_OPAL_INTERNAL	0x1
+#define	OPAL_EVENT_NVRAM		0x2
+#define	OPAL_EVENT_RTC			0x4
+#define	OPAL_EVENT_CONSOLE_INPUT	0x8
+#define	OPAL_EVENT_CONSOLE_OUTPUT	0x10
+#define	OPAL_EVENT_ERROR_LOG_AVAIL	0x20
+#define	OPAL_EVENT_ERROR_LOG		0x40
+#define	OPAL_EVENT_EPOW			0x80
+#define	OPAL_EVENT_LED_STATUS		0x100
+#define	OPAL_EVENT_PCI_ERROR		0x200
+#define	OPAL_EVENT_DUMP_AVAIL		0x400
+#define	OPAL_EVENT_MSG_PENDING		0x800
+
+#define	OPAL_HMI_FLAGS_TB_RESYNC	(1ull << 0)
+#define	OPAL_HMI_FLAGS_DEC_LOST		(1ull << 1)
+#define	OPAL_HMI_FLAGS_HDEC_LOST	(1ull << 2)
+#define	OPAL_HMI_FLAGS_TOD_TB_FAIL	(1ull << 3)
+#define	OPAL_HMI_FLAGS_NEW_EVENT	(1ull << 63)
 
 #define	OPAL_XIVE_XICS_MODE_EMU	0
 #define	OPAL_XIVE_XICS_MODE_EXP	1
@@ -174,6 +204,19 @@ struct opal_ipmi_msg {
 int	opal_init_async_tokens(int);
 int	opal_alloc_async_token(void);
 void	opal_free_async_token(int);
-int	opal_wait_completion(void *, uint64_t, uint64_t);
+int	opal_wait_completion(void *, uint64_t, int);
 
+typedef void (*opal_msg_handler_fn)(void *, struct opal_msg *);
+EVENTHANDLER_DECLARE(OPAL_ASYNC_COMP, opal_msg_handler_fn);
+EVENTHANDLER_DECLARE(OPAL_EPOW, opal_msg_handler_fn);
+EVENTHANDLER_DECLARE(OPAL_SHUTDOWN, opal_msg_handler_fn);
+EVENTHANDLER_DECLARE(OPAL_HMI_EVT, opal_msg_handler_fn);
+EVENTHANDLER_DECLARE(OPAL_DPO, opal_msg_handler_fn);
+EVENTHANDLER_DECLARE(OPAL_OCC, opal_msg_handler_fn);
+EVENTHANDLER_LIST_DECLARE(OPAL_ASYNC_COMP);
+EVENTHANDLER_LIST_DECLARE(OPAL_EPOW);
+EVENTHANDLER_LIST_DECLARE(OPAL_SHUTDOWN);
+EVENTHANDLER_LIST_DECLARE(OPAL_HMI_EVT);
+EVENTHANDLER_LIST_DECLARE(OPAL_DPO);
+EVENTHANDLER_LIST_DECLARE(OPAL_OCC);
 #endif

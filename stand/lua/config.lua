@@ -2,7 +2,7 @@
 -- SPDX-License-Identifier: BSD-2-Clause-FreeBSD
 --
 -- Copyright (c) 2015 Pedro Souza <pedrosouza@freebsd.org>
--- Copyright (C) 2018 Kyle Evans <kevans@FreeBSD.org>
+-- Copyright (c) 2018 Kyle Evans <kevans@FreeBSD.org>
 -- All rights reserved.
 --
 -- Redistribution and use in source and binary forms, with or without
@@ -45,7 +45,6 @@ local MSG_FAILOPENCFG = "Failed to open config: '%s'"
 local MSG_FAILREADCFG = "Failed to read config: '%s'"
 local MSG_FAILPARSECFG = "Failed to parse config: '%s'"
 local MSG_FAILEXBEF = "Failed to execute '%s' before loading '%s'"
-local MSG_FAILEXMOD = "Failed to execute '%s'"
 local MSG_FAILEXAF = "Failed to execute '%s' after loading '%s'"
 local MSG_MALFORMED = "Malformed line (%d):\n\t'%s'"
 local MSG_DEFAULTKERNFAIL = "No kernel set, failed to load from module_path"

@@ -51,6 +51,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/socket.h>
 #define _WANT_FREEBSD11_STAT
 #include <sys/stat.h>
+#include <sys/sysctl.h>
 #include <sys/time.h>
 #include <sys/un.h>
 #include <sys/wait.h>
@@ -61,6 +62,8 @@ __FBSDID("$FreeBSD$");
 #include <assert.h>
 #include <ctype.h>
 #include <err.h>
+#define _WANT_KERNEL_ERRNO
+#include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <sched.h>
@@ -468,6 +471,8 @@ static struct syscall decoded_syscalls[] = {
 		    { Ptr | IN, 3 }, { Socklent, 4 } } },
 	{ .name = "shm_open", .ret_type = 1, .nargs = 3,
 	  .args = { { ShmName | IN, 0 }, { Open, 1 }, { Octal, 2 } } },
+	{ .name = "shm_rename", .ret_type = 1, .nargs = 3,
+	  .args = { { Name | IN, 0 }, { Name | IN, 1 }, { Hex, 2 } } },
 	{ .name = "shm_unlink", .ret_type = 1, .nargs = 1,
 	  .args = { { Name | IN, 0 } } },
 	{ .name = "shutdown", .ret_type = 1, .nargs = 2,
@@ -504,6 +509,12 @@ static struct syscall decoded_syscalls[] = {
 	  .args = { { Name, 0 }, { Atfd, 1 }, { Name, 2 } } },
 	{ .name = "sysarch", .ret_type = 1, .nargs = 2,
 	  .args = { { Sysarch, 0 }, { Ptr, 1 } } },
+	{ .name = "__sysctl", .ret_type = 1, .nargs = 6,
+	  .args = { { Sysctl, 0 }, { Sizet, 1 }, { Ptr, 2 }, { Ptr, 3 },
+	            { Ptr, 4 }, { Sizet, 5 } } },
+	{ .name = "__sysctlbyname", .ret_type = 1, .nargs = 6,
+	  .args = { { Name, 0 }, { Sizet, 1 }, { Ptr, 2 }, { Ptr, 3 },
+	            { Ptr, 4}, { Sizet, 5 } } },
 	{ .name = "thr_kill", .ret_type = 1, .nargs = 2,
 	  .args = { { Long, 0 }, { Signal, 1 } } },
 	{ .name = "thr_self", .ret_type = 1, .nargs = 1,
@@ -894,7 +905,7 @@ print_mask_arg32(bool (*decoder)(FILE *, uint32_t, uint32_t *), FILE *fp,
 
 #ifndef __LP64__
 /*
- * Add argument padding to subsequent system calls afater a Quad
+ * Add argument padding to subsequent system calls after Quad
  * syscall arguments as needed.  This used to be done by hand in the
  * decoded_syscalls table which was ugly and error prone.  It is
  * simpler to do the fixup of offsets at initalization time than when
@@ -1549,6 +1560,15 @@ print_cmsgs(FILE *fp, pid_t pid, bool receive, struct msghdr *msghdr)
 	free(cmsgbuf);
 }
 
+static void
+print_sysctl_oid(FILE *fp, int *oid, int len)
+{
+	int i;
+
+	for (i = 0; i < len; i++)
+		fprintf(fp, ".%d", oid[i]);
+}
+
 /*
  * Converts a syscall argument into a string.  Said string is
  * allocated via malloc(), so needs to be free()'d.  sc is
@@ -1556,7 +1576,7 @@ print_cmsgs(FILE *fp, pid_t pid, bool receive, struct msghdr *msghdr)
  * an array of all of the system call arguments.
  */
 char *
-print_arg(struct syscall_args *sc, unsigned long *args, long *retval,
+print_arg(struct syscall_args *sc, unsigned long *args, register_t *retval,
     struct trussinfo *trussinfo)
 {
 	FILE *fp;
@@ -2265,6 +2285,62 @@ print_arg(struct syscall_args *sc, unsigned long *args, long *retval,
 		print_integer_arg(sysdecode_sysarch_number, fp,
 		    args[sc->offset]);
 		break;
+	case Sysctl: {
+		char name[BUFSIZ];
+		int oid[CTL_MAXNAME + 2], qoid[CTL_MAXNAME + 2];
+		size_t i;
+		int len;
+
+		memset(name, 0, sizeof(name));
+		len = args[sc->offset + 1];
+		if (get_struct(pid, (void *)args[sc->offset], oid,
+		    len * sizeof(oid[0])) != -1) {
+		    	fprintf(fp, "\"");
+			if (oid[0] == CTL_SYSCTL) {
+				fprintf(fp, "sysctl.");
+				switch (oid[1]) {
+				case CTL_SYSCTL_DEBUG:
+					fprintf(fp, "debug");
+					break;
+				case CTL_SYSCTL_NAME:
+					fprintf(fp, "name");
+					print_sysctl_oid(fp, oid + 2, len - 2);
+					break;
+				case CTL_SYSCTL_NEXT:
+					fprintf(fp, "next");
+					break;
+				case CTL_SYSCTL_NAME2OID:
+					fprintf(fp, "name2oid");
+					break;
+				case CTL_SYSCTL_OIDFMT:
+					fprintf(fp, "oidfmt");
+					print_sysctl_oid(fp, oid + 2, len - 2);
+					break;
+				case CTL_SYSCTL_OIDDESCR:
+					fprintf(fp, "oiddescr");
+					print_sysctl_oid(fp, oid + 2, len - 2);
+					break;
+				case CTL_SYSCTL_OIDLABEL:
+					fprintf(fp, "oidlabel");
+					print_sysctl_oid(fp, oid + 2, len - 2);
+					break;
+				default:
+					print_sysctl_oid(fp, oid + 1, len - 1);
+				}
+			} else {
+				qoid[0] = CTL_SYSCTL;
+				qoid[1] = CTL_SYSCTL_NAME;
+				memcpy(qoid + 2, oid, len * sizeof(int));
+				i = sizeof(name);
+				if (sysctl(qoid, len + 2, name, &i, 0, 0) == -1)
+					print_sysctl_oid(fp, qoid + 2, len);
+				else
+					fprintf(fp, "%s", name);
+			}
+		    	fprintf(fp, "\"");
+		}
+		break;
+	}
 	case PipeFds:
 		/*
 		 * The pipe() system call in the kernel returns its
@@ -2277,7 +2353,7 @@ print_arg(struct syscall_args *sc, unsigned long *args, long *retval,
 		 * Overwrite the first retval to signal a successful
 		 * return as well.
 		 */
-		fprintf(fp, "{ %ld, %ld }", retval[0], retval[1]);
+		fprintf(fp, "{ %d, %d }", (int)retval[0], (int)retval[1]);
 		retval[0] = 0;
 		break;
 	case Utrace: {
@@ -2646,12 +2722,11 @@ print_syscall(struct trussinfo *trussinfo)
 }
 
 void
-print_syscall_ret(struct trussinfo *trussinfo, int errorp, long *retval)
+print_syscall_ret(struct trussinfo *trussinfo, int error, register_t *retval)
 {
 	struct timespec timediff;
 	struct threadinfo *t;
 	struct syscall *sc;
-	int error;
 
 	t = trussinfo->curthread;
 	sc = t->cs.sc;
@@ -2659,7 +2734,7 @@ print_syscall_ret(struct trussinfo *trussinfo, int errorp, long *retval)
 		timespecsub(&t->after, &t->before, &timediff);
 		timespecadd(&sc->time, &timediff, &sc->time);
 		sc->ncalls++;
-		if (errorp)
+		if (error != 0)
 			sc->nerror++;
 		return;
 	}
@@ -2676,11 +2751,14 @@ print_syscall_ret(struct trussinfo *trussinfo, int errorp, long *retval)
 		return;
 	}
 
-	if (errorp) {
-		error = sysdecode_abi_to_freebsd_errno(t->proc->abi->abi,
-		    retval[0]);
-		fprintf(trussinfo->outfile, " ERR#%ld '%s'\n", retval[0],
-		    error == INT_MAX ? "Unknown error" : strerror(error));
+	if (error == ERESTART)
+		fprintf(trussinfo->outfile, " ERESTART\n");
+	else if (error == EJUSTRETURN)
+		fprintf(trussinfo->outfile, " EJUSTRETURN\n");
+	else if (error != 0) {
+		fprintf(trussinfo->outfile, " ERR#%d '%s'\n",
+		    sysdecode_freebsd_to_abi_errno(t->proc->abi->abi, error),
+		    strerror(error));
 	}
 #ifndef __LP64__
 	else if (sc->ret_type == 2) {
@@ -2696,8 +2774,8 @@ print_syscall_ret(struct trussinfo *trussinfo, int errorp, long *retval)
 	}
 #endif
 	else
-		fprintf(trussinfo->outfile, " = %ld (0x%lx)\n", retval[0],
-		    retval[0]);
+		fprintf(trussinfo->outfile, " = %jd (0x%jx)\n",
+		    (intmax_t)retval[0], (intmax_t)retval[0]);
 }
 
 void

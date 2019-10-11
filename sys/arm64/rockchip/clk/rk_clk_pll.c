@@ -54,6 +54,8 @@ struct rk_clk_pll_sc {
 
 	struct rk_clk_pll_rate	*rates;
 	struct rk_clk_pll_rate	*frac_rates;
+
+	bool			normal_mode;
 };
 
 #define	WRITE4(_clk, off, val)					\
@@ -344,11 +346,13 @@ rk3399_clk_pll_init(struct clknode *clk, device_t dev)
 
 	sc = clknode_get_softc(clk);
 
-	/* Setting to normal mode */
-	reg = RK3399_CLK_PLL_MODE_NORMAL << RK3399_CLK_PLL_MODE_SHIFT;
-	reg |= RK3399_CLK_PLL_MODE_MASK << RK_CLK_PLL_MASK_SHIFT;
-	WRITE4(clk, sc->base_offset + RK3399_CLK_PLL_MODE_OFFSET,
-	    reg | RK3399_CLK_PLL_WRITE_MASK);
+	if (sc->normal_mode) {
+		/* Setting to normal mode */
+		reg = RK3399_CLK_PLL_MODE_NORMAL << RK3399_CLK_PLL_MODE_SHIFT;
+		reg |= RK3399_CLK_PLL_MODE_MASK << RK_CLK_PLL_MASK_SHIFT;
+		WRITE4(clk, sc->base_offset + RK3399_CLK_PLL_MODE_OFFSET,
+		    reg | RK3399_CLK_PLL_WRITE_MASK);
+	}
 
 	clknode_init_parent_idx(clk, 0);
 
@@ -363,7 +367,7 @@ rk3399_clk_pll_recalc(struct clknode *clk, uint64_t *freq)
 	uint32_t postdiv1, postdiv2, fracdiv;
 	uint32_t con1, con2, con3, con4;
 	uint64_t foutvco;
-
+	uint32_t mode;
 	sc = clknode_get_softc(clk);
 
 	DEVICE_LOCK(clk);
@@ -372,6 +376,21 @@ rk3399_clk_pll_recalc(struct clknode *clk, uint64_t *freq)
 	READ4(clk, sc->base_offset + 8, &con3);
 	READ4(clk, sc->base_offset + 0xC, &con4);
 	DEVICE_UNLOCK(clk);
+
+	/*
+	 * if we are in slow mode the output freq
+	 * is the parent one, the 24Mhz external oscillator
+	 * if we are in deep mode the output freq is 32.768khz
+	 */
+	mode = (con4 & RK3399_CLK_PLL_MODE_MASK) >> RK3399_CLK_PLL_MODE_SHIFT;
+	if (mode == RK3399_CLK_PLL_MODE_SLOW) {
+		dprintf("pll in slow mode, con4=%x\n", con4);
+		return (0);
+	} else if (mode == RK3399_CLK_PLL_MODE_DEEPSLOW) {
+		dprintf("pll in deep slow, con4=%x\n", con4);
+		*freq = 32768;
+		return (0);
+	}
 
 	dprintf("con0: %x\n", con1);
 	dprintf("con1: %x\n", con2);
@@ -521,6 +540,7 @@ rk3399_clk_pll_register(struct clkdom *clkdom, struct rk_clk_pll_def *clkdef)
 	sc->flags = clkdef->flags;
 	sc->rates = clkdef->rates;
 	sc->frac_rates = clkdef->frac_rates;
+	sc->normal_mode = clkdef->normal_mode;
 
 	clknode_register(clkdom, clk);
 

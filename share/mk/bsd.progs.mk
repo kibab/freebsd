@@ -22,8 +22,8 @@ PROGS += ${PROGS_CXX}
 
 .if defined(PROG)
 # just one of many
-PROG_OVERRIDE_VARS +=	BINDIR BINGRP BINOWN BINMODE DPSRCS MAN NO_WERROR \
-			PROGNAME SRCS STRIP WARNS
+PROG_OVERRIDE_VARS +=	BINDIR BINGRP BINOWN BINMODE CSTD CXXSTD DPSRCS MAN \
+			NO_SHARED NO_WERROR PROGNAME SRCS STRIP WARNS
 PROG_VARS +=	CFLAGS CXXFLAGS DEBUG_FLAGS DPADD INTERNALPROG LDADD LIBADD \
 		LINKS LDFLAGS MLINKS ${PROG_OVERRIDE_VARS}
 .for v in ${PROG_VARS:O:u}
@@ -34,6 +34,11 @@ $v += ${${v}.${PROG}}
 $v += ${${v}_${PROG}}
 .endif
 .else
+.if defined(${v}.${PROG})
+$v = ${${v}.${PROG}}
+.elif defined(${v}_${PROG})
+$v = ${${v}_${PROG}}
+.endif
 $v ?=
 .endif
 .endfor
@@ -87,10 +92,11 @@ $v =
 # handle being called [bsd.]progs.mk
 .include <bsd.prog.mk>
 
+.if !defined(_SKIP_BUILD)
 # Find common sources among the PROGS to depend on them before building
 # anything.  This allows parallelization without them each fighting over
 # the same objects.
-_PROGS_COMMON_SRCS=
+_PROGS_COMMON_SRCS= ${DPSRCS}
 _PROGS_ALL_SRCS=
 .for p in ${PROGS}
 .for s in ${SRCS.${p}}
@@ -113,6 +119,7 @@ _PROGS_COMMON_OBJS+=	${_PROGS_COMMON_SRCS:N*.[dhly]:${OBJS_SRCS_FILTER:ts:}:S/$/
     !empty(.MAKE.MODE:Mmeta)
 ${_PROGS_COMMON_OBJS}: .NOMETA
 .endif
+.endif
 
 .if !empty(PROGS) && !defined(_RECURSING_PROGS) && !defined(PROG)
 # tell progs.mk we might want to install things
@@ -127,11 +134,6 @@ _PROG_MK.cleanobj=	CLEANDEPENDFILES= CLEANDEPENDDIRS=
 PROGS_TARGETS+=	cleandir cleanobj
 .endif
 
-# Ensure common objects are built before recursing.
-.if !empty(_PROGS_COMMON_OBJS)
-${PROGS}: ${_PROGS_COMMON_OBJS}
-.endif
-
 .for p in ${PROGS}
 .if defined(PROGS_CXX) && !empty(PROGS_CXX:M$p)
 # bsd.prog.mk may need to know this
@@ -139,7 +141,7 @@ x.$p= PROG_CXX=$p
 .endif
 
 # Main PROG target
-$p ${p}_p: .PHONY .MAKE
+$p ${p}_p: .PHONY .MAKE ${_PROGS_COMMON_OBJS}
 	(cd ${.CURDIR} && \
 	    DEPENDFILE=.depend.$p \
 	    NO_SUBDIR=1 ${MAKE} -f ${MAKEFILE} _RECURSING_PROGS=t \
@@ -147,7 +149,7 @@ $p ${p}_p: .PHONY .MAKE
 
 # Pseudo targets for PROG, such as 'install'.
 .for t in ${PROGS_TARGETS:O:u}
-$p.$t: .PHONY .MAKE
+$p.$t: .PHONY .MAKE ${_PROGS_COMMON_OBJS}
 	(cd ${.CURDIR} && \
 	    DEPENDFILE=.depend.$p \
 	    NO_SUBDIR=1 ${MAKE} -f ${MAKEFILE} _RECURSING_PROGS=t \

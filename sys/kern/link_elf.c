@@ -40,6 +40,9 @@ __FBSDID("$FreeBSD$");
 #include <sys/kernel.h>
 #include <sys/lock.h>
 #include <sys/malloc.h>
+#ifdef SPARSE_MAPPING
+#include <sys/mman.h>
+#endif
 #include <sys/mutex.h>
 #include <sys/mount.h>
 #include <sys/pcpu.h>
@@ -66,10 +69,6 @@ __FBSDID("$FreeBSD$");
 #include <vm/vm_map.h>
 
 #include <sys/link_elf.h>
-
-#ifdef DDB_CTF
-#include <sys/zlib.h>
-#endif
 
 #include "linker_if.h"
 
@@ -423,7 +422,7 @@ link_elf_init(void* arg)
 	ef->address = 0;
 #endif
 #ifdef SPARSE_MAPPING
-	ef->object = 0;
+	ef->object = NULL;
 #endif
 	ef->dynamic = dp;
 
@@ -615,10 +614,14 @@ parse_dynamic(elf_file_t ef)
 	return (0);
 }
 
+#define	LS_PADDING	0x90909090
 static int
 parse_dpcpu(elf_file_t ef)
 {
 	int error, size;
+#if defined(__i386__)
+	uint32_t pad;
+#endif
 
 	ef->pcpu_start = 0;
 	ef->pcpu_stop = 0;
@@ -631,6 +634,26 @@ parse_dpcpu(elf_file_t ef)
 	/* Empty set? */
 	if (size < 1)
 		return (0);
+#if defined(__i386__)
+	/* In case we do find __start/stop_set_ symbols double-check. */
+	if (size < 4) {
+		uprintf("Kernel module '%s' must be recompiled with "
+		    "linker script\n", ef->lf.pathname);
+		return (ENOEXEC);
+	}
+
+	/* Padding from linker-script correct? */
+	pad = *(uint32_t *)((uintptr_t)ef->pcpu_stop - sizeof(pad));
+	if (pad != LS_PADDING) {
+		uprintf("Kernel module '%s' must be recompiled with "
+		    "linker script, invalid padding %#04x (%#04x)\n",
+		    ef->lf.pathname, pad, LS_PADDING);
+		return (ENOEXEC);
+	}
+	/* If we only have valid padding, nothing to do. */
+	if (size == 4)
+		return (0);
+#endif
 	/*
 	 * Allocate space in the primary pcpu area.  Copy in our
 	 * initialization from the data section and then initialize
@@ -656,6 +679,9 @@ static int
 parse_vnet(elf_file_t ef)
 {
 	int error, size;
+#if defined(__i386__)
+	uint32_t pad;
+#endif
 
 	ef->vnet_start = 0;
 	ef->vnet_stop = 0;
@@ -668,6 +694,26 @@ parse_vnet(elf_file_t ef)
 	/* Empty set? */
 	if (size < 1)
 		return (0);
+#if defined(__i386__)
+	/* In case we do find __start/stop_set_ symbols double-check. */
+	if (size < 4) {
+		uprintf("Kernel module '%s' must be recompiled with "
+		    "linker script\n", ef->lf.pathname);
+		return (ENOEXEC);
+	}
+
+	/* Padding from linker-script correct? */
+	pad = *(uint32_t *)((uintptr_t)ef->vnet_stop - sizeof(pad));
+	if (pad != LS_PADDING) {
+		uprintf("Kernel module '%s' must be recompiled with "
+		    "linker script, invalid padding %#04x (%#04x)\n",
+		    ef->lf.pathname, pad, LS_PADDING);
+		return (ENOEXEC);
+	}
+	/* If we only have valid padding, nothing to do. */
+	if (size == 4)
+		return (0);
+#endif
 	/*
 	 * Allocate space in the primary vnet area.  Copy in our
 	 * initialization from the data section and then initialize
@@ -688,6 +734,7 @@ parse_vnet(elf_file_t ef)
 	return (0);
 }
 #endif
+#undef LS_PADDING
 
 static int
 link_elf_link_preload(linker_class_t cls,
@@ -728,7 +775,7 @@ link_elf_link_preload(linker_class_t cls,
 	ef->modptr = modptr;
 	ef->address = *(caddr_t *)baseptr;
 #ifdef SPARSE_MAPPING
-	ef->object = 0;
+	ef->object = NULL;
 #endif
 	dp = (vm_offset_t)ef->address + *(vm_offset_t *)dynptr;
 	ef->dynamic = (Elf_Dyn *)dp;
@@ -782,7 +829,7 @@ link_elf_load_file(linker_class_t cls, const char* filename,
 	struct nameidata nd;
 	struct thread* td = curthread;	/* XXX */
 	Elf_Ehdr *hdr;
-	caddr_t firstpage;
+	caddr_t firstpage, segbase;
 	int nbytes, i;
 	Elf_Phdr *phdr;
 	Elf_Phdr *phlimit;
@@ -944,30 +991,58 @@ link_elf_load_file(linker_class_t cls, const char* filename,
 
 	ef = (elf_file_t) lf;
 #ifdef SPARSE_MAPPING
-	ef->object = vm_object_allocate(OBJT_DEFAULT, mapsize >> PAGE_SHIFT);
+	ef->object = vm_object_allocate(OBJT_PHYS, atop(mapsize));
 	if (ef->object == NULL) {
 		error = ENOMEM;
 		goto out;
 	}
-	ef->address = (caddr_t) vm_map_min(kernel_map);
+#ifdef __amd64__
+	mapbase = (caddr_t)KERNBASE;
+#else
+	mapbase = (caddr_t)vm_map_min(kernel_map);
+#endif
+	/*
+	 * Mapping protections are downgraded after relocation processing.
+	 */
 	error = vm_map_find(kernel_map, ef->object, 0,
-	    (vm_offset_t *) &ef->address, mapsize, 0, VMFS_OPTIMAL_SPACE,
+	    (vm_offset_t *)&mapbase, mapsize, 0, VMFS_OPTIMAL_SPACE,
 	    VM_PROT_ALL, VM_PROT_ALL, 0);
 	if (error != 0) {
 		vm_object_deallocate(ef->object);
-		ef->object = 0;
+		ef->object = NULL;
 		goto out;
 	}
 #else
-	ef->address = malloc(mapsize, M_LINKER, M_EXEC | M_WAITOK);
+	mapbase = malloc(mapsize, M_LINKER, M_EXEC | M_WAITOK);
 #endif
-	mapbase = ef->address;
+	ef->address = mapbase;
 
 	/*
 	 * Read the text and data sections and zero the bss.
 	 */
 	for (i = 0; i < nsegs; i++) {
-		caddr_t segbase = mapbase + segs[i]->p_vaddr - base_vaddr;
+		segbase = mapbase + segs[i]->p_vaddr - base_vaddr;
+
+#ifdef SPARSE_MAPPING
+		/*
+		 * Consecutive segments may have different mapping permissions,
+		 * so be strict and verify that their mappings do not overlap.
+		 */
+		if (((vm_offset_t)segbase & PAGE_MASK) != 0) {
+			error = EINVAL;
+			goto out;
+		}
+
+		error = vm_map_wire(kernel_map,
+		    (vm_offset_t)segbase,
+		    (vm_offset_t)segbase + round_page(segs[i]->p_memsz),
+		    VM_MAP_WIRE_SYSTEM | VM_MAP_WIRE_NOHOLES);
+		if (error != KERN_SUCCESS) {
+			error = ENOMEM;
+			goto out;
+		}
+#endif
+
 		error = vn_rdwr(UIO_READ, nd.ni_vp,
 		    segbase, segs[i]->p_filesz, segs[i]->p_offset,
 		    UIO_SYSSPACE, IO_NODELOCKED, td->td_ucred, NOCRED,
@@ -976,20 +1051,6 @@ link_elf_load_file(linker_class_t cls, const char* filename,
 			goto out;
 		bzero(segbase + segs[i]->p_filesz,
 		    segs[i]->p_memsz - segs[i]->p_filesz);
-
-#ifdef SPARSE_MAPPING
-		/*
-		 * Wire down the pages
-		 */
-		error = vm_map_wire(kernel_map,
-		    (vm_offset_t) segbase,
-		    (vm_offset_t) segbase + segs[i]->p_memsz,
-		    VM_MAP_WIRE_SYSTEM|VM_MAP_WIRE_NOHOLES);
-		if (error != KERN_SUCCESS) {
-			error = ENOMEM;
-			goto out;
-		}
-#endif
 	}
 
 #ifdef GPROF
@@ -1026,6 +1087,34 @@ link_elf_load_file(linker_class_t cls, const char* filename,
 	error = relocate_file(ef);
 	if (error != 0)
 		goto out;
+
+#ifdef SPARSE_MAPPING
+	/*
+	 * Downgrade permissions on text segment mappings now that relocation
+	 * processing is complete.  Restrict permissions on read-only segments.
+	 */
+	for (i = 0; i < nsegs; i++) {
+		vm_prot_t prot;
+
+		if (segs[i]->p_type != PT_LOAD)
+			continue;
+
+		prot = VM_PROT_READ;
+		if ((segs[i]->p_flags & PF_W) != 0)
+			prot |= VM_PROT_WRITE;
+		if ((segs[i]->p_flags & PF_X) != 0)
+			prot |= VM_PROT_EXECUTE;
+		segbase = mapbase + segs[i]->p_vaddr - base_vaddr;
+		error = vm_map_protect(kernel_map,
+		    (vm_offset_t)segbase,
+		    (vm_offset_t)segbase + round_page(segs[i]->p_memsz),
+		    prot, FALSE);
+		if (error != KERN_SUCCESS) {
+			error = ENOMEM;
+			goto out;
+		}
+	}
+#endif
 
 	/*
 	 * Try and load the symbol table if it's present.  (you can
@@ -1117,6 +1206,9 @@ Elf_Addr
 elf_relocaddr(linker_file_t lf, Elf_Addr x)
 {
 	elf_file_t ef;
+
+	KASSERT(lf->ops->cls == (kobj_class_t)&link_elf_class,
+	    ("elf_relocaddr: unexpected linker file %p", lf));
 
 	ef = (elf_file_t)lf;
 	if (x >= ef->pcpu_start && x < ef->pcpu_stop)

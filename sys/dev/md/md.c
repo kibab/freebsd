@@ -110,6 +110,7 @@
 
 #define MD_SHUTDOWN	0x10000		/* Tell worker thread to terminate. */
 #define	MD_EXITING	0x20000		/* Worker thread is exiting. */
+#define MD_PROVIDERGONE	0x40000		/* Safe to free the softc */
 
 #ifndef MD_NSECT
 #define MD_NSECT (10000 * 2)
@@ -150,7 +151,6 @@ CTASSERT((sizeof(struct md_ioctl32)) == 436);
 #define	MDIOCATTACH_32	_IOC_NEWTYPE(MDIOCATTACH, struct md_ioctl32)
 #define	MDIOCDETACH_32	_IOC_NEWTYPE(MDIOCDETACH, struct md_ioctl32)
 #define	MDIOCQUERY_32	_IOC_NEWTYPE(MDIOCQUERY, struct md_ioctl32)
-#define	MDIOCLIST_32	_IOC_NEWTYPE(MDIOCLIST, struct md_ioctl32)
 #define	MDIOCRESIZE_32	_IOC_NEWTYPE(MDIOCRESIZE, struct md_ioctl32)
 #endif /* COMPAT_FREEBSD32 */
 
@@ -199,6 +199,7 @@ static g_start_t g_md_start;
 static g_access_t g_md_access;
 static void g_md_dumpconf(struct sbuf *sb, const char *indent,
     struct g_geom *gp, struct g_consumer *cp __unused, struct g_provider *pp);
+static g_provgone_t g_md_providergone;
 
 static struct cdev *status_dev = NULL;
 static struct sx md_sx;
@@ -220,6 +221,7 @@ struct g_class g_md_class = {
 	.start = g_md_start,
 	.access = g_md_access,
 	.dumpconf = g_md_dumpconf,
+	.providergone = g_md_providergone,
 };
 
 DECLARE_GEOM_CLASS(g_md_class, g_md);
@@ -481,8 +483,8 @@ g_md_start(struct bio *bp)
 	}
 	mtx_lock(&sc->queue_mtx);
 	bioq_disksort(&sc->bio_queue, bp);
-	mtx_unlock(&sc->queue_mtx);
 	wakeup(sc);
+	mtx_unlock(&sc->queue_mtx);
 }
 
 #define	MD_MALLOC_MOVE_ZERO	1
@@ -1027,9 +1029,7 @@ md_swap_page_free(vm_page_t m)
 {
 
 	vm_page_xunbusy(m);
-	vm_page_lock(m);
 	vm_page_free(m);
-	vm_page_unlock(m);
 }
 
 static int
@@ -1496,17 +1496,30 @@ bad:
 	return (error);
 }
 
+static void
+g_md_providergone(struct g_provider *pp)
+{
+	struct md_s *sc = pp->geom->softc;
+
+	mtx_lock(&sc->queue_mtx);
+	sc->flags |= MD_PROVIDERGONE;
+	wakeup(&sc->flags);
+	mtx_unlock(&sc->queue_mtx);
+}
+
 static int
 mddestroy(struct md_s *sc, struct thread *td)
 {
 
 	if (sc->gp) {
-		sc->gp->softc = NULL;
 		g_topology_lock();
 		g_wither_geom(sc->gp, ENXIO);
 		g_topology_unlock();
-		sc->gp = NULL;
-		sc->pp = NULL;
+
+		mtx_lock(&sc->queue_mtx);
+		while (!(sc->flags & MD_PROVIDERGONE))
+			msleep(&sc->flags, &sc->queue_mtx, PRIBIO, "mddestroy", 0);
+		mtx_unlock(&sc->queue_mtx);
 	}
 	if (sc->devstat) {
 		devstat_remove_entry(sc->devstat);
@@ -1860,48 +1873,6 @@ kern_mdquery(struct md_req *mdr)
 	return (error);
 }
 
-static int
-kern_mdlist_locked(struct md_req *mdr)
-{
-	struct md_s *sc;
-	int i;
-
-	sx_assert(&md_sx, SA_XLOCKED);
-
-	/*
-	 * Write the number of md devices to mdr->md_units[0].
-	 * Write the unit number of the first (mdr->md_units_nitems - 2)
-	 * units to mdr->md_units[1::(mdr->md_units - 2)] and terminate the
-	 * list with -1.
-	 *
-	 * XXX: There is currently no mechanism to retrieve unit
-	 * numbers for more than (MDNPAD - 2) units.
-	 *
-	 * XXX: Due to the use of LIST_INSERT_HEAD in mdnew(), the
-	 * list of visible unit numbers not stable.
-	 */
-	i = 1;
-	LIST_FOREACH(sc, &md_softc_list, list) {
-		if (i < mdr->md_units_nitems - 1)
-			mdr->md_units[i] = sc->unit;
-		i++;
-	}
-	mdr->md_units[MIN(i, mdr->md_units_nitems - 1)] = -1;
-	mdr->md_units[0] = i - 1;
-	return (0);
-}
-
-static int
-kern_mdlist(struct md_req *mdr)
-{
-	int error;
-
-	sx_xlock(&md_sx);
-	error = kern_mdlist_locked(mdr);
-	sx_xunlock(&md_sx);
-	return (error);
-}
-
 /* Copy members that are not userspace pointers. */
 #define	MD_IOCTL2REQ(mdio, mdr) do {					\
 	(mdr)->md_unit = (mdio)->md_unit;				\
@@ -1942,8 +1913,7 @@ mdctlioctl(struct cdev *dev, u_long cmd, caddr_t addr, int flags,
 	case MDIOCATTACH:
 	case MDIOCDETACH:
 	case MDIOCRESIZE:
-	case MDIOCQUERY:
-	case MDIOCLIST: {
+	case MDIOCQUERY: {
 		struct md_ioctl *mdio = (struct md_ioctl *)addr;
 		if (mdio->md_version != MDIOVERSION)
 			return (EINVAL);
@@ -1960,8 +1930,7 @@ mdctlioctl(struct cdev *dev, u_long cmd, caddr_t addr, int flags,
 	case MDIOCATTACH_32:
 	case MDIOCDETACH_32:
 	case MDIOCRESIZE_32:
-	case MDIOCQUERY_32:
-	case MDIOCLIST_32: {
+	case MDIOCQUERY_32: {
 		struct md_ioctl32 *mdio = (struct md_ioctl32 *)addr;
 		if (mdio->md_version != MDIOVERSION)
 			return (EINVAL);
@@ -2002,12 +1971,6 @@ mdctlioctl(struct cdev *dev, u_long cmd, caddr_t addr, int flags,
 	case MDIOCQUERY_32:
 #endif
 		error = kern_mdquery(&mdr);
-		break;
-	case MDIOCLIST:
-#ifdef COMPAT_FREEBSD32
-	case MDIOCLIST_32:
-#endif
-		error = kern_mdlist(&mdr);
 		break;
 	default:
 		error = ENOIOCTL;

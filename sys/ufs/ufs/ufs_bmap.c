@@ -56,6 +56,9 @@ __FBSDID("$FreeBSD$");
 #include <ufs/ufs/ufsmount.h>
 #include <ufs/ufs/ufs_extern.h>
 
+static ufs_lbn_t lbn_count(struct ufsmount *, int);
+static int readindir(struct vnode *, ufs_lbn_t, ufs2_daddr_t, struct buf **);
+
 /*
  * Bmap converts the logical block number of a file to its physical block
  * number on the disk. The conversion is done by using the logical block
@@ -91,7 +94,7 @@ ufs_bmap(ap)
 }
 
 static int
-ufs_readindir(vp, lbn, daddr, bpp)
+readindir(vp, lbn, daddr, bpp)
 	struct vnode *vp;
 	ufs_lbn_t lbn;
 	ufs2_daddr_t daddr;
@@ -108,7 +111,7 @@ ufs_readindir(vp, lbn, daddr, bpp)
 	bp = getblk(vp, lbn, mp->mnt_stat.f_iosize, 0, 0, 0);
 	if ((bp->b_flags & B_CACHE) == 0) {
 		KASSERT(daddr != 0,
-		    ("ufs_readindir: indirect block not in cache"));
+		    ("readindir: indirect block not in cache"));
 
 		bp->b_blkno = blkptrtodb(ump, daddr);
 		bp->b_iocmd = BIO_READ;
@@ -197,12 +200,15 @@ ufs_bmaparray(vp, bn, bnp, nbp, runp, runb)
 			*bnp = blkptrtodb(ump, ip->i_din2->di_extb[-1 - bn]);
 			if (*bnp == 0)
 				*bnp = -1;
-			if (nbp == NULL)
-				panic("ufs_bmaparray: mapping ext data");
+			if (nbp == NULL) {
+				/* indirect block not found */
+				return (EINVAL);
+			}
 			nbp->b_xflags |= BX_ALTDATA;
 			return (0);
 		} else {
-			panic("ufs_bmaparray: blkno out of range");
+			/* blkno out of range */
+			return (EINVAL);
 		}
 		/*
 		 * Since this is FFS independent code, we are out of
@@ -257,12 +263,20 @@ ufs_bmaparray(vp, bn, bnp, nbp, runp, runb)
 		 */
 		if (bp)
 			bqrelse(bp);
-		error = ufs_readindir(vp, metalbn, daddr, &bp);
+		error = readindir(vp, metalbn, daddr, &bp);
 		if (error != 0)
 			return (error);
 
-		if (I_IS_UFS1(ip)) {
+		if (I_IS_UFS1(ip))
 			daddr = ((ufs1_daddr_t *)bp->b_data)[ap->in_off];
+		else
+			daddr = ((ufs2_daddr_t *)bp->b_data)[ap->in_off];
+		if ((error = UFS_CHECK_BLKNO(mp, ip->i_number, daddr,
+		     mp->mnt_stat.f_iosize)) != 0) {
+			bqrelse(bp);
+			return (error);
+		}
+		if (I_IS_UFS1(ip)) {
 			if (num == 1 && daddr && runp) {
 				for (bn = ap->in_off + 1;
 				    bn < MNINDIR(ump) && *runp < maxrun &&
@@ -281,7 +295,6 @@ ufs_bmaparray(vp, bn, bnp, nbp, runp, runb)
 			}
 			continue;
 		}
-		daddr = ((ufs2_daddr_t *)bp->b_data)[ap->in_off];
 		if (num == 1 && daddr && runp) {
 			for (bn = ap->in_off + 1;
 			    bn < MNINDIR(ump) && *runp < maxrun &&
@@ -323,6 +336,18 @@ ufs_bmaparray(vp, bn, bnp, nbp, runp, runb)
 	return (0);
 }
 
+static ufs_lbn_t
+lbn_count(ump, level)
+	struct ufsmount *ump;
+	int level;
+{
+	ufs_lbn_t blockcnt;
+
+	for (blockcnt = 1; level > 0; level--)
+		blockcnt *= MNINDIR(ump);
+	return (blockcnt);
+}
+
 int
 ufs_bmap_seekdata(vp, offp)
 	struct vnode *vp;
@@ -333,29 +358,30 @@ ufs_bmap_seekdata(vp, offp)
 	struct inode *ip;
 	struct mount *mp;
 	struct ufsmount *ump;
-	ufs2_daddr_t blockcnt, bn, daddr;
+	ufs2_daddr_t bn, daddr, nextbn;
 	uint64_t bsize;
 	off_t numblks;
-	int error, num, num1;
+	int error, num, num1, off;
 
 	bp = NULL;
+	error = 0;
 	ip = VTOI(vp);
 	mp = vp->v_mount;
 	ump = VFSTOUFS(mp);
 
 	if (vp->v_type != VREG || (ip->i_flags & SF_SNAPSHOT) != 0)
 		return (EINVAL);
-	if (*offp < 0)
+	if (*offp < 0 || *offp >= ip->i_size)
 		return (ENXIO);
 
 	bsize = mp->mnt_stat.f_iosize;
 	for (bn = *offp / bsize, numblks = howmany(ip->i_size, bsize);
-	    bn < numblks;) {
+	    bn < numblks; bn = nextbn) {
 		if (bn < UFS_NDADDR) {
 			daddr = DIP(ip, i_db[bn]);
 			if (daddr != 0)
 				break;
-			bn++;
+			nextbn = bn + 1;
 			continue;
 		}
 
@@ -366,38 +392,44 @@ ufs_bmap_seekdata(vp, offp)
 		MPASS(num >= 2);
 		daddr = DIP(ip, i_ib[ap->in_off]);
 		ap++, num--;
+		for (nextbn = UFS_NDADDR, num1 = num - 1; num1 > 0; num1--)
+			nextbn += lbn_count(ump, num1);
 		if (daddr == 0) {
-			for (blockcnt = 1; num > 0; num--)
-				blockcnt *= MNINDIR(ump);
-			bn += blockcnt;
+			nextbn += lbn_count(ump, num);
 			continue;
 		}
 
-		for (; num > 0 && daddr != 0; ap++, num--) {
+		for (; daddr != 0 && num > 0; ap++, num--) {
 			if (bp != NULL)
 				bqrelse(bp);
-			error = ufs_readindir(vp, ap->in_lbn, daddr, &bp);
+			error = readindir(vp, ap->in_lbn, daddr, &bp);
 			if (error != 0)
 				return (error);
 
 			/*
-			 * Precompute the number of blocks addressed by an entry
-			 * of the current indirect block.
+			 * Scan the indirect block until we find a non-zero
+			 * pointer.
 			 */
-			for (blockcnt = 1, num1 = num; num1 > 1; num1--)
-				blockcnt *= MNINDIR(ump);
-
-			for (; ap->in_off < MNINDIR(ump); ap->in_off++,
-			    bn += blockcnt) {
+			off = ap->in_off;
+			do {
 				daddr = I_IS_UFS1(ip) ?
-				    ((ufs1_daddr_t *)bp->b_data)[ap->in_off] :
-				    ((ufs2_daddr_t *)bp->b_data)[ap->in_off];
-				if (daddr != 0)
-					break;
-			}
+				    ((ufs1_daddr_t *)bp->b_data)[off] :
+				    ((ufs2_daddr_t *)bp->b_data)[off];
+			} while (daddr == 0 && ++off < MNINDIR(ump));
+			nextbn += off * lbn_count(ump, num - 1);
+
+			/*
+			 * We need to recompute the LBNs of indirect
+			 * blocks, so restart with the updated block offset.
+			 */
+			if (off != ap->in_off)
+				break;
 		}
-		if (daddr != 0) {
-			MPASS(num == 0);
+		if (num == 0) {
+			/*
+			 * We found a data block.
+			 */
+			bn = nextbn;
 			break;
 		}
 	}
@@ -405,7 +437,7 @@ ufs_bmap_seekdata(vp, offp)
 		bqrelse(bp);
 	if (bn >= numblks)
 		error = ENXIO;
-	if (error == 0)
+	if (error == 0 && *offp < bn * bsize)
 		*offp = bn * bsize;
 	return (error);
 }

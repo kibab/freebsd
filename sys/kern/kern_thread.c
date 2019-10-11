@@ -84,17 +84,17 @@ _Static_assert(offsetof(struct thread, td_pflags) == 0x104,
     "struct thread KBI td_pflags");
 _Static_assert(offsetof(struct thread, td_frame) == 0x478,
     "struct thread KBI td_frame");
-_Static_assert(offsetof(struct thread, td_emuldata) == 0x530,
+_Static_assert(offsetof(struct thread, td_emuldata) == 0x540,
     "struct thread KBI td_emuldata");
 _Static_assert(offsetof(struct proc, p_flag) == 0xb0,
     "struct proc KBI p_flag");
 _Static_assert(offsetof(struct proc, p_pid) == 0xbc,
     "struct proc KBI p_pid");
-_Static_assert(offsetof(struct proc, p_filemon) == 0x3d0,
+_Static_assert(offsetof(struct proc, p_filemon) == 0x3c8,
     "struct proc KBI p_filemon");
-_Static_assert(offsetof(struct proc, p_comm) == 0x3e8,
+_Static_assert(offsetof(struct proc, p_comm) == 0x3e0,
     "struct proc KBI p_comm");
-_Static_assert(offsetof(struct proc, p_emuldata) == 0x4c8,
+_Static_assert(offsetof(struct proc, p_emuldata) == 0x4c0,
     "struct proc KBI p_emuldata");
 #endif
 #ifdef __i386__
@@ -102,7 +102,7 @@ _Static_assert(offsetof(struct thread, td_flags) == 0x98,
     "struct thread KBI td_flags");
 _Static_assert(offsetof(struct thread, td_pflags) == 0xa0,
     "struct thread KBI td_pflags");
-_Static_assert(offsetof(struct thread, td_frame) == 0x2ec,
+_Static_assert(offsetof(struct thread, td_frame) == 0x2f0,
     "struct thread KBI td_frame");
 _Static_assert(offsetof(struct thread, td_emuldata) == 0x338,
     "struct thread KBI td_emuldata");
@@ -110,11 +110,11 @@ _Static_assert(offsetof(struct proc, p_flag) == 0x68,
     "struct proc KBI p_flag");
 _Static_assert(offsetof(struct proc, p_pid) == 0x74,
     "struct proc KBI p_pid");
-_Static_assert(offsetof(struct proc, p_filemon) == 0x27c,
+_Static_assert(offsetof(struct proc, p_filemon) == 0x278,
     "struct proc KBI p_filemon");
-_Static_assert(offsetof(struct proc, p_comm) == 0x290,
+_Static_assert(offsetof(struct proc, p_comm) == 0x28c,
     "struct proc KBI p_comm");
-_Static_assert(offsetof(struct proc, p_emuldata) == 0x31c,
+_Static_assert(offsetof(struct proc, p_emuldata) == 0x318,
     "struct proc KBI p_emuldata");
 #endif
 
@@ -668,6 +668,7 @@ thread_link(struct thread *td, struct proc *p)
 	LIST_INIT(&td->td_contested);
 	LIST_INIT(&td->td_lprof[0]);
 	LIST_INIT(&td->td_lprof[1]);
+	SLIST_INIT(&td->td_epochs);
 	sigqueue_init(&td->td_sigqueue, p);
 	callout_init(&td->td_slpcallout, 1);
 	TAILQ_INSERT_TAIL(&p->p_threads, td, td_plist);
@@ -684,6 +685,8 @@ thread_unlink(struct thread *td)
 	struct proc *p = td->td_proc;
 
 	PROC_LOCK_ASSERT(p, MA_OWNED);
+	MPASS(SLIST_EMPTY(&td->td_epochs));
+
 	TAILQ_REMOVE(&p->p_threads, td, td_plist);
 	p->p_numthreads--;
 	/* could clear a few other things here */

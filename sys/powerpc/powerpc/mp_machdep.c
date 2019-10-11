@@ -35,6 +35,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/ktr.h>
 #include <sys/bus.h>
 #include <sys/cpuset.h>
+#include <sys/domainset.h>
 #include <sys/lock.h>
 #include <sys/malloc.h>
 #include <sys/mutex.h>
@@ -61,8 +62,6 @@ __FBSDID("$FreeBSD$");
 
 #include "pic_if.h"
 
-extern struct pcpu __pcpu[MAXCPU];
-
 volatile static int ap_awake;
 volatile static u_int ap_letgo;
 volatile static u_quad_t ap_timebase;
@@ -78,8 +77,8 @@ machdep_ap_bootstrap(void)
 	__asm __volatile("msync; isync");
 
 	while (ap_letgo == 0)
-		__asm __volatile("or 31,31,31");
-	__asm __volatile("or 6,6,6");
+		nop_prio_vlow();
+	nop_prio_medium();
 
 	/*
 	 * Set timebase as soon as possible to meet an implicit rendezvous
@@ -151,7 +150,7 @@ cpu_mp_start(void)
 {
 	struct cpuref bsp, cpu;
 	struct pcpu *pc;
-	int error;
+	int domain, error;
 
 	error = platform_smp_get_bsp(&bsp);
 	KASSERT(error == 0, ("Don't know BSP"));
@@ -168,12 +167,18 @@ cpu_mp_start(void)
 			    cpu.cr_cpuid);
 			goto next;
 		}
+
+		if (vm_ndomains > 1)
+			domain = cpu.cr_domain;
+		else
+			domain = 0;
+
 		if (cpu.cr_cpuid != bsp.cr_cpuid) {
 			void *dpcpu;
 
 			pc = &__pcpu[cpu.cr_cpuid];
-			dpcpu = (void *)kmem_malloc(DPCPU_SIZE, M_WAITOK |
-			    M_ZERO);
+			dpcpu = (void *)kmem_malloc_domainset(DOMAINSET_PREF(domain),
+			    DPCPU_SIZE, M_WAITOK | M_ZERO);
 			pcpu_init(pc, cpu.cr_cpuid, sizeof(*pc));
 			dpcpu_init(dpcpu, cpu.cr_cpuid);
 		} else {
@@ -181,7 +186,12 @@ cpu_mp_start(void)
 			pc->pc_cpuid = bsp.cr_cpuid;
 			pc->pc_bsp = 1;
 		}
+		pc->pc_domain = domain;
 		pc->pc_hwref = cpu.cr_hwref;
+
+		CPU_SET(pc->pc_cpuid, &cpuset_domain[pc->pc_domain]);
+		KASSERT(pc->pc_domain < MAXMEMDOM, ("bad domain value %d\n",
+		    pc->pc_domain));
 		CPU_SET(pc->pc_cpuid, &all_cpus);
 next:
 		error = platform_smp_next_cpu(&cpu);
@@ -205,7 +215,7 @@ cpu_mp_announce(void)
 		pc = pcpu_find(i);
 		if (pc == NULL)
 			continue;
-		printf("cpu%d: dev=%x", i, (int)pc->pc_hwref);
+		printf("cpu%d: dev=%x domain=%d ", i, (int)pc->pc_hwref, pc->pc_domain);
 		if (pc->pc_bsp)
 			printf(" (BSP)");
 		printf("\n");

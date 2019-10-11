@@ -196,6 +196,7 @@ extern uint64_t zfs_deadman_synctime_ms;
 extern int metaslab_preload_limit;
 extern boolean_t zfs_compressed_arc_enabled;
 extern boolean_t zfs_abd_scatter_enabled;
+extern int dmu_object_alloc_chunk_shift;
 extern boolean_t zfs_force_some_double_word_sm_entries;
 
 static ztest_shared_opts_t *ztest_shared_opts;
@@ -322,6 +323,7 @@ static ztest_shared_callstate_t *ztest_shared_callstate;
 ztest_func_t ztest_dmu_read_write;
 ztest_func_t ztest_dmu_write_parallel;
 ztest_func_t ztest_dmu_object_alloc_free;
+ztest_func_t ztest_dmu_object_next_chunk;
 ztest_func_t ztest_dmu_commit_callbacks;
 ztest_func_t ztest_zap;
 ztest_func_t ztest_zap_parallel;
@@ -338,7 +340,6 @@ ztest_func_t ztest_spa_create_destroy;
 ztest_func_t ztest_fault_inject;
 ztest_func_t ztest_ddt_repair;
 ztest_func_t ztest_dmu_snapshot_hold;
-ztest_func_t ztest_spa_rename;
 ztest_func_t ztest_scrub;
 ztest_func_t ztest_dsl_dataset_promote_busy;
 ztest_func_t ztest_vdev_attach_detach;
@@ -364,6 +365,7 @@ ztest_info_t ztest_info[] = {
 	{ ztest_dmu_read_write,			1,	&zopt_always	},
 	{ ztest_dmu_write_parallel,		10,	&zopt_always	},
 	{ ztest_dmu_object_alloc_free,		1,	&zopt_always	},
+	{ ztest_dmu_object_next_chunk,		1,	&zopt_sometimes	},
 	{ ztest_dmu_commit_callbacks,		1,	&zopt_always	},
 	{ ztest_zap,				30,	&zopt_always	},
 	{ ztest_zap_parallel,			100,	&zopt_always	},
@@ -384,7 +386,6 @@ ztest_info_t ztest_info[] = {
 	{ ztest_ddt_repair,			1,	&zopt_sometimes	},
 	{ ztest_dmu_snapshot_hold,		1,	&zopt_sometimes	},
 	{ ztest_reguid,				1,	&zopt_rarely	},
-	{ ztest_spa_rename,			1,	&zopt_rarely	},
 	{ ztest_scrub,				1,	&zopt_often	},
 	{ ztest_spa_upgrade,			1,	&zopt_rarely	},
 	{ ztest_dsl_dataset_promote_busy,	1,	&zopt_rarely	},
@@ -1368,7 +1369,7 @@ ztest_bt_bonus(dmu_buf_t *db)
  * it unique to the object, generation, and offset to verify that data
  * is not getting overwritten by data from other dnodes.
  */
-#define	ZTEST_BONUS_FILL_TOKEN(obj, ds, gen, offset) \
+#define	ZTEST_BONUS_FILL_TOKEN(obj, ds, gen, offset)	\
 	(((ds) << 48) | ((gen) << 32) | ((obj) << 8) | (offset))
 
 /*
@@ -1897,6 +1898,7 @@ ztest_replay_setattr(void *arg1, void *arg2, boolean_t byteswap)
 	ztest_bt_generate(bbt, os, lr->lr_foid, dnodesize, -1ULL, lr->lr_mode,
 	    txg, crtxg);
 	ztest_fill_unused_bonus(db, bbt, lr->lr_foid, os, bbt->bt_gen);
+
 	dmu_buf_rele(db, FTAG);
 
 	(void) ztest_log_setattr(zd, tx, lr);
@@ -1935,6 +1937,7 @@ zil_replay_func_t *ztest_replay_vector[TX_MAX_TYPE] = {
  * ZIL get_data callbacks
  */
 
+/* ARGSUSED */
 static void
 ztest_get_done(zgd_t *zgd, int error)
 {
@@ -1946,9 +1949,6 @@ ztest_get_done(zgd_t *zgd, int error)
 
 	ztest_range_unlock(zgd->zgd_rl);
 	ztest_object_unlock(zd, object);
-
-	if (error == 0 && zgd->zgd_bp)
-		zil_lwb_add_block(zgd->zgd_lwb, zgd->zgd_bp);
 
 	umem_free(zgd, sizeof (*zgd));
 }
@@ -3819,8 +3819,10 @@ ztest_dmu_object_alloc_free(ztest_ds_t *zd, uint64_t id)
 	ztest_od_t od[4];
 	int batchsize = sizeof (od) / sizeof (od[0]);
 
-	for (int b = 0; b < batchsize; b++)
-		ztest_od_init(&od[b], id, FTAG, b, DMU_OT_UINT64_OTHER, 0, 0, 0);
+	for (int b = 0; b < batchsize; b++) {
+		ztest_od_init(&od[b], id, FTAG, b, DMU_OT_UINT64_OTHER,
+		    0, 0, 0);
+	}
 
 	/*
 	 * Destroy the previous batch of objects, create a new batch,
@@ -3832,6 +3834,26 @@ ztest_dmu_object_alloc_free(ztest_ds_t *zd, uint64_t id)
 	while (ztest_random(4 * batchsize) != 0)
 		ztest_io(zd, od[ztest_random(batchsize)].od_object,
 		    ztest_random(ZTEST_RANGE_LOCKS) << SPA_MAXBLOCKSHIFT);
+}
+
+/*
+ * Rewind the global allocator to verify object allocation backfilling.
+ */
+void
+ztest_dmu_object_next_chunk(ztest_ds_t *zd, uint64_t id)
+{
+	objset_t *os = zd->zd_os;
+	int dnodes_per_chunk = 1 << dmu_object_alloc_chunk_shift;
+	uint64_t object;
+
+	/*
+	 * Rewind the global allocator randomly back to a lower object number
+	 * to force backfilling and reclamation of recently freed dnodes.
+	 */
+	mutex_enter(&os->os_obj_lock);
+	object = ztest_random(os->os_obj_next_chunk);
+	os->os_obj_next_chunk = P2ALIGN(object, dnodes_per_chunk);
+	mutex_exit(&os->os_obj_lock);
 }
 
 /*
@@ -3880,8 +3902,10 @@ ztest_dmu_read_write(ztest_ds_t *zd, uint64_t id)
 	/*
 	 * Read the directory info.  If it's the first time, set things up.
 	 */
-	ztest_od_init(&od[0], id, FTAG, 0, DMU_OT_UINT64_OTHER, 0, 0, chunksize);
-	ztest_od_init(&od[1], id, FTAG, 1, DMU_OT_UINT64_OTHER, 0, 0, chunksize);
+	ztest_od_init(&od[0], id, FTAG, 0, DMU_OT_UINT64_OTHER, 0, 0,
+	    chunksize);
+	ztest_od_init(&od[1], id, FTAG, 1, DMU_OT_UINT64_OTHER, 0, 0,
+	    chunksize);
 
 	if (ztest_object_init(zd, od, sizeof (od), B_FALSE) != 0)
 		return;
@@ -4150,8 +4174,10 @@ ztest_dmu_read_write_zcopy(ztest_ds_t *zd, uint64_t id)
 	/*
 	 * Read the directory info.  If it's the first time, set things up.
 	 */
-	ztest_od_init(&od[0], id, FTAG, 0, DMU_OT_UINT64_OTHER, blocksize, 0, 0);
-	ztest_od_init(&od[1], id, FTAG, 1, DMU_OT_UINT64_OTHER, 0, 0, chunksize);
+	ztest_od_init(&od[0], id, FTAG, 0, DMU_OT_UINT64_OTHER, blocksize,
+	    0, 0);
+	ztest_od_init(&od[1], id, FTAG, 1, DMU_OT_UINT64_OTHER, 0, 0,
+	    chunksize);
 
 	if (ztest_object_init(zd, od, sizeof (od), B_FALSE) != 0)
 		return;
@@ -4351,7 +4377,8 @@ ztest_dmu_write_parallel(ztest_ds_t *zd, uint64_t id)
 	 * to verify that parallel writes to an object -- even to the
 	 * same blocks within the object -- doesn't cause any trouble.
 	 */
-	ztest_od_init(&od[0], ID_PARALLEL, FTAG, 0, DMU_OT_UINT64_OTHER, 0, 0, 0);
+	ztest_od_init(&od[0], ID_PARALLEL, FTAG, 0, DMU_OT_UINT64_OTHER,
+	    0, 0, 0);
 
 	if (ztest_object_init(zd, od, sizeof (od), B_FALSE) != 0)
 		return;
@@ -4370,7 +4397,8 @@ ztest_dmu_prealloc(ztest_ds_t *zd, uint64_t id)
 	uint64_t blocksize = ztest_random_blocksize();
 	void *data;
 
-	ztest_od_init(&od[0], id, FTAG, 0, DMU_OT_UINT64_OTHER, blocksize, 0, 0);
+	ztest_od_init(&od[0], id, FTAG, 0, DMU_OT_UINT64_OTHER, blocksize,
+	    0, 0);
 
 	if (ztest_object_init(zd, od, sizeof (od), !ztest_random(2)) != 0)
 		return;
@@ -4594,7 +4622,8 @@ ztest_zap_parallel(ztest_ds_t *zd, uint64_t id)
 	char name[20], string_value[20];
 	void *data;
 
-	ztest_od_init(&od[0], ID_PARALLEL, FTAG, micro, DMU_OT_ZAP_OTHER, 0, 0, 0);
+	ztest_od_init(&od[0], ID_PARALLEL, FTAG, micro, DMU_OT_ZAP_OTHER,
+	    0, 0, 0);
 
 	if (ztest_object_init(zd, od, sizeof (od), B_FALSE) != 0)
 		return;
@@ -5415,7 +5444,8 @@ ztest_ddt_repair(ztest_ds_t *zd, uint64_t id)
 	blocksize = ztest_random_blocksize();
 	blocksize = MIN(blocksize, 2048);	/* because we write so many */
 
-	ztest_od_init(&od[0], id, FTAG, 0, DMU_OT_UINT64_OTHER, blocksize, 0, 0);
+	ztest_od_init(&od[0], id, FTAG, 0, DMU_OT_UINT64_OTHER, blocksize,
+	    0, 0);
 
 	if (ztest_object_init(zd, od, sizeof (od), B_FALSE) != 0)
 		return;
@@ -5548,59 +5578,6 @@ ztest_reguid(ztest_ds_t *zd, uint64_t id)
 
 	VERIFY3U(orig, !=, spa_guid(spa));
 	VERIFY3U(load, ==, spa_load_guid(spa));
-}
-
-/*
- * Rename the pool to a different name and then rename it back.
- */
-/* ARGSUSED */
-void
-ztest_spa_rename(ztest_ds_t *zd, uint64_t id)
-{
-	char *oldname, *newname;
-	spa_t *spa;
-
-	rw_enter(&ztest_name_lock, RW_WRITER);
-
-	oldname = ztest_opts.zo_pool;
-	newname = umem_alloc(strlen(oldname) + 5, UMEM_NOFAIL);
-	(void) strcpy(newname, oldname);
-	(void) strcat(newname, "_tmp");
-
-	/*
-	 * Do the rename
-	 */
-	VERIFY3U(0, ==, spa_rename(oldname, newname));
-
-	/*
-	 * Try to open it under the old name, which shouldn't exist
-	 */
-	VERIFY3U(ENOENT, ==, spa_open(oldname, &spa, FTAG));
-
-	/*
-	 * Open it under the new name and make sure it's still the same spa_t.
-	 */
-	VERIFY3U(0, ==, spa_open(newname, &spa, FTAG));
-
-	ASSERT(spa == ztest_spa);
-	spa_close(spa, FTAG);
-
-	/*
-	 * Rename it back to the original
-	 */
-	VERIFY3U(0, ==, spa_rename(newname, oldname));
-
-	/*
-	 * Make sure it can still be opened
-	 */
-	VERIFY3U(0, ==, spa_open(oldname, &spa, FTAG));
-
-	ASSERT(spa == ztest_spa);
-	spa_close(spa, FTAG);
-
-	umem_free(newname, strlen(newname) + 1);
-
-	rw_exit(&ztest_name_lock);
 }
 
 static vdev_t *
@@ -6661,7 +6638,6 @@ main(int argc, char **argv)
 	ztest_shared_callstate_t *zc;
 	char timebuf[100];
 	char numbuf[NN_NUMBUF_SZ];
-	spa_t *spa;
 	char *cmd;
 	boolean_t hasalt;
 	char *fd_data_str = getenv("ZTEST_FD_DATA");
@@ -6835,24 +6811,6 @@ main(int argc, char **argv)
 			}
 			(void) printf("\n");
 		}
-
-		/*
-		 * It's possible that we killed a child during a rename test,
-		 * in which case we'll have a 'ztest_tmp' pool lying around
-		 * instead of 'ztest'.  Do a blind rename in case this happened.
-		 */
-		kernel_init(FREAD);
-		if (spa_open(ztest_opts.zo_pool, &spa, FTAG) == 0) {
-			spa_close(spa, FTAG);
-		} else {
-			char tmpname[ZFS_MAX_DATASET_NAME_LEN];
-			kernel_fini();
-			kernel_init(FREAD | FWRITE);
-			(void) snprintf(tmpname, sizeof (tmpname), "%s_tmp",
-			    ztest_opts.zo_pool);
-			(void) spa_rename(tmpname, ztest_opts.zo_pool);
-		}
-		kernel_fini();
 
 		ztest_run_zdb(ztest_opts.zo_pool);
 	}

@@ -151,8 +151,8 @@ int ipfw_chk(struct ip_fw_args *args);
 struct mbuf *ipfw_send_pkt(struct mbuf *, struct ipfw_flow_id *,
     u_int32_t, u_int32_t, int);
 
-/* attach (arg = 1) or detach (arg = 0) hooks */
-int ipfw_attach_hooks(int);
+int ipfw_attach_hooks(void);
+void ipfw_detach_hooks(void);
 #ifdef NOTYET
 void ipfw_nat_destroy(void);
 #endif
@@ -665,6 +665,7 @@ struct ip_fw *ipfw_alloc_rule(struct ip_fw_chain *chain, size_t rulesize);
 void ipfw_free_rule(struct ip_fw *rule);
 int ipfw_match_range(struct ip_fw *rule, ipfw_range_tlv *rt);
 int ipfw_mark_object_kidx(uint32_t *bmask, uint16_t etlv, uint16_t kidx);
+ipfw_insn *ipfw_get_action(struct ip_fw *);
 
 typedef int (sopt_handler_f)(struct ip_fw_chain *ch,
     ip_fw3_opheader *op3, struct sockopt_data *sd);

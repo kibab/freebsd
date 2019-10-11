@@ -1474,10 +1474,10 @@ done:
 struct in6_ifaddr *
 in6ifa_ifpforlinklocal(struct ifnet *ifp, int ignoreflags)
 {
-	struct epoch_tracker et;
 	struct ifaddr *ifa;
 
-	NET_EPOCH_ENTER(et);
+	NET_EPOCH_ASSERT();
+
 	CK_STAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link) {
 		if (ifa->ifa_addr->sa_family != AF_INET6)
 			continue;
@@ -1489,7 +1489,6 @@ in6ifa_ifpforlinklocal(struct ifnet *ifp, int ignoreflags)
 			break;
 		}
 	}
-	NET_EPOCH_EXIT(et);
 
 	return ((struct in6_ifaddr *)ifa);
 }
@@ -1549,13 +1548,13 @@ in6ifa_ifpwithaddr(struct ifnet *ifp, const struct in6_addr *addr)
 struct in6_ifaddr *
 in6ifa_llaonifp(struct ifnet *ifp)
 {
-	struct epoch_tracker et;
 	struct sockaddr_in6 *sin6;
 	struct ifaddr *ifa;
 
+	NET_EPOCH_ASSERT();
+
 	if (ND_IFINFO(ifp)->flags & ND6_IFF_IFDISABLED)
 		return (NULL);
-	NET_EPOCH_ENTER(et);
 	CK_STAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link) {
 		if (ifa->ifa_addr->sa_family != AF_INET6)
 			continue;
@@ -1565,7 +1564,6 @@ in6ifa_llaonifp(struct ifnet *ifp)
 		    IN6_IS_ADDR_MC_NODELOCAL(&sin6->sin6_addr))
 			break;
 	}
-	NET_EPOCH_EXIT(et);
 
 	return ((struct in6_ifaddr *)ifa);
 }
@@ -1702,26 +1700,23 @@ int
 in6_ifhasaddr(struct ifnet *ifp, struct in6_addr *addr)
 {
 	struct in6_addr in6;
-	struct epoch_tracker et;
 	struct ifaddr *ifa;
 	struct in6_ifaddr *ia6;
+
+	NET_EPOCH_ASSERT();
 
 	in6 = *addr;
 	if (in6_clearscope(&in6))
 		return (0);
 	in6_setscope(&in6, ifp, NULL);
 
-	NET_EPOCH_ENTER(et);
 	CK_STAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link) {
 		if (ifa->ifa_addr->sa_family != AF_INET6)
 			continue;
 		ia6 = (struct in6_ifaddr *)ifa;
-		if (IN6_ARE_ADDR_EQUAL(&ia6->ia_addr.sin6_addr, &in6)) {
-			NET_EPOCH_EXIT(et);
+		if (IN6_ARE_ADDR_EQUAL(&ia6->ia_addr.sin6_addr, &in6))
 			return (1);
-		}
 	}
-	NET_EPOCH_EXIT(et);
 
 	return (0);
 }
@@ -1825,11 +1820,12 @@ in6_prefixlen2mask(struct in6_addr *maskp, int len)
 struct in6_ifaddr *
 in6_ifawithifp(struct ifnet *ifp, struct in6_addr *dst)
 {
-	struct epoch_tracker et;
 	int dst_scope =	in6_addrscope(dst), blen = -1, tlen;
 	struct ifaddr *ifa;
 	struct in6_ifaddr *besta = NULL;
 	struct in6_ifaddr *dep[2];	/* last-resort: deprecated */
+
+	NET_EPOCH_ASSERT();
 
 	dep[0] = dep[1] = NULL;
 
@@ -1839,7 +1835,6 @@ in6_ifawithifp(struct ifnet *ifp, struct in6_addr *dst)
 	 * If two or more, return one which matches the dst longest.
 	 * If none, return one of global addresses assigned other ifs.
 	 */
-	NET_EPOCH_ENTER(et);
 	CK_STAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link) {
 		if (ifa->ifa_addr->sa_family != AF_INET6)
 			continue;
@@ -1873,7 +1868,6 @@ in6_ifawithifp(struct ifnet *ifp, struct in6_addr *dst)
 	}
 	if (besta) {
 		ifa_ref(&besta->ia_ifa);
-		NET_EPOCH_EXIT(et);
 		return (besta);
 	}
 
@@ -1894,23 +1888,19 @@ in6_ifawithifp(struct ifnet *ifp, struct in6_addr *dst)
 
 		if (ifa != NULL)
 			ifa_ref(ifa);
-		NET_EPOCH_EXIT(et);
 		return (struct in6_ifaddr *)ifa;
 	}
 
 	/* use the last-resort values, that are, deprecated addresses */
 	if (dep[0]) {
 		ifa_ref((struct ifaddr *)dep[0]);
-		NET_EPOCH_EXIT(et);
 		return dep[0];
 	}
 	if (dep[1]) {
 		ifa_ref((struct ifaddr *)dep[1]);
-		NET_EPOCH_EXIT(et);
 		return dep[1];
 	}
 
-	NET_EPOCH_EXIT(et);
 	return NULL;
 }
 
@@ -1940,37 +1930,25 @@ in6_if_up(struct ifnet *ifp)
 			    arc4random() % (MAX_RTR_SOLICITATION_DELAY * hz));
 		}
 	}
-	NET_EPOCH_EXIT(et);
 
 	/*
 	 * special cases, like 6to4, are handled in in6_ifattach
 	 */
 	in6_ifattach(ifp, NULL);
+	NET_EPOCH_EXIT(et);
 }
 
 int
 in6if_do_dad(struct ifnet *ifp)
 {
+
 	if ((ifp->if_flags & IFF_LOOPBACK) != 0)
 		return (0);
-
-	if ((ND_IFINFO(ifp)->flags & ND6_IFF_IFDISABLED) ||
-	    (ND_IFINFO(ifp)->flags & ND6_IFF_NO_DAD))
+	if ((ifp->if_flags & IFF_MULTICAST) == 0)
 		return (0);
-
-	/*
-	 * Our DAD routine requires the interface up and running.
-	 * However, some interfaces can be up before the RUNNING
-	 * status.  Additionally, users may try to assign addresses
-	 * before the interface becomes up (or running).
-	 * This function returns EAGAIN in that case.
-	 * The caller should mark "tentative" on the address instead of
-	 * performing DAD immediately.
-	 */
-	if (!((ifp->if_flags & IFF_UP) &&
-	    (ifp->if_drv_flags & IFF_DRV_RUNNING)))
-		return (EAGAIN);
-
+	if ((ND_IFINFO(ifp)->flags &
+	    (ND6_IFF_IFDISABLED | ND6_IFF_NO_DAD)) != 0)
+		return (0);
 	return (1);
 }
 
@@ -2164,6 +2142,7 @@ in6_lltable_rtcheck(struct ifnet *ifp,
 	char ip6buf[INET6_ADDRSTRLEN];
 	int fibnum;
 
+	NET_EPOCH_ASSERT();
 	KASSERT(l3addr->sa_family == AF_INET6,
 	    ("sin_family %d", l3addr->sa_family));
 
@@ -2172,19 +2151,15 @@ in6_lltable_rtcheck(struct ifnet *ifp,
 	fibnum = V_rt_add_addr_allfibs ? RT_DEFAULT_FIB : ifp->if_fib;
 	error = fib6_lookup_nh_basic(fibnum, &dst, scopeid, 0, 0, &nh6);
 	if (error != 0 || (nh6.nh_flags & NHF_GATEWAY) || nh6.nh_ifp != ifp) {
-		struct epoch_tracker et;
 		struct ifaddr *ifa;
 		/*
 		 * Create an ND6 cache for an IPv6 neighbor
 		 * that is not covered by our own prefix.
 		 */
-		NET_EPOCH_ENTER(et);
 		ifa = ifaof_ifpforaddr(l3addr, ifp);
 		if (ifa != NULL) {
-			NET_EPOCH_EXIT(et);
 			return 0;
 		}
-		NET_EPOCH_EXIT(et);
 		log(LOG_INFO, "IPv6 address: \"%s\" is not on the network\n",
 		    ip6_sprintf(ip6buf, &sin6->sin6_addr));
 		return EINVAL;

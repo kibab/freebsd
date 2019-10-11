@@ -553,16 +553,23 @@ VERSION=	FreeBSD ${_REVISION}-${_BRANCH:C/-p[0-9]+$//} ${TARGET_ARCH} ${SRCRELDA
 .endif
 
 .if !defined(PKG_VERSION)
-.if ${_BRANCH:MSTABLE*} || ${_BRANCH:MCURRENT*} || ${_BRANCH:MALPHA*}
+.if ${_BRANCH:MSTABLE*} || ${_BRANCH:MCURRENT*}
 TIMENOW=	%Y%m%d%H%M%S
 EXTRA_REVISION=	.s${TIMENOW:gmtime}
-.endif
-.if ${_BRANCH:M*-p*}
+.elif ${_BRANCH:MALPHA*}
+EXTRA_REVISION= _${_BRANCH:C/-ALPHA/.a/}
+.elif ${_BRANCH:MBETA*}
+EXTRA_REVISION= _${_BRANCH:C/-BETA/.b/}
+.elif ${_BRANCH:MRC*}
+EXTRA_REVISION= _${_BRANCH:C/-RC/.r/}
+.elif ${_BRANCH:MPRERELEASE*}
+EXTRA_REVISION= _${_BRANCH:C/-PRERELEASE/.p/}
+.elif ${_BRANCH:M*-p*}
 EXTRA_REVISION=	_${_BRANCH:C/.*-p([0-9]+$)/\1/}
 .endif
 PKG_VERSION=	${_REVISION}${EXTRA_REVISION}
 .endif
-.endif	# !defined(_MKSHOWCONFIG)
+.endif	# !defined(PKG_VERSION)
 
 .if !defined(_MKSHOWCONFIG)
 _CPUTYPE!=	MAKEFLAGS= CPUTYPE=${_TARGET_CPUTYPE} ${MAKE} -f /dev/null \
@@ -670,6 +677,10 @@ CROSSENV+=	BUILD_TOOLS_META=.NOMETA
 .endif
 .if defined(TARGET_CFLAGS)
 CROSSENV+=	${TARGET_CFLAGS}
+.endif
+.if (${TARGET} != ${MACHINE} && !defined(WITH_LOCAL_MODULES)) || \
+    defined(WITHOUT_LOCAL_MODULES)
+CROSSENV+=	LOCAL_MODULES=
 .endif
 
 BOOTSTRAPPING_OSRELDATE?=${OSRELDATE}
@@ -938,14 +949,36 @@ _sanity_check: .PHONY .MAKE
 # replacing generated files.  Handle these cases here in an ad-hoc fashion.
 _cleanobj_fast_depend_hack: .PHONY
 # Syscall stubs rewritten in C and obsolete MD assembly implementations
-# Date      SVN Rev  Syscalls
-# 20180404  r332048  sigreturn
-# 20180405  r332080  shmat
-# 20180406  r332119  setlogin
-# 20180411  r332443  exect
-# 20180525  r334224  vadvise
+# Date      SVN Rev  Syscalls/Changes
+# 20191009  r353340  removal of opensolaris_atomic.S (also r353381)
+.if ${MACHINE} != i386
+.for f in opensolaris_atomic
+	@if [ -e "${OBJTOP}/cddl/lib/libzpool/.depend.${f}.o" ] && \
+	    egrep -qw 'opensolaris_atomic\.S' ${OBJTOP}/cddl/lib/libzpool/.depend.${f}.o; then \
+		echo "Removing stale dependencies for opensolaris_atomic"; \
+		rm -f ${OBJTOP}/cddl/lib/libzpool/.depend.${f}.* \
+		   ${LIBCOMPAT:D${LIBCOMPAT_OBJTOP}/cddl/lib/libzpool/.depend.${f}.*}; \
+	fi
+.endfor
+.endif
+# 20190925  r352689  removal of obsolete i386 memchr.S
+.for f in memchr
+	@if [ -e "${OBJTOP}/lib/libc/.depend.${f}.o" ] && \
+	    egrep -qw 'i386/string/memchr\.S' ${OBJTOP}/lib/libc/.depend.${f}.o; then \
+		echo "Removing stale dependencies for memchr"; \
+		rm -f ${OBJTOP}/lib/libc/.depend.${f}.*; \
+	fi
+.if defined(LIBCOMPAT)
+	@if [ -e "${LIBCOMPAT_OBJTOP}/lib/libc/.depend.${f}.o" ] && \
+	    egrep -qw 'i386/string/memchr\.S' ${LIBCOMPAT_OBJTOP}/lib/libc/.depend.${f}.o; then \
+		echo "Removing stale dependencies for memchr"; \
+		rm -f ${LIBCOMPAT_OBJTOP}/lib/libc/.depend.${f}.*; \
+	fi
+.endif
+.endfor
 # 20180604  r334626  brk sbrk
-.for f in brk exect sbrk setlogin shmat sigreturn vadvise
+# 20190916  r352703  shm_open
+.for f in brk sbrk shm_open
 	@if [ -e "${OBJTOP}/lib/libc/.depend.${f}.o" ] && \
 	    egrep -qw '${f}\.[sS]' ${OBJTOP}/lib/libc/.depend.${f}.o; then \
 		echo "Removing stale dependencies for ${f} syscall wrappers"; \
@@ -1162,7 +1195,7 @@ buildworld_epilogue: .PHONY
 	@echo "--------------------------------------------------------------"
 	@echo ">>> World build completed on `LC_ALL=C date`"
 	@seconds=$$(($$(date '+%s') - ${_BUILDWORLD_START})); \
-	  echo -n ">>> World build in $$seconds seconds, "; \
+	  echo -n ">>> World built in $$seconds seconds, "; \
 	  echo "ncpu: $$(sysctl -n hw.ncpu)${.MAKE.JOBS:S/^/, make -j/}"
 	@echo "--------------------------------------------------------------"
 
@@ -1458,8 +1491,14 @@ packageworld: .PHONY
 . endif
 .endfor
 
+makeman: .PHONY
+	${_+_}cd ${.CURDIR}/tools/build/options; sh makeman > \
+	    ${.CURDIR}/share/man/man5/src.conf.5
+
 _sysent_dirs=	sys/kern
 _sysent_dirs+=	sys/compat/freebsd32
+_sysent_dirs+=	sys/compat/cloudabi32	\
+		sys/compat/cloudabi64
 _sysent_dirs+=	sys/amd64/linux		\
 		sys/amd64/linux32	\
 		sys/arm64/linux		\
@@ -1648,7 +1687,7 @@ buildkernel: .MAKE .PHONY
 	
 .endfor
 	@seconds=$$(($$(date '+%s') - ${_BUILDKERNEL_START})); \
-	  echo -n ">>> Kernel(s) build for${BUILDKERNELS} in $$seconds seconds, "; \
+	  echo -n ">>> Kernel(s) ${BUILDKERNELS} built in $$seconds seconds, "; \
 	  echo "ncpu: $$(sysctl -n hw.ncpu)${.MAKE.JOBS:S/^/, make -j/}"
 	@echo "--------------------------------------------------------------"
 
@@ -1906,11 +1945,11 @@ create-kernel-packages-flavor${flavor:C,^""$,${_default_flavor},}: _pkgbootstrap
 		/name/ { printf("===> Creating %s-", $$2); next } \
 		/version/ {print $$2; next } ' \
 		${KSTAGEDIR}/${DISTDIR}/kernel.${INSTALLKERNEL}${flavor}.ucl ; \
-	${PKG_CMD} -o ABI_FILE=${WSTAGEDIR}/bin/sh -o ALLOW_BASE_SHLIBS=yes \
+	${PKG_CMD} -o ABI_FILE=${WSTAGEDIR}/usr/bin/uname -o ALLOW_BASE_SHLIBS=yes \
 		create -M ${KSTAGEDIR}/${DISTDIR}/kernel.${INSTALLKERNEL}${flavor}.ucl \
 		-p ${KSTAGEDIR}/${DISTDIR}/kernel.${INSTALLKERNEL}${flavor}.plist \
 		-r ${KSTAGEDIR}/${DISTDIR} \
-		-o ${REPODIR}/$$(${PKG_CMD} -o ABI_FILE=${WSTAGEDIR}/bin/sh config ABI)/${PKG_VERSION}
+		-o ${REPODIR}/$$(${PKG_CMD} -o ABI_FILE=${WSTAGEDIR}/usr/bin/uname config ABI)/${PKG_VERSION}
 . endfor
 .endif
 .if ${BUILDKERNELS:[#]} > 1 && ${NO_INSTALLEXTRAKERNELS} != "yes"
@@ -1938,24 +1977,24 @@ create-kernel-packages-extra-flavor${flavor:C,^""$,${_default_flavor},}-${_kerne
 		/name/ { printf("===> Creating %s-", $$2); next } \
 		/version/ {print $$2; next } ' \
 		${KSTAGEDIR}/kernel.${_kernel}/kernel.${_kernel}${flavor}.ucl ; \
-	${PKG_CMD} -o ABI_FILE=${WSTAGEDIR}/bin/sh -o ALLOW_BASE_SHLIBS=yes \
+	${PKG_CMD} -o ABI_FILE=${WSTAGEDIR}/usr/bin/uname -o ALLOW_BASE_SHLIBS=yes \
 		create -M ${KSTAGEDIR}/kernel.${_kernel}/kernel.${_kernel}${flavor}.ucl \
 		-p ${KSTAGEDIR}/kernel.${_kernel}/kernel.${_kernel}${flavor}.plist \
 		-r ${KSTAGEDIR}/kernel.${_kernel} \
-		-o ${REPODIR}/$$(${PKG_CMD} -o ABI_FILE=${WSTAGEDIR}/bin/sh config ABI)/${PKG_VERSION}
+		-o ${REPODIR}/$$(${PKG_CMD} -o ABI_FILE=${WSTAGEDIR}/usr/bin/uname config ABI)/${PKG_VERSION}
 .   endfor
 .  endif
 . endfor
 .endif
 
 sign-packages:	_pkgbootstrap .PHONY
-	@[ -L "${REPODIR}/$$(${PKG_CMD} -o ABI_FILE=${WSTAGEDIR}/bin/sh config ABI)/latest" ] && \
-		unlink ${REPODIR}/$$(${PKG_CMD} -o ABI_FILE=${WSTAGEDIR}/bin/sh config ABI)/latest ; \
-	${PKG_CMD} -o ABI_FILE=${WSTAGEDIR}/bin/sh repo \
-		-o ${REPODIR}/$$(${PKG_CMD} -o ABI_FILE=${WSTAGEDIR}/bin/sh config ABI)/${PKG_VERSION} \
-		${REPODIR}/$$(${PKG_CMD} -o ABI_FILE=${WSTAGEDIR}/bin/sh config ABI)/${PKG_VERSION} \
+	@[ -L "${REPODIR}/$$(${PKG_CMD} -o ABI_FILE=${WSTAGEDIR}/usr/bin/uname config ABI)/latest" ] && \
+		unlink ${REPODIR}/$$(${PKG_CMD} -o ABI_FILE=${WSTAGEDIR}/usr/bin/uname config ABI)/latest ; \
+	${PKG_CMD} -o ABI_FILE=${WSTAGEDIR}/usr/bin/uname repo \
+		-o ${REPODIR}/$$(${PKG_CMD} -o ABI_FILE=${WSTAGEDIR}/usr/bin/uname config ABI)/${PKG_VERSION} \
+		${REPODIR}/$$(${PKG_CMD} -o ABI_FILE=${WSTAGEDIR}/usr/bin/uname config ABI)/${PKG_VERSION} \
 		${PKGSIGNKEY} ; \
-	cd ${REPODIR}/$$(${PKG_CMD} -o ABI_FILE=${WSTAGEDIR}/bin/sh config ABI); \
+	cd ${REPODIR}/$$(${PKG_CMD} -o ABI_FILE=${WSTAGEDIR}/usr/bin/uname config ABI); \
 	ln -s ${PKG_VERSION} latest
 
 #
@@ -2105,7 +2144,8 @@ _bootstrap_tools_links+=m4 lex
 # r334881 added libdwarf constants used by ctfconvert.
 # r338478 fixed a crash in objcopy for mips64el objects
 # r339083 libelf: correct mips64el test to use ELF header
-.if ${BOOTSTRAPPING} < 1200085
+# r348347 Add missing powerpc64 relocation support to libdwarf
+.if ${BOOTSTRAPPING} < 1300030
 _elftoolchain_libs= lib/libelf lib/libdwarf
 ${_bt}-lib/libelf: ${_bt_m4_depend}
 ${_bt}-lib/libdwarf: ${_bt_m4_depend}
@@ -2178,10 +2218,13 @@ _localedef=	usr.bin/localedef
 _clang_tblgen= \
 	lib/clang/libllvmminimal \
 	usr.bin/clang/llvm-tblgen \
-	usr.bin/clang/clang-tblgen
+	usr.bin/clang/clang-tblgen \
+	usr.bin/clang/lldb-tblgen
+# XXX: lldb-tblgen is not needed, if top-level MK_LLDB=no
 
 ${_bt}-usr.bin/clang/clang-tblgen: ${_bt}-lib/clang/libllvmminimal
 ${_bt}-usr.bin/clang/llvm-tblgen: ${_bt}-lib/clang/libllvmminimal
+${_bt}-usr.bin/clang/lldb-tblgen: ${_bt}-lib/clang/libllvmminimal
 .endif
 
 # Default to building the GPL DTC, but build the BSDL one if users explicitly
@@ -2550,6 +2593,7 @@ NXBDIRS+= \
     usr.bin/find \
     usr.bin/grep \
     usr.bin/gzip \
+    usr.bin/head \
     usr.bin/id \
     usr.bin/lex \
     usr.bin/limits \
@@ -2570,6 +2614,7 @@ NXBDIRS+= \
     usr.bin/true \
     usr.bin/uniq \
     usr.bin/unzip \
+    usr.bin/wc \
     usr.bin/xargs \
     usr.bin/xinstall \
     usr.bin/xz \
@@ -2601,6 +2646,7 @@ NXBMAKEARGS+= \
 	-DNO_CPU_CFLAGS \
 	-DNO_PIC \
 	SSP_CFLAGS= \
+	MK_CASPER=no \
 	MK_CLANG_EXTRAS=no \
 	MK_CLANG_FULL=no \
 	MK_CTF=no \
@@ -2764,6 +2810,7 @@ _prebuild_libs=	${_kerberos5_lib_libasn1} \
 		lib/libfigpar \
 		${_lib_libgssapi} \
 		lib/libkiconv lib/libkvm lib/liblzma lib/libmd lib/libnv \
+		lib/libzstd \
 		${_lib_casper} \
 		lib/ncurses/ncurses lib/ncurses/ncursesw \
 		lib/libopie lib/libpam/libpam ${_lib_libthr} \
@@ -2825,6 +2872,7 @@ _lib_casper=	lib/libcasper
 lib/libpjdlog__L: lib/libutil__L
 lib/libcasper__L: lib/libnv__L
 lib/liblzma__L: lib/libthr__L
+lib/libzstd__L: lib/libthr__L
 
 _generic_libs=	${_cddl_lib} gnu/lib ${_kerberos5_lib} lib ${_secure_lib} usr.bin/lex/lib
 .if ${MK_IPFILTER} != "no"

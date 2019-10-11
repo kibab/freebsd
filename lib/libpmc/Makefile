@@ -1,13 +1,11 @@
 # $FreeBSD$
 
-PACKAGE=lib${LIB}
 LIB=	pmc
 
 SRCS=	libpmc.c pmclog.c libpmc_pmu_util.c libpmc_json.cc
 INCS=	pmc.h pmclog.h pmcformat.h
 
-CFLAGS+= -I${.CURDIR}
-CWARNFLAGS.gcc+= -Wno-shadow -Wno-cast-align
+ALLOW_MIPS_SHARED_TEXTREL=
 
 .if ${MACHINE_ARCH} == "amd64" || ${MACHINE_ARCH} == "i386"
 
@@ -30,6 +28,14 @@ libpmc_events.c: ${JEVENTS}
 	${JEVENTS} ${EVENT_ARCH} ${.CURDIR}/pmu-events/arch libpmc_events.c
 SRCS+= libpmc_events.c
 .endif
+
+WARNS?=	3
+
+CFLAGS+= -I${.CURDIR}
+CWARNFLAGS.gcc+= -Wno-shadow -Wno-cast-align
+
+# Silence warnings about usage of deprecated std::auto_ptr
+CXXWARNFLAGS+=	-Wno-deprecated-declarations
 
 MAN=	pmc.3
 MAN+=	pmc_allocate.3
