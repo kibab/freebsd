@@ -80,6 +80,13 @@ SYSCTL_INT(_vfs_zfs, OID_AUTO, per_txg_dirty_frees_percent, CTLFLAG_RWTUN,
  */
 int zfs_object_remap_one_indirect_delay_ticks = 0;
 
+/*
+ * Limit the amount we can prefetch with one call to this amount.  This
+ * helps to limit the amount of memory that can be used by prefetching.
+ * Larger objects should be prefetched a bit at a time.
+ */
+uint64_t dmu_prefetch_max = 8 * SPA_MAXBLOCKSIZE;
+
 const dmu_object_type_info_t dmu_ot[DMU_OT_NUMTYPES] = {
 	{ DMU_BSWAP_UINT8,  TRUE,  FALSE,  "unallocated"		},
 	{ DMU_BSWAP_ZAP,    TRUE,  TRUE,   "object directory"		},
@@ -349,7 +356,7 @@ dmu_bonus_hold(objset_t *os, uint64_t object, void *tag, dmu_buf_t **dbp)
 	db = dn->dn_bonus;
 
 	/* as long as the bonus buf is held, the dnode will be held */
-	if (refcount_add(&db->db_holds, tag) == 1) {
+	if (zfs_refcount_add(&db->db_holds, tag) == 1) {
 		VERIFY(dnode_add_ref(dn, db));
 		atomic_inc_32(&dn->dn_dbufs_count);
 	}
@@ -641,6 +648,11 @@ dmu_prefetch(objset_t *os, uint64_t object, int64_t level, uint64_t offset,
 		rw_exit(&dn->dn_struct_rwlock);
 		return;
 	}
+
+	/*
+	 * See comment before the definition of dmu_prefetch_max.
+	 */
+	len = MIN(len, dmu_prefetch_max);
 
 	/*
 	 * XXX - Note, if the dnode for the requested object is not
@@ -1731,11 +1743,13 @@ dmu_read_pages(objset_t *os, uint64_t object, vm_page_t *ma, int count,
 	db = dbp[0];
 	for (i = 0; i < *rbehind; i++) {
 		m = vm_page_grab(vmobj, ma[0]->pindex - 1 - i,
-		    VM_ALLOC_NORMAL | VM_ALLOC_NOWAIT | VM_ALLOC_NOBUSY);
+		    VM_ALLOC_NORMAL | VM_ALLOC_NOWAIT |
+		    VM_ALLOC_SBUSY | VM_ALLOC_IGN_SBUSY);
 		if (m == NULL)
 			break;
-		if (m->valid != 0) {
+		if (!vm_page_none_valid(m)) {
 			ASSERT3U(m->valid, ==, VM_PAGE_BITS_ALL);
+			vm_page_sunbusy(m);
 			break;
 		}
 		ASSERT(m->dirty == 0);
@@ -1746,13 +1760,14 @@ dmu_read_pages(objset_t *os, uint64_t object, vm_page_t *ma, int count,
 		va = zfs_map_page(m, &sf);
 		bcopy((char *)db->db_data + bufoff, va, PAGESIZE);
 		zfs_unmap_page(sf);
-		m->valid = VM_PAGE_BITS_ALL;
+		vm_page_valid(m);
 		vm_page_lock(m);
 		if ((m->busy_lock & VPB_BIT_WAITERS) != 0)
 			vm_page_activate(m);
 		else
 			vm_page_deactivate(m);
 		vm_page_unlock(m);
+		vm_page_sunbusy(m);
 	}
 	*rbehind = i;
 
@@ -1763,7 +1778,7 @@ dmu_read_pages(objset_t *os, uint64_t object, vm_page_t *ma, int count,
 			m = ma[mi];
 			if (m != bogus_page) {
 				vm_page_assert_xbusied(m);
-				ASSERT(m->valid == 0);
+				ASSERT(vm_page_none_valid(m));
 				ASSERT(m->dirty == 0);
 				ASSERT(!pmap_page_is_mapped(m));
 				va = zfs_map_page(m, &sf);
@@ -1791,7 +1806,7 @@ dmu_read_pages(objset_t *os, uint64_t object, vm_page_t *ma, int count,
 		if (pgoff == PAGESIZE) {
 			if (m != bogus_page) {
 				zfs_unmap_page(sf);
-				m->valid = VM_PAGE_BITS_ALL;
+				vm_page_valid(m);
 			}
 			ASSERT(mi < count);
 			mi++;
@@ -1840,16 +1855,18 @@ dmu_read_pages(objset_t *os, uint64_t object, vm_page_t *ma, int count,
 		ASSERT(m != bogus_page);
 		bzero(va + pgoff, PAGESIZE - pgoff);
 		zfs_unmap_page(sf);
-		m->valid = VM_PAGE_BITS_ALL;
+		vm_page_valid(m);
 	}
 
 	for (i = 0; i < *rahead; i++) {
 		m = vm_page_grab(vmobj, ma[count - 1]->pindex + 1 + i,
-		    VM_ALLOC_NORMAL | VM_ALLOC_NOWAIT | VM_ALLOC_NOBUSY);
+		    VM_ALLOC_NORMAL | VM_ALLOC_NOWAIT |
+		    VM_ALLOC_SBUSY | VM_ALLOC_IGN_SBUSY);
 		if (m == NULL)
 			break;
-		if (m->valid != 0) {
+		if (!vm_page_none_valid(m)) {
 			ASSERT3U(m->valid, ==, VM_PAGE_BITS_ALL);
+			vm_page_sunbusy(m);
 			break;
 		}
 		ASSERT(m->dirty == 0);
@@ -1866,13 +1883,14 @@ dmu_read_pages(objset_t *os, uint64_t object, vm_page_t *ma, int count,
 			bzero(va + tocpy, PAGESIZE - tocpy);
 		}
 		zfs_unmap_page(sf);
-		m->valid = VM_PAGE_BITS_ALL;
+		vm_page_valid(m);
 		vm_page_lock(m);
 		if ((m->busy_lock & VPB_BIT_WAITERS) != 0)
 			vm_page_activate(m);
 		else
 			vm_page_deactivate(m);
 		vm_page_unlock(m);
+		vm_page_sunbusy(m);
 	}
 	*rahead = i;
 	zfs_vmobject_wunlock(vmobj);

@@ -57,8 +57,6 @@ __FBSDID("$FreeBSD$");
 #include <netinet/icmp6.h>
 #include <netinet/udp.h>
 
-extern struct protosw inetsw[];
-
 int
 sctp6_input_with_port(struct mbuf **i_pak, int *offp, uint16_t port)
 {
@@ -560,6 +558,7 @@ sctp6_bind(struct socket *so, struct sockaddr *addr, struct thread *p)
 {
 	struct sctp_inpcb *inp;
 	int error;
+	u_char vflagsav;
 
 	inp = (struct sctp_inpcb *)so->so_pcb;
 	if (inp == NULL) {
@@ -590,6 +589,7 @@ sctp6_bind(struct socket *so, struct sockaddr *addr, struct thread *p)
 			return (EINVAL);
 		}
 	}
+	vflagsav = inp->ip_inp.inp.inp_vflag;
 	inp->ip_inp.inp.inp_vflag &= ~INP_IPV4;
 	inp->ip_inp.inp.inp_vflag |= INP_IPV6;
 	if ((addr != NULL) && (SCTP_IPV6_V6ONLY(inp) == 0)) {
@@ -619,7 +619,7 @@ sctp6_bind(struct socket *so, struct sockaddr *addr, struct thread *p)
 					inp->ip_inp.inp.inp_vflag |= INP_IPV4;
 					inp->ip_inp.inp.inp_vflag &= ~INP_IPV6;
 					error = sctp_inpcb_bind(so, (struct sockaddr *)&sin, NULL, p);
-					return (error);
+					goto out;
 				}
 #endif
 				break;
@@ -636,7 +636,8 @@ sctp6_bind(struct socket *so, struct sockaddr *addr, struct thread *p)
 		if (addr->sa_family == AF_INET) {
 			/* can't bind v4 addr to v6 only socket! */
 			SCTP_LTRACE_ERR_RET(inp, NULL, NULL, SCTP_FROM_SCTP6_USRREQ, EINVAL);
-			return (EINVAL);
+			error = EINVAL;
+			goto out;
 		}
 #endif
 		sin6_p = (struct sockaddr_in6 *)addr;
@@ -645,10 +646,14 @@ sctp6_bind(struct socket *so, struct sockaddr *addr, struct thread *p)
 			/* can't bind v4-mapped addrs either! */
 			/* NOTE: we don't support SIIT */
 			SCTP_LTRACE_ERR_RET(inp, NULL, NULL, SCTP_FROM_SCTP6_USRREQ, EINVAL);
-			return (EINVAL);
+			error = EINVAL;
+			goto out;
 		}
 	}
 	error = sctp_inpcb_bind(so, addr, NULL, p);
+out:
+	if (error != 0)
+		inp->ip_inp.inp.inp_vflag = vflagsav;
 	return (error);
 }
 

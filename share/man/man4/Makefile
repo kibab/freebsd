@@ -227,6 +227,7 @@ MAN=	aac.4 \
 	ismt.4 \
 	isp.4 \
 	ispfw.4 \
+	${_itwd.4} \
 	iwi.4 \
 	iwifw.4 \
 	iwm.4 \
@@ -306,6 +307,7 @@ MAN=	aac.4 \
 	net80211.4 \
 	netdump.4 \
 	netfpga10g_nf10bmac.4 \
+	netgdb.4 \
 	netgraph.4 \
 	netintro.4 \
 	netmap.4 \
@@ -349,6 +351,7 @@ MAN=	aac.4 \
 	ng_netflow.4 \
 	ng_one2many.4 \
 	ng_patch.4 \
+	ng_pipe.4 \
 	ng_ppp.4 \
 	ng_pppoe.4 \
 	ng_pptpgre.4 \
@@ -791,6 +794,7 @@ _if_wpi.4=	if_wpi.4
 _imcsmb.4=	imcsmb.4
 _ipmi.4=	ipmi.4
 _io.4=		io.4
+_itwd.4=	itwd.4
 _linux.4=	linux.4
 _nda.4=		nda.4
 _ndis.4=	ndis.4
