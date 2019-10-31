@@ -1521,7 +1521,7 @@ vm_page_insert_radixdone(vm_page_t m, vm_object_t object, vm_page_t mpred)
 
 	/*
 	 * Since we are inserting a new and possibly dirty page,
-	 * update the object's OBJ_MIGHTBEDIRTY flag.
+	 * update the object's generation count.
 	 */
 	if (pmap_page_is_write_mapped(m))
 		vm_object_set_writeable_dirty(object);
@@ -1691,7 +1691,8 @@ vm_page_replace(vm_page_t mnew, vm_object_t object, vm_pindex_t pindex)
 
 	/*
 	 * The object's resident_page_count does not change because we have
-	 * swapped one page for another, but OBJ_MIGHTBEDIRTY.
+	 * swapped one page for another, but the generation count should
+	 * change if the page is dirty.
 	 */
 	if (pmap_page_is_write_mapped(mnew))
 		vm_object_set_writeable_dirty(object);
@@ -3762,6 +3763,9 @@ vm_page_wire(vm_page_t m)
 /*
  * Attempt to wire a mapped page following a pmap lookup of that page.
  * This may fail if a thread is concurrently tearing down mappings of the page.
+ * The transient failure is acceptable because it translates to the
+ * failure of the caller pmap_extract_and_hold(), which should be then
+ * followed by the vm_fault() fallback, see e.g. vm_fault_quick_hold_pages().
  */
 bool
 vm_page_wire_mapped(vm_page_t m)
