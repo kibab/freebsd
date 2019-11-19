@@ -171,6 +171,7 @@ static int aw_mmc_request(device_t, device_t, struct mmc_request *);
 static int aw_mmc_get_ro(device_t, device_t);
 static int aw_mmc_acquire_host(device_t, device_t);
 static int aw_mmc_release_host(device_t, device_t);
+static int aw_mmc_switch_vccq(device_t, device_t);
 #ifdef MMCCAM
 static void aw_mmc_cam_action(struct cam_sim *, union ccb *);
 static void aw_mmc_cam_poll(struct cam_sim *);
@@ -336,6 +337,7 @@ aw_mmc_cam_settran_settings(struct aw_mmc_softc *sc, union ccb *ccb)
 	struct mmc_ios *ios;
 	struct mmc_ios *new_ios;
 	struct ccb_trans_settings_mmc *cts;
+	int res;
 
 	ios = &sc->aw_host.ios;
 
@@ -377,6 +379,13 @@ aw_mmc_cam_settran_settings(struct aw_mmc_softc *sc, union ccb *ccb)
 		ios->bus_mode = new_ios->bus_mode;
 		if (bootverbose)
 			device_printf(sc->aw_dev, "Bus mode => %d\n", ios->bus_mode);
+	}
+	if (cts->ios_valid & MMC_VCCQ) {
+		ios->vccq = new_ios->vccq;
+		if (bootverbose)
+			device_printf(sc->aw_dev, "VCCQ => %d\n", ios->vccq);
+		res = aw_mmc_switch_vccq(sc->aw_dev, NULL);
+		device_printf(sc->aw_dev, "VCCQ switch result: %d\n", res);
 	}
 
 	return (aw_mmc_update_ios(sc->aw_dev, NULL));
