@@ -163,6 +163,7 @@
 #define	 EXCP_SP_ALIGN		0x26	/* SP slignment fault */
 #define	 EXCP_TRAP_FP		0x2c	/* Trapped FP exception */
 #define	 EXCP_SERROR		0x2f	/* SError interrupt */
+#define	 EXCP_BRKPT_EL0		0x30	/* Hardware breakpoint, from same EL */
 #define	 EXCP_SOFTSTP_EL0	0x32	/* Software Step, from lower EL */
 #define	 EXCP_SOFTSTP_EL1	0x33	/* Software Step, from same EL */
 #define	 EXCP_WATCHPT_EL1	0x35	/* Watchpoint, from same EL */
@@ -618,7 +619,7 @@
 #define	PSR_FLAGS	0xf0000000
 
 /* TCR_EL1 - Translation Control Register */
-#define	TCR_ASID_16	(1 << 36)
+#define	TCR_ASID_16	(0x1UL << 36)
 
 #define	TCR_IPS_SHIFT	32
 #define	TCR_IPS_32BIT	(0 << TCR_IPS_SHIFT)
@@ -639,6 +640,8 @@
 #define	TCR_ORGN1_WBWA	(0x1UL << TCR_ORGN1_SHIFT)
 #define	TCR_IRGN1_SHIFT	24
 #define	TCR_IRGN1_WBWA	(0x1UL << TCR_IRGN1_SHIFT)
+#define	TCR_A1_SHIFT	22
+#define	TCR_A1		(0x1UL << TCR_A1_SHIFT)
 #define	TCR_SH0_SHIFT	12
 #define	TCR_SH0_IS	(0x3UL << TCR_SH0_SHIFT)
 #define	TCR_ORGN0_SHIFT	10

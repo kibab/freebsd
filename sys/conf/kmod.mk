@@ -169,6 +169,10 @@ CFLAGS+=	-funwind-tables
 
 .if ${MACHINE_CPUARCH} == powerpc
 CFLAGS+=	-mlongcall -fno-omit-frame-pointer
+.if ${LINKER_TYPE} == "lld"
+# TOC optimization in LLD (9.0) currently breaks kernel modules, so disable it
+LDFLAGS+=	--no-toc-optimize
+.endif
 .endif
 
 .if ${MACHINE_CPUARCH} == mips
@@ -283,9 +287,6 @@ _MAP_DEBUG_PREFIX= yes
 .endif
 
 _ILINKS=machine
-.if ${MACHINE} != ${MACHINE_CPUARCH} && ${MACHINE} != "arm64"
-_ILINKS+=${MACHINE_CPUARCH}
-.endif
 .if ${MACHINE_CPUARCH} == "i386" || ${MACHINE_CPUARCH} == "amd64"
 _ILINKS+=x86
 .endif
