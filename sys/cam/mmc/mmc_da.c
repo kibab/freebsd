@@ -139,6 +139,9 @@ struct sdda_softc {
 
 	/* Generic switch timeout */
 	uint32_t cmd6_time;
+	uint32_t timings;	/* Mask of bus timings supported */
+	uint32_t vccq_120;	/* Mask of bus timings at VCCQ of 1.2 V */
+	uint32_t vccq_180;	/* Mask of bus timings at VCCQ of 1.8 V */
 	/* MMC partitions support */
 	struct sdda_part *part[MMC_PART_MAX];
 	uint8_t part_curr;	/* Partition currently switched to */
@@ -1245,6 +1248,7 @@ sdda_start_init(void *context, union ccb *start_ccb)
 	uint32_t sec_count;
 	int err;
 	int host_f_max;
+	uint8_t card_type;
 
 	CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("sdda_start_init\n"));
 	/* periph was held for us when this task was enqueued */
@@ -1373,12 +1377,35 @@ sdda_start_init(void *context, union ccb *start_ccb)
 		}
 
 		if (mmcp->card_features & CARD_FEATURE_MMC && mmc_get_spec_vers(periph) >= 4) {
-			if (softc->raw_ext_csd[EXT_CSD_CARD_TYPE]
-			    & EXT_CSD_CARD_TYPE_HS_52)
+			card_type = softc->raw_ext_csd[EXT_CSD_CARD_TYPE];
+			if (card_type & EXT_CSD_CARD_TYPE_HS_52)
 				softc->card_f_max = MMC_TYPE_HS_52_MAX;
-			else if (softc->raw_ext_csd[EXT_CSD_CARD_TYPE]
-				 & EXT_CSD_CARD_TYPE_HS_26)
+			else if (card_type & EXT_CSD_CARD_TYPE_HS_26)
 				softc->card_f_max = MMC_TYPE_HS_26_MAX;
+			if ((card_type & EXT_CSD_CARD_TYPE_DDR_52_1_2V) != 0 &&
+			    (host_caps & MMC_CAP_SIGNALING_120) != 0) {
+				setbit(&softc->timings, bus_timing_mmc_ddr52);
+				setbit(&softc->vccq_120, bus_timing_mmc_ddr52);
+				CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH, ("Card supports DDR52 at 1.2V\n"));
+			}
+			if ((card_type & EXT_CSD_CARD_TYPE_DDR_52_1_8V) != 0 &&
+			    (host_caps & MMC_CAP_SIGNALING_180) != 0) {
+				setbit(&softc->timings, bus_timing_mmc_ddr52);
+				setbit(&softc->vccq_180, bus_timing_mmc_ddr52);
+				CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH, ("Card supports DDR52 at 1.8V\n"));
+			}
+			if ((card_type & EXT_CSD_CARD_TYPE_HS200_1_2V) != 0 &&
+			    (host_caps & MMC_CAP_SIGNALING_120) != 0) {
+				setbit(&softc->timings, bus_timing_mmc_hs200);
+				setbit(&softc->vccq_120, bus_timing_mmc_hs200);
+				CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH, ("Card supports HS200 at 1.2V\n"));
+			}
+			if ((card_type & EXT_CSD_CARD_TYPE_HS200_1_8V) != 0 &&
+			    (host_caps & MMC_CAP_SIGNALING_180) != 0) {
+				setbit(&softc->timings, bus_timing_mmc_hs200);
+				setbit(&softc->vccq_180, bus_timing_mmc_hs200);
+				CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH, ("Card supports HS200 at 1.8V\n"));
+			}
 		}
 	}
 	int f_max;
@@ -1394,6 +1421,47 @@ finish_hs_tests:
 			f_max = 25000000;
 		}
 	}
+	/* If possible, set lower-level signaling */
+	enum mmc_bus_timing timing;
+	/* FIXME: MMCCAM supports max. bus_timing_mmc_ddr52 at the moment. */
+	for (timing = bus_timing_mmc_ddr52; timing > bus_timing_normal; timing--) {
+		printf("timing = %d\n", timing);
+		if (isset(&softc->vccq_120, timing)) {
+			/* Set VCCQ = 1.2V */
+			start_ccb->ccb_h.func_code = XPT_SET_TRAN_SETTINGS;
+			start_ccb->ccb_h.flags = CAM_DIR_NONE;
+			start_ccb->ccb_h.retry_count = 0;
+			start_ccb->ccb_h.timeout = 100;
+			start_ccb->ccb_h.cbfcnp = NULL;
+			cts->ios.vccq = vccq_120;
+			cts->ios_valid = MMC_VCCQ;
+			xpt_action(start_ccb);
+			break;
+		} else if (isset(&softc->vccq_180, timing)) {
+			/* Set VCCQ = 1.8V */
+			start_ccb->ccb_h.func_code = XPT_SET_TRAN_SETTINGS;
+			start_ccb->ccb_h.flags = CAM_DIR_NONE;
+			start_ccb->ccb_h.retry_count = 0;
+			start_ccb->ccb_h.timeout = 100;
+			start_ccb->ccb_h.cbfcnp = NULL;
+			cts->ios.vccq = vccq_180;
+			cts->ios_valid = MMC_VCCQ;
+			xpt_action(start_ccb);
+			break;
+		} else {
+			/* Set VCCQ = 3.3V */
+			start_ccb->ccb_h.func_code = XPT_SET_TRAN_SETTINGS;
+			start_ccb->ccb_h.flags = CAM_DIR_NONE;
+			start_ccb->ccb_h.retry_count = 0;
+			start_ccb->ccb_h.timeout = 100;
+			start_ccb->ccb_h.cbfcnp = NULL;
+			cts->ios.vccq = vccq_330;
+			cts->ios_valid = MMC_VCCQ;
+			xpt_action(start_ccb);
+			break;
+		}
+	}
+
 	/* Set frequency on the controller */
 	start_ccb->ccb_h.func_code = XPT_SET_TRAN_SETTINGS;
 	start_ccb->ccb_h.flags = CAM_DIR_NONE;
@@ -1428,7 +1496,7 @@ finish_hs_tests:
 		   bus_width_str(max_host_bus_width),
 		   bus_width_str(max_card_bus_width)));
 	sdda_set_bus_width(periph, start_ccb, desired_bus_width);
-
+	
 	softc->state = SDDA_STATE_NORMAL;
 
 	/* MMC partitions support */
