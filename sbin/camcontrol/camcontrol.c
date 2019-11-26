@@ -190,7 +190,7 @@ static struct camcontrol_opts option_table[] = {
 	{"rescan", CAM_CMD_RESCAN, CAM_ARG_NONE, NULL},
 	{"reset", CAM_CMD_RESET, CAM_ARG_NONE, NULL},
 	{"cmd", CAM_CMD_SCSI_CMD, CAM_ARG_NONE, scsicmd_opts},
-	{"mmcsdcmd", CAM_CMD_MMCSD_CMD, CAM_ARG_NONE, "c:a:f:Wb:l:41S:I"},
+	{"mmcsdcmd", CAM_CMD_MMCSD_CMD, CAM_ARG_NONE, "c:a:F:f:Wb:l:41S:I"},
 	{"command", CAM_CMD_SCSI_CMD, CAM_ARG_NONE, scsicmd_opts},
 	{"smpcmd", CAM_CMD_SMP_CMD, CAM_ARG_NONE, "r:R:"},
 	{"smprg", CAM_CMD_SMP_RG, CAM_ARG_NONE, smprg_opts},
@@ -7817,10 +7817,12 @@ mmcsdcmd(struct cam_device *device, int argc, char **argv, char *combinedopt,
 	int retval;
 	int is_write = 0;
 	int is_bw_4 = 0, is_bw_1 = 0;
+	int is_frequency = 0;
 	int is_highspeed = 0, is_stdspeed = 0;
 	int is_info_request = 0;
 	int flags = 0;
 	uint8_t mmc_data_byte = 0;
+	uint32_t mmc_frequency = 0;
 
 	/* For IO_RW_EXTENDED command */
 	uint8_t *mmc_data = NULL;
@@ -7856,6 +7858,10 @@ mmcsdcmd(struct cam_device *device, int argc, char **argv, char *combinedopt,
 			break;
 		case 'I':
 			is_info_request = 1;
+			break;
+		case 'F':
+			is_frequency = 1;
+			mmc_frequency = strtol(optarg, NULL, 0);
 			break;
 		case 'c':
 			mmc_opcode = strtol(optarg, NULL, 0);
@@ -7952,6 +7958,23 @@ mmcsdcmd(struct cam_device *device, int argc, char **argv, char *combinedopt,
 		cts = &ccb->cts.proto_specific.mmc;
 		cts->ios.bus_width = is_bw_4 == 1 ? bus_width_4 : bus_width_1;
 		cts->ios_valid = MMC_BW;
+		if (((retval = cam_send_ccb(device, ccb)) < 0)
+		    || ((ccb->ccb_h.status & CAM_STATUS_MASK) != CAM_REQ_CMP)) {
+			warn("Error sending command");
+		} else {
+			printf("Parameters set OK\n");
+		}
+		cam_freeccb(ccb);
+		return (retval);
+	}
+
+	if (is_frequency) {
+		struct ccb_trans_settings_mmc *cts;
+		ccb->ccb_h.func_code = XPT_SET_TRAN_SETTINGS;
+		ccb->ccb_h.flags = 0;
+		cts = &ccb->cts.proto_specific.mmc;
+		cts->ios.clock = mmc_frequency;
+		cts->ios_valid = MMC_CLK;
 		if (((retval = cam_send_ccb(device, ccb)) < 0)
 		    || ((ccb->ccb_h.status & CAM_STATUS_MASK) != CAM_REQ_CMP)) {
 			warn("Error sending command");
