@@ -152,7 +152,7 @@ aw_clk_nm_find_best(struct aw_clk_nm_sc *sc, uint64_t fparent, uint64_t *fout,
 	min_n = aw_clk_factor_get_min(&sc->n);
 
 	for (m = min_m; m <= max_m; ) {
-		for (n = min_m; n <= max_n; ) {
+		for (n = min_n; n <= max_n; ) {
 			cur = fparent / n / m;
 			if (abs(*fout - cur) < abs(*fout - best)) {
 				best = cur;
@@ -195,9 +195,8 @@ aw_clk_nm_set_freq(struct clknode *clk, uint64_t fparent, uint64_t *fout,
 		for (p_idx = 0; p_idx != clknode_get_parents_num(clk); p_idx++) {
 			p_clk = clknode_find_by_name(p_names[p_idx]);
 			clknode_get_freq(p_clk, &fparent);
-
 			cur = aw_clk_nm_find_best(sc, fparent, fout, &n, &m);
-			if ((*fout - cur) < (*fout - best)) {
+			if (abs(*fout - cur) < abs(*fout - best)) {
 				best = cur;
 				best_parent = p_idx;
 				best_n = n;
