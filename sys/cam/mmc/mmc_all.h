@@ -64,9 +64,11 @@
 #ifndef CAM_MMC_ALL_H
 #define CAM_MMC_ALL_H
 
+#include <cam/cam_sim.h>
 #include <cam/mmc/mmc.h>
 #include <dev/mmc/mmcreg.h>
 
 void	mmc_print_ident(struct mmc_params *ident_data);
+void    mmccam_start_discovery(struct cam_sim *sim);
 
 #endif
