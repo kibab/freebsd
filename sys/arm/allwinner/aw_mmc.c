@@ -544,6 +544,7 @@ aw_mmc_attach(device_t dev)
 	}
 
 	sc->aw_host.f_min = 400000;
+	sc->aw_host.ios.vccq = vccq_330;
 
 	if (OF_getencprop(node, "max-frequency", &max_freq,
 	    sizeof(uint32_t)) <= 0)

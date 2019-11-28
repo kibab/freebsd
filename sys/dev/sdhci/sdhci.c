@@ -243,6 +243,7 @@ sdhci_reset(struct sdhci_slot *slot, uint8_t mask)
 {
 	int timeout;
 	uint32_t clock;
+	struct mmc_ios *ios;
 
 	if (slot->quirks & SDHCI_QUIRK_NO_CARD_NO_RESET) {
 		if (!SDHCI_GET_CARD_PRESENT(slot->bus, slot))
@@ -261,6 +262,8 @@ sdhci_reset(struct sdhci_slot *slot, uint8_t mask)
 	if (mask & SDHCI_RESET_ALL) {
 		slot->clock = 0;
 		slot->power = 0;
+		ios = &slot->host.ios;
+		ios->vccq = vccq_330;
 	}
 
 	WR1(slot, SDHCI_SOFTWARE_RESET, mask);
