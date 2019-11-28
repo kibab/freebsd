@@ -410,9 +410,12 @@ mmccam_start_discovery(struct cam_sim *sim) {
 	union ccb *ccb;
 	uint32_t pathid;
 
+	KASSERT(sim->sim_dev != NULL, ("mmccam_start_discovery(%s): sim_dev is not initialized,"
+	    " has cam_sim_alloc_dev() been used?", cam_sim_name(sim)));
 	pathid = cam_sim_path(sim);
-	ccb = xpt_alloc_ccb_nowait();
+	ccb = xpt_alloc_ccb();
 	if (ccb == NULL) {
+		device_printf(sim->sim_dev, "Cannot allocate CCB for starting MMC discovery\n");
 		return;
 	}
 
@@ -423,6 +426,7 @@ mmccam_start_discovery(struct cam_sim *sim) {
 	if (xpt_create_path(&ccb->ccb_h.path, NULL, pathid,
 		/* target */ 0, /* lun */ 0) != CAM_REQ_CMP) {
 		xpt_free_ccb(ccb);
+		device_printf(sim->sim_dev, "Cannot create path for MMC discovery request\n");
 		return;
 	}
 	xpt_rescan(ccb);
