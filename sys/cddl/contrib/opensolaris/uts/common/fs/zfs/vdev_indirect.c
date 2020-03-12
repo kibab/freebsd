@@ -680,7 +680,6 @@ spa_condense_indirect_thread(void *arg, zthr_t *zthr)
 
 	VERIFY0(space_map_open(&prev_obsolete_sm, spa->spa_meta_objset,
 	    scip->scip_prev_obsolete_sm_object, 0, vd->vdev_asize, 0));
-	space_map_update(prev_obsolete_sm);
 	counts = vdev_indirect_mapping_load_obsolete_counts(old_mapping);
 	if (prev_obsolete_sm != NULL) {
 		vdev_indirect_mapping_load_obsolete_spacemap(old_mapping,
@@ -831,7 +830,6 @@ vdev_indirect_sync_obsolete(vdev_t *vd, dmu_tx_t *tx)
 		VERIFY0(space_map_open(&vd->vdev_obsolete_sm,
 		    spa->spa_meta_objset, obsolete_sm_object,
 		    0, vd->vdev_asize, 0));
-		space_map_update(vd->vdev_obsolete_sm);
 	}
 
 	ASSERT(vd->vdev_obsolete_sm != NULL);
@@ -840,7 +838,6 @@ vdev_indirect_sync_obsolete(vdev_t *vd, dmu_tx_t *tx)
 
 	space_map_write(vd->vdev_obsolete_sm,
 	    vd->vdev_obsolete_segments, SM_ALLOC, SM_NO_VDEVID, tx);
-	space_map_update(vd->vdev_obsolete_sm);
 	range_tree_vacate(vd->vdev_obsolete_segments, NULL, NULL);
 }
 
@@ -1246,6 +1243,8 @@ vdev_indirect_read_all(zio_t *zio)
 {
 	indirect_vsd_t *iv = zio->io_vsd;
 
+	ASSERT3U(zio->io_type, ==, ZIO_TYPE_READ);
+
 	for (indirect_split_t *is = list_head(&iv->iv_splits);
 	    is != NULL; is = list_next(&iv->iv_splits, is)) {
 		for (int i = 0; i < is->is_children; i++) {
@@ -1335,7 +1334,8 @@ vdev_indirect_io_start(zio_t *zio)
 		    vdev_indirect_child_io_done, zio));
 	} else {
 		iv->iv_split_block = B_TRUE;
-		if (zio->io_flags & (ZIO_FLAG_SCRUB | ZIO_FLAG_RESILVER)) {
+		if (zio->io_type == ZIO_TYPE_READ &&
+		    zio->io_flags & (ZIO_FLAG_SCRUB | ZIO_FLAG_RESILVER)) {
 			/*
 			 * Read all copies.  Note that for simplicity,
 			 * we don't bother consulting the DTL in the
@@ -1344,13 +1344,17 @@ vdev_indirect_io_start(zio_t *zio)
 			vdev_indirect_read_all(zio);
 		} else {
 			/*
-			 * Read one copy of each split segment, from the
-			 * top-level vdev.  Since we don't know the
-			 * checksum of each split individually, the child
-			 * zio can't ensure that we get the right data.
-			 * E.g. if it's a mirror, it will just read from a
-			 * random (healthy) leaf vdev.  We have to verify
-			 * the checksum in vdev_indirect_io_done().
+			 * If this is a read zio, we read one copy of each
+			 * split segment, from the top-level vdev.  Since
+			 * we don't know the checksum of each split
+			 * individually, the child zio can't ensure that
+			 * we get the right data. E.g. if it's a mirror,
+			 * it will just read from a random (healthy) leaf
+			 * vdev. We have to verify the checksum in
+			 * vdev_indirect_io_done().
+			 *
+			 * For write zios, the vdev code will ensure we write
+			 * to all children.
 			 */
 			for (indirect_split_t *is = list_head(&iv->iv_splits);
 			    is != NULL; is = list_next(&iv->iv_splits, is)) {

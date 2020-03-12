@@ -39,11 +39,31 @@ mlx5e_create_stats(struct sysctl_ctx_list *ctx,
 	sysctl_ctx_init(ctx);
 
 	node = SYSCTL_ADD_NODE(ctx, parent, OID_AUTO,
-	    buffer, CTLFLAG_RD, NULL, "Statistics");
+	    buffer, CTLFLAG_RD | CTLFLAG_MPSAFE, NULL, "Statistics");
 	if (node == NULL)
 		return;
 	for (x = 0; x != num; x++) {
 		SYSCTL_ADD_UQUAD(ctx, SYSCTL_CHILDREN(node), OID_AUTO,
+		    desc[2 * x], CTLFLAG_RD, arg + x, desc[2 * x + 1]);
+	}
+}
+
+void
+mlx5e_create_counter_stats(struct sysctl_ctx_list *ctx,
+    struct sysctl_oid_list *parent, const char *buffer,
+    const char **desc, unsigned num, counter_u64_t *arg)
+{
+	struct sysctl_oid *node;
+	unsigned x;
+
+	sysctl_ctx_init(ctx);
+
+	node = SYSCTL_ADD_NODE(ctx, parent, OID_AUTO,
+	    buffer, CTLFLAG_RD | CTLFLAG_MPSAFE, NULL, "Statistics");
+	if (node == NULL)
+		return;
+	for (x = 0; x != num; x++) {
+		SYSCTL_ADD_COUNTER_U64(ctx, SYSCTL_CHILDREN(node), OID_AUTO,
 		    desc[2 * x], CTLFLAG_RD, arg + x, desc[2 * x + 1]);
 	}
 }
@@ -1297,7 +1317,7 @@ mlx5e_create_diagnostics(struct mlx5e_priv *priv)
 	/* create root node */
 	node = SYSCTL_ADD_NODE(ctx,
 	    SYSCTL_CHILDREN(priv->sysctl_ifnet), OID_AUTO,
-	    "diagnostics", CTLFLAG_RD, NULL, "Diagnostics");
+	    "diagnostics", CTLFLAG_RD | CTLFLAG_MPSAFE, NULL, "Diagnostics");
 	if (node == NULL)
 		return;
 
@@ -1369,7 +1389,7 @@ mlx5e_create_ethtool(struct mlx5e_priv *priv)
 	/* create root node */
 	node = SYSCTL_ADD_NODE(&priv->sysctl_ctx,
 	    SYSCTL_CHILDREN(priv->sysctl_ifnet), OID_AUTO,
-	    "conf", CTLFLAG_RW, NULL, "Configuration");
+	    "conf", CTLFLAG_RW | CTLFLAG_MPSAFE, NULL, "Configuration");
 	if (node == NULL)
 		return;
 	for (x = 0; x != MLX5E_PARAMS_NUM; x++) {
@@ -1411,7 +1431,8 @@ mlx5e_create_ethtool(struct mlx5e_priv *priv)
 	/* create fec node */
 	fec_node = SYSCTL_ADD_NODE(&priv->sysctl_ctx,
 	    SYSCTL_CHILDREN(node), OID_AUTO,
-	    "fec", CTLFLAG_RW, NULL, "Forward Error Correction");
+	    "fec", CTLFLAG_RW | CTLFLAG_MPSAFE, NULL,
+	    "Forward Error Correction");
 	if (fec_node == NULL)
 		return;
 
@@ -1473,7 +1494,8 @@ mlx5e_create_ethtool(struct mlx5e_priv *priv)
 	/* create qos node */
 	qos_node = SYSCTL_ADD_NODE(&priv->sysctl_ctx,
 	    SYSCTL_CHILDREN(node), OID_AUTO,
-	    "qos", CTLFLAG_RW, NULL, "Quality Of Service configuration");
+	    "qos", CTLFLAG_RW | CTLFLAG_MPSAFE, NULL,
+	    "Quality Of Service configuration");
 	if (qos_node == NULL)
 		return;
 

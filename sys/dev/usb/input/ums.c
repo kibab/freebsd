@@ -79,13 +79,13 @@ __FBSDID("$FreeBSD$");
 
 #include <sys/ioccom.h>
 #include <sys/filio.h>
-#include <sys/tty.h>
 #include <sys/mouse.h>
 
 #ifdef USB_DEBUG
 static int ums_debug = 0;
 
-static SYSCTL_NODE(_hw_usb, OID_AUTO, ums, CTLFLAG_RW, 0, "USB ums");
+static SYSCTL_NODE(_hw_usb, OID_AUTO, ums, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "USB ums");
 SYSCTL_INT(_hw_usb_ums, OID_AUTO, debug, CTLFLAG_RWTUN,
     &ums_debug, 0, "Debug level");
 #endif
@@ -751,9 +751,10 @@ ums_attach(device_t dev)
 
 	SYSCTL_ADD_PROC(device_get_sysctl_ctx(dev),
 	    SYSCTL_CHILDREN(device_get_sysctl_tree(dev)),
-	    OID_AUTO, "parseinfo", CTLTYPE_STRING|CTLFLAG_RD,
-	    sc, 0, ums_sysctl_handler_parseinfo,
-	    "", "Dump of parsed HID report descriptor");
+	    OID_AUTO, "parseinfo",
+	    CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_MPSAFE,
+	    sc, 0, ums_sysctl_handler_parseinfo, "",
+	    "Dump of parsed HID report descriptor");
 
 	return (0);
 

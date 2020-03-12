@@ -111,19 +111,20 @@ char *rootdevnames[2] = {NULL, NULL};
 struct mtx root_holds_mtx;
 MTX_SYSINIT(root_holds, &root_holds_mtx, "root_holds", MTX_DEF);
 
-struct root_hold_token {
-	const char			*who;
-	LIST_ENTRY(root_hold_token)	list;
-};
-
-static LIST_HEAD(, root_hold_token)	root_holds =
-    LIST_HEAD_INITIALIZER(root_holds);
+static TAILQ_HEAD(, root_hold_token)	root_holds =
+    TAILQ_HEAD_INITIALIZER(root_holds);
 
 enum action {
 	A_CONTINUE,
 	A_PANIC,
 	A_REBOOT,
 	A_RETRY
+};
+
+enum rh_flags {
+	RH_FREE,
+	RH_ALLOC,
+	RH_ARG,
 };
 
 static enum action root_mount_onfail = A_CONTINUE;
@@ -155,8 +156,8 @@ sysctl_vfs_root_mount_hold(SYSCTL_HANDLER_ARGS)
 	sbuf_new(&sb, NULL, 256, SBUF_AUTOEXTEND | SBUF_INCLUDENUL);
 
 	mtx_lock(&root_holds_mtx);
-	LIST_FOREACH(h, &root_holds, list) {
-		if (h != LIST_FIRST(&root_holds))
+	TAILQ_FOREACH(h, &root_holds, list) {
+		if (h != TAILQ_FIRST(&root_holds))
 			sbuf_putc(&sb, ' ');
 		sbuf_printf(&sb, "%s", h->who);
 	}
@@ -175,27 +176,54 @@ root_mount_hold(const char *identifier)
 	struct root_hold_token *h;
 
 	h = malloc(sizeof *h, M_DEVBUF, M_ZERO | M_WAITOK);
+	h->flags = RH_ALLOC;
 	h->who = identifier;
 	mtx_lock(&root_holds_mtx);
 	TSHOLD("root mount");
-	LIST_INSERT_HEAD(&root_holds, h, list);
+	TAILQ_INSERT_TAIL(&root_holds, h, list);
 	mtx_unlock(&root_holds_mtx);
 	return (h);
+}
+
+void
+root_mount_hold_token(const char *identifier, struct root_hold_token *h)
+{
+#ifdef INVARIANTS
+	struct root_hold_token *t;
+#endif
+
+	h->flags = RH_ARG;
+	h->who = identifier;
+	mtx_lock(&root_holds_mtx);
+#ifdef INVARIANTS
+	TAILQ_FOREACH(t, &root_holds, list) {
+		if (t == h) {
+			panic("Duplicate mount hold by '%s' on %p",
+			    identifier, h);
+		}
+	}
+#endif
+	TSHOLD("root mount");
+	TAILQ_INSERT_TAIL(&root_holds, h, list);
+	mtx_unlock(&root_holds_mtx);
 }
 
 void
 root_mount_rel(struct root_hold_token *h)
 {
 
-	if (h == NULL)
+	if (h == NULL || h->flags == RH_FREE)
 		return;
 
 	mtx_lock(&root_holds_mtx);
-	LIST_REMOVE(h, list);
+	TAILQ_REMOVE(&root_holds, h, list);
 	TSRELEASE("root mount");
 	wakeup(&root_holds);
 	mtx_unlock(&root_holds_mtx);
-	free(h, M_DEVBUF);
+	if (h->flags == RH_ALLOC) {
+		free(h, M_DEVBUF);
+	} else
+		h->flags = RH_FREE;
 }
 
 int
@@ -209,27 +237,13 @@ root_mounted(void)
 static void
 set_rootvnode(void)
 {
-	struct proc *p;
 
 	if (VFS_ROOT(TAILQ_FIRST(&mountlist), LK_EXCLUSIVE, &rootvnode))
 		panic("set_rootvnode: Cannot find root vnode");
 
-	VOP_UNLOCK(rootvnode, 0);
+	VOP_UNLOCK(rootvnode);
 
-	p = curthread->td_proc;
-	FILEDESC_XLOCK(p->p_fd);
-
-	if (p->p_fd->fd_cdir != NULL)
-		vrele(p->p_fd->fd_cdir);
-	p->p_fd->fd_cdir = rootvnode;
-	VREF(rootvnode);
-
-	if (p->p_fd->fd_rdir != NULL)
-		vrele(p->p_fd->fd_rdir);
-	p->p_fd->fd_rdir = rootvnode;
-	VREF(rootvnode);
-
-	FILEDESC_XUNLOCK(p->p_fd);
+	pwd_ensure_dirs();
 }
 
 static int
@@ -356,7 +370,7 @@ vfs_mountroot_shuffle(struct thread *td, struct mount *mpdevfs)
 				vp->v_mountedhere = mporoot;
 				strlcpy(mporoot->mnt_stat.f_mntonname,
 				    fspath, MNAMELEN);
-				VOP_UNLOCK(vp, 0);
+				VOP_UNLOCK(vp);
 			} else
 				vput(vp);
 		}
@@ -384,7 +398,7 @@ vfs_mountroot_shuffle(struct thread *td, struct mount *mpdevfs)
 			}
 			mpdevfs->mnt_vnodecovered = vp;
 			vp->v_mountedhere = mpdevfs;
-			VOP_UNLOCK(vp, 0);
+			VOP_UNLOCK(vp);
 		} else
 			vput(vp);
 	}
@@ -946,7 +960,7 @@ vfs_mountroot_readconf(struct thread *td, struct sbuf *sb)
 		ofs += len - resid;
 	}
 
-	VOP_UNLOCK(nd.ni_vp, 0);
+	VOP_UNLOCK(nd.ni_vp);
 	vn_close(nd.ni_vp, FREAD, td->td_ucred, td);
 	return (error);
 }
@@ -964,13 +978,13 @@ vfs_mountroot_wait(void)
 	while (1) {
 		g_waitidle();
 		mtx_lock(&root_holds_mtx);
-		if (LIST_EMPTY(&root_holds)) {
+		if (TAILQ_EMPTY(&root_holds)) {
 			mtx_unlock(&root_holds_mtx);
 			break;
 		}
 		if (ppsratecheck(&lastfail, &curfail, 1)) {
 			printf("Root mount waiting for:");
-			LIST_FOREACH(h, &root_holds, list)
+			TAILQ_FOREACH(h, &root_holds, list)
 				printf(" %s", h->who);
 			printf("\n");
 		}

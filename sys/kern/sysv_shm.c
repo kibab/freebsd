@@ -609,7 +609,6 @@ kern_shmctl(struct thread *td, int shmid, int cmd, void *buf, size_t *bufsz)
 	return (error);
 }
 
-
 #ifndef _SYS_SYSPROTO_H_
 struct shmctl_args {
 	int shmid;
@@ -657,7 +656,6 @@ done:
 	}
 	return (error);
 }
-
 
 static int
 shmget_existing(struct thread *td, struct shmget_args *uap, int mode,
@@ -751,11 +749,6 @@ shmget_allocate_segment(struct thread *td, struct shmget_args *uap, int mode)
 #endif
 		return (ENOMEM);
 	}
-	shm_object->pg_color = 0;
-	VM_OBJECT_WLOCK(shm_object);
-	vm_object_clear_flag(shm_object, OBJ_ONEMAPPING);
-	vm_object_set_flag(shm_object, OBJ_COLORED | OBJ_NOSPLIT);
-	VM_OBJECT_WUNLOCK(shm_object);
 
 	shmseg->object = shm_object;
 	shmseg->u.shm_perm.cuid = shmseg->u.shm_perm.uid = cred->cr_uid;

@@ -145,6 +145,8 @@ struct rtentry {
 	 */
 #define	rt_key(r)	(*((struct sockaddr **)(&(r)->rt_nodes->rn_key)))
 #define	rt_mask(r)	(*((struct sockaddr **)(&(r)->rt_nodes->rn_mask)))
+#define	rt_key_const(r)		(*((const struct sockaddr * const *)(&(r)->rt_nodes->rn_key)))
+#define	rt_mask_const(r)	(*((const struct sockaddr * const *)(&(r)->rt_nodes->rn_mask)))
 	struct	sockaddr *rt_gateway;	/* value */
 	struct	ifnet *rt_ifp;		/* the answer: interface to use */
 	struct	ifaddr *rt_ifa;		/* the answer: interface address to use */
@@ -237,13 +239,14 @@ rt_update_ro_flags(struct route *ro)
 /*
  * Routing statistics.
  */
-struct	rtstat {
-	short	rts_badredirect;	/* bogus redirect calls */
-	short	rts_dynamic;		/* routes created by redirects */
-	short	rts_newgateway;		/* routes modified by redirects */
-	short	rts_unreach;		/* lookups which failed */
-	short	rts_wildcard;		/* lookups satisfied by a wildcard */
+struct rtstat {
+	uint64_t rts_badredirect;	/* bogus redirect calls */
+	uint64_t rts_dynamic;		/* routes created by redirects */
+	uint64_t rts_newgateway;	/* routes modified by redirects */
+	uint64_t rts_unreach;		/* lookups which failed */
+	uint64_t rts_wildcard;		/* lookups satisfied by a wildcard */
 };
+
 /*
  * Structures for routing messages.
  */
@@ -445,19 +448,20 @@ void	 rt_ifannouncemsg(struct ifnet *, int);
 void	 rt_ifmsg(struct ifnet *);
 void	 rt_missmsg(int, struct rt_addrinfo *, int, int);
 void	 rt_missmsg_fib(int, struct rt_addrinfo *, int, int, int);
-void	 rt_newaddrmsg(int, struct ifaddr *, int, struct rtentry *);
-void	 rt_newaddrmsg_fib(int, struct ifaddr *, int, struct rtentry *, int);
+void	 rt_newaddrmsg_fib(int, struct ifaddr *, struct rtentry *, int);
 int	 rt_addrmsg(int, struct ifaddr *, int);
-int	 rt_routemsg(int, struct ifnet *ifp, int, struct rtentry *, int);
+int	 rt_routemsg(int, struct rtentry *, struct ifnet *ifp, int, int);
+int	 rt_routemsg_info(int, struct rt_addrinfo *, int);
 void	 rt_newmaddrmsg(int, struct ifmultiaddr *);
 int	 rt_setgate(struct rtentry *, struct sockaddr *, struct sockaddr *);
 void 	 rt_maskedcopy(struct sockaddr *, struct sockaddr *, struct sockaddr *);
-struct rib_head *rt_table_init(int);
+struct rib_head *rt_table_init(int, int, u_int);
 void	rt_table_destroy(struct rib_head *);
 u_int	rt_tables_get_gen(int table, int fam);
 
 int	rtsock_addrmsg(int, struct ifaddr *, int);
-int	rtsock_routemsg(int, struct ifnet *ifp, int, struct rtentry *, int);
+int	rtsock_routemsg(int, struct rtentry *, struct ifnet *ifp, int, int);
+int	rtsock_routemsg_info(int, struct rt_addrinfo *, int);
 
 /*
  * Note the following locking behavior:
@@ -474,6 +478,8 @@ void	rt_updatemtu(struct ifnet *);
 
 typedef int rt_walktree_f_t(struct rtentry *, void *);
 typedef void rt_setwarg_t(struct rib_head *, uint32_t, int, void *);
+void	rib_walk_del(u_int fibnum, int family, rt_filter_f_t *filter_f,
+	    void *arg, bool report);
 void	rt_foreach_fib_walk(int af, rt_setwarg_t *, rt_walktree_f_t *, void *);
 void	rt_foreach_fib_walk_del(int af, rt_filter_f_t *filter_f, void *arg);
 void	rt_flushifroutes_af(struct ifnet *, int);
@@ -491,14 +497,15 @@ int	 rtinit(struct ifaddr *, int, int);
 void	 rtalloc_ign_fib(struct route *ro, u_long ignflags, u_int fibnum);
 struct rtentry *rtalloc1_fib(struct sockaddr *, int, u_long, u_int);
 int	 rtioctl_fib(u_long, caddr_t, u_int);
-void	 rtredirect_fib(struct sockaddr *, struct sockaddr *,
-	    struct sockaddr *, int, struct sockaddr *, u_int);
 int	 rtrequest_fib(int, struct sockaddr *,
 	    struct sockaddr *, struct sockaddr *, int, struct rtentry **, u_int);
 int	 rtrequest1_fib(int, struct rt_addrinfo *, struct rtentry **, u_int);
 int	rib_lookup_info(uint32_t, const struct sockaddr *, uint32_t, uint32_t,
 	    struct rt_addrinfo *);
 void	rib_free_info(struct rt_addrinfo *info);
+int	rib_add_redirect(u_int fibnum, struct sockaddr *dst,
+	   struct sockaddr *gateway, struct sockaddr *author, struct ifnet *ifp,
+	   int flags, int expire_sec);
 
 #endif
 

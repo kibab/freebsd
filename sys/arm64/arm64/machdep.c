@@ -38,6 +38,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/bus.h>
 #include <sys/cons.h>
 #include <sys/cpu.h>
+#include <sys/csan.h>
 #include <sys/devmap.h>
 #include <sys/efi.h>
 #include <sys/exec.h>
@@ -97,6 +98,8 @@ __FBSDID("$FreeBSD$");
 #include <dev/ofw/openfirm.h>
 #endif
 
+static void get_fpcontext(struct thread *td, mcontext_t *mcp);
+static void set_fpcontext(struct thread *td, mcontext_t *mcp);
 
 enum arm64_bus arm64_bus_method = ARM64_BUS_NONE;
 
@@ -106,12 +109,10 @@ static struct trapframe proc0_tf;
 
 int early_boot = 1;
 int cold = 1;
+static int boot_el;
 
 struct kva_md_info kmi;
 
-int64_t dcache_line_size;	/* The minimum D cache line size */
-int64_t icache_line_size;	/* The minimum I cache line size */
-int64_t idcache_line_size;	/* The minimum cache line size */
 int64_t dczva_line_size;	/* The size of cache line the dc zva zeroes */
 int has_pan;
 
@@ -157,6 +158,13 @@ pan_enable(void)
 		    READ_SPECIALREG(sctlr_el1) & ~SCTLR_SPAN);
 		__asm __volatile(".inst 0xd500409f | (0x1 << 8)");
 	}
+}
+
+bool
+has_hyp(void)
+{
+
+	return (boot_el == 2);
 }
 
 static void
@@ -435,7 +443,7 @@ ptrace_clear_single_step(struct thread *td)
 }
 
 void
-exec_setregs(struct thread *td, struct image_params *imgp, u_long stack)
+exec_setregs(struct thread *td, struct image_params *imgp, uintptr_t stack)
 {
 	struct trapframe *tf = td->td_frame;
 
@@ -472,6 +480,7 @@ get_mcontext(struct thread *td, mcontext_t *mcp, int clear_ret)
 	mcp->mc_gpregs.gp_sp = tf->tf_sp;
 	mcp->mc_gpregs.gp_lr = tf->tf_lr;
 	mcp->mc_gpregs.gp_elr = tf->tf_elr;
+	get_fpcontext(td, mcp);
 
 	return (0);
 }
@@ -494,6 +503,7 @@ set_mcontext(struct thread *td, mcontext_t *mcp)
 	tf->tf_lr = mcp->mc_gpregs.gp_lr;
 	tf->tf_elr = mcp->mc_gpregs.gp_elr;
 	tf->tf_spsr = mcp->mc_gpregs.gp_spsr;
+	set_fpcontext(td, mcp);
 
 	return (0);
 }
@@ -634,9 +644,9 @@ spinlock_enter(void)
 		daif = intr_disable();
 		td->td_md.md_spinlock_count = 1;
 		td->td_md.md_saved_daif = daif;
+		critical_enter();
 	} else
 		td->td_md.md_spinlock_count++;
-	critical_enter();
 }
 
 void
@@ -646,11 +656,12 @@ spinlock_exit(void)
 	register_t daif;
 
 	td = curthread;
-	critical_exit();
 	daif = td->td_md.md_saved_daif;
 	td->td_md.md_spinlock_count--;
-	if (td->td_md.md_spinlock_count == 0)
+	if (td->td_md.md_spinlock_count == 0) {
+		critical_exit();
 		intr_restore(daif);
+	}
 }
 
 #ifndef	_SYS_SYSPROTO_H_
@@ -665,15 +676,12 @@ sys_sigreturn(struct thread *td, struct sigreturn_args *uap)
 	ucontext_t uc;
 	int error;
 
-	if (uap == NULL)
-		return (EFAULT);
 	if (copyin(uap->sigcntxp, &uc, sizeof(uc)))
 		return (EFAULT);
 
 	error = set_mcontext(td, &uc.uc_mcontext);
 	if (error != 0)
 		return (error);
-	set_fpcontext(td, &uc.uc_mcontext);
 
 	/* Restore signal mask. */
 	kern_sigprocmask(td, SIG_SETMASK, &uc.uc_sigmask, NULL, 0);
@@ -745,7 +753,6 @@ sendsig(sig_t catcher, ksiginfo_t *ksi, sigset_t *mask)
 	/* Fill in the frame to copy out */
 	bzero(&frame, sizeof(frame));
 	get_mcontext(td, &frame.sf_uc.uc_mcontext, 0);
-	get_fpcontext(td, &frame.sf_uc.uc_mcontext);
 	frame.sf_si = ksi->ksi_info;
 	frame.sf_uc.uc_sigmask = *mask;
 	frame.sf_uc.uc_stack = td->td_sigstk;
@@ -963,7 +970,6 @@ try_load_dtb(caddr_t kmdp)
 	vm_offset_t dtbp;
 
 	dtbp = MD_FETCH(kmdp, MODINFOMD_DTBP, vm_offset_t);
-
 #if defined(FDT_DTB_STATIC)
 	/*
 	 * In case the device tree blob was not retrieved (from metadata) try
@@ -983,6 +989,8 @@ try_load_dtb(caddr_t kmdp)
 
 	if (OF_init((void *)dtbp) != 0)
 		panic("OF_init failed with the found device tree");
+
+	parse_fdt_bootargs();
 }
 #endif
 
@@ -1044,22 +1052,10 @@ bus_probe(void)
 static void
 cache_setup(void)
 {
-	int dcache_line_shift, icache_line_shift, dczva_line_shift;
-	uint32_t ctr_el0;
+	int dczva_line_shift;
 	uint32_t dczid_el0;
 
-	ctr_el0 = READ_SPECIALREG(ctr_el0);
-
-	/* Read the log2 words in each D cache line */
-	dcache_line_shift = CTR_DLINE_SIZE(ctr_el0);
-	/* Get the D cache line size */
-	dcache_line_size = sizeof(int) << dcache_line_shift;
-
-	/* And the same for the I cache */
-	icache_line_shift = CTR_ILINE_SIZE(ctr_el0);
-	icache_line_size = sizeof(int) << icache_line_shift;
-
-	idcache_line_size = MIN(dcache_line_size, icache_line_size);
+	identify_cache(READ_SPECIALREG(ctr_el0));
 
 	dczid_el0 = READ_SPECIALREG(dczid_el0);
 
@@ -1074,26 +1070,6 @@ cache_setup(void)
 		/* Change pagezero function */
 		pagezero = pagezero_cache;
 	}
-}
-
-static vm_offset_t
-freebsd_parse_boot_param(struct arm64_bootparams *abp)
-{
-	vm_offset_t lastaddr;
-	void *kmdp;
-	static char *loader_envp;
-
-	preload_metadata = (caddr_t)(uintptr_t)(abp->modulep);
-	kmdp = preload_search_by_type("elf kernel");
-	if (kmdp == NULL)
-		return (0);
-
-	boothowto = MD_FETCH(kmdp, MODINFOMD_HOWTO, int);
-	loader_envp = MD_FETCH(kmdp, MODINFOMD_ENVP, char *);
-	init_static_kenv(loader_envp, 0);
-	lastaddr = MD_FETCH(kmdp, MODINFOMD_KERNEND, vm_offset_t);
-
-	return (lastaddr);
 }
 
 void
@@ -1111,15 +1087,10 @@ initarm(struct arm64_bootparams *abp)
 	caddr_t kmdp;
 	bool valid;
 
-	if ((abp->modulep & VM_MIN_KERNEL_ADDRESS) ==
-	    VM_MIN_KERNEL_ADDRESS)
-		/* Booted from loader. */
-		lastaddr = freebsd_parse_boot_param(abp);
-#ifdef LINUX_BOOT_ABI
-	else
-		/* Booted from U-Boot. */
-		lastaddr = linux_parse_boot_param(abp);
-#endif
+	boot_el = abp->boot_el;
+
+	/* Parse loader or FDT boot parametes. Determine last used address. */
+	lastaddr = parse_boot_param(abp);
 
 	/* Find the kernel address */
 	kmdp = preload_search_by_type("elf kernel");
@@ -1127,13 +1098,7 @@ initarm(struct arm64_bootparams *abp)
 		kmdp = preload_search_by_type("elf64 kernel");
 
 	link_elf_ireloc(kmdp);
-
-#ifdef FDT
 	try_load_dtb(kmdp);
-#ifdef LINUX_BOOT_ABI
-	parse_bootargs(&lastaddr, abp);
-#endif
-#endif
 
 	efi_systbl_phys = MD_FETCH(kmdp, MODINFOMD_FW_HANDLE, vm_paddr_t);
 
@@ -1208,6 +1173,8 @@ initarm(struct arm64_bootparams *abp)
 	dbg_init();
 	kdb_init();
 	pan_enable();
+
+	kcsan_cpu_init(0);
 
 	env = kern_getenv("kernelname");
 	if (env != NULL)

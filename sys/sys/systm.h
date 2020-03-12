@@ -53,6 +53,8 @@ extern int cold;		/* nonzero if we are doing a cold boot */
 extern int suspend_blocked;	/* block suspend due to pending shutdown */
 extern int rebooting;		/* kern_reboot() has been called. */
 extern const char *panicstr;	/* panic message */
+extern bool panicked;
+#define	KERNEL_PANICKED()	__predict_false(panicked)
 extern char version[];		/* system version */
 extern char compiler_version[];	/* compiler version */
 extern char copyright[];	/* system copyright */
@@ -105,15 +107,23 @@ void	kassert_panic(const char *fmt, ...)  __printflike(1, 2);
 } while (0)
 #define	VNASSERT(exp, vp, msg) do {					\
 	if (__predict_false(!(exp))) {					\
-		vn_printf(vp, "VNASSERT failed\n");			\
+		vn_printf(vp, "VNASSERT failed: %s not true at %s:%d (%s)\n",\
+		   #exp, __FILE__, __LINE__, __func__);	 		\
 		kassert_panic msg;					\
 	}								\
+} while (0)
+#define	VNPASS(exp, vp)	do {						\
+	const char *_exp = #exp;					\
+	VNASSERT(exp, vp, ("condition %s not met at %s:%d (%s)",	\
+	    _exp, __FILE__, __LINE__, __func__));			\
 } while (0)
 #else
 #define	KASSERT(exp,msg) do { \
 } while (0)
 
 #define	VNASSERT(exp, vp, msg) do { \
+} while (0)
+#define	VNPASS(exp, vp) do { \
 } while (0)
 #endif
 
@@ -315,21 +325,36 @@ void	hexdump(const void *ptr, int length, const char *hdr, int flags);
 
 #define ovbcopy(f, t, l) bcopy((f), (t), (l))
 void	bcopy(const void * _Nonnull from, void * _Nonnull to, size_t len);
-#define bcopy(from, to, len) __builtin_memmove((to), (from), (len))
 void	bzero(void * _Nonnull buf, size_t len);
-#define bzero(buf, len) __builtin_memset((buf), 0, (len))
 void	explicit_bzero(void * _Nonnull, size_t);
 int	bcmp(const void *b1, const void *b2, size_t len);
-#define bcmp(b1, b2, len) __builtin_memcmp((b1), (b2), (len))
 
 void	*memset(void * _Nonnull buf, int c, size_t len);
-#define memset(buf, c, len) __builtin_memset((buf), (c), (len))
 void	*memcpy(void * _Nonnull to, const void * _Nonnull from, size_t len);
-#define memcpy(to, from, len) __builtin_memcpy((to), (from), (len))
 void	*memmove(void * _Nonnull dest, const void * _Nonnull src, size_t n);
-#define memmove(dest, src, n) __builtin_memmove((dest), (src), (n))
 int	memcmp(const void *b1, const void *b2, size_t len);
+
+#ifdef KCSAN
+void	*kcsan_memset(void *, int, size_t);
+void	*kcsan_memcpy(void *, const void *, size_t);
+void	*kcsan_memmove(void *, const void *, size_t);
+int	kcsan_memcmp(const void *, const void *, size_t);
+#define bcopy(from, to, len) kcsan_memmove((to), (from), (len))
+#define bzero(buf, len) kcsan_memset((buf), 0, (len))
+#define bcmp(b1, b2, len) kcsan_memcmp((b1), (b2), (len))
+#define memset(buf, c, len) kcsan_memset((buf), (c), (len))
+#define memcpy(to, from, len) kcsan_memcpy((to), (from), (len))
+#define memmove(dest, src, n) kcsan_memmove((dest), (src), (n))
+#define memcmp(b1, b2, len) kcsan_memcmp((b1), (b2), (len))
+#else
+#define bcopy(from, to, len) __builtin_memmove((to), (from), (len))
+#define bzero(buf, len) __builtin_memset((buf), 0, (len))
+#define bcmp(b1, b2, len) __builtin_memcmp((b1), (b2), (len))
+#define memset(buf, c, len) __builtin_memset((buf), (c), (len))
+#define memcpy(to, from, len) __builtin_memcpy((to), (from), (len))
+#define memmove(dest, src, n) __builtin_memmove((dest), (src), (n))
 #define memcmp(b1, b2, len) __builtin_memcmp((b1), (b2), (len))
+#endif
 
 void	*memset_early(void * _Nonnull buf, int c, size_t len);
 #define bzero_early(buf, len) memset_early((buf), 0, (len))
@@ -351,6 +376,17 @@ int	copyout(const void * _Nonnull __restrict kaddr,
 	    void * __restrict udaddr, size_t len);
 int	copyout_nofault(const void * _Nonnull __restrict kaddr,
 	    void * __restrict udaddr, size_t len);
+
+#ifdef KCSAN
+int	kcsan_copystr(const void *, void *, size_t, size_t *);
+int	kcsan_copyin(const void *, void *, size_t);
+int	kcsan_copyinstr(const void *, void *, size_t, size_t *);
+int	kcsan_copyout(const void *, void *, size_t);
+#define	copystr(kf, k, l, lc) kcsan_copystr((kf), (k), (l), (lc))
+#define	copyin(u, k, l) kcsan_copyin((u), (k), (l))
+#define	copyinstr(u, k, l, lc) kcsan_copyinstr((u), (k), (l), (lc))
+#define	copyout(k, u, l) kcsan_copyout((k), (u), (l))
+#endif
 
 int	fubyte(volatile const void *base);
 long	fuword(volatile const void *base);
@@ -440,15 +476,6 @@ void	usrinfoinit(void);
 void	kern_reboot(int) __dead2;
 void	shutdown_nice(int);
 
-/* Timeouts */
-typedef void timeout_t(void *);	/* timeout function type */
-#define CALLOUT_HANDLE_INITIALIZER(handle)	\
-	{ NULL }
-
-void	callout_handle_init(struct callout_handle *);
-struct	callout_handle timeout(timeout_t *, void *, int);
-void	untimeout(timeout_t *, void *, struct callout_handle);
-
 /* Stubs for obsolete functions that used to be for interrupt management */
 static __inline intrmask_t	splbio(void)		{ return 0; }
 static __inline intrmask_t	splcam(void)		{ return 0; }
@@ -463,7 +490,7 @@ static __inline void		splx(intrmask_t ipl __unused)	{ return; }
  * Common `proc' functions are declared here so that proc.h can be included
  * less often.
  */
-int	_sleep(void * _Nonnull chan, struct lock_object *lock, int pri,
+int	_sleep(const void * _Nonnull chan, struct lock_object *lock, int pri,
 	   const char *wmesg, sbintime_t sbt, sbintime_t pr, int flags);
 #define	msleep(chan, mtx, pri, wmesg, timo)				\
 	_sleep((chan), &(mtx)->lock_object, (pri), (wmesg),		\
@@ -471,7 +498,7 @@ int	_sleep(void * _Nonnull chan, struct lock_object *lock, int pri,
 #define	msleep_sbt(chan, mtx, pri, wmesg, bt, pr, flags)		\
 	_sleep((chan), &(mtx)->lock_object, (pri), (wmesg), (bt), (pr),	\
 	    (flags))
-int	msleep_spin_sbt(void * _Nonnull chan, struct mtx *mtx,
+int	msleep_spin_sbt(const void * _Nonnull chan, struct mtx *mtx,
 	    const char *wmesg, sbintime_t sbt, sbintime_t pr, int flags);
 #define	msleep_spin(chan, mtx, wmesg, timo)				\
 	msleep_spin_sbt((chan), (mtx), (wmesg), tick_sbt * (timo),	\
@@ -487,9 +514,9 @@ int	pause_sbt(const char *wmesg, sbintime_t sbt, sbintime_t pr,
 	    0, C_HARDCLOCK)
 #define	tsleep_sbt(chan, pri, wmesg, bt, pr, flags)			\
 	_sleep((chan), NULL, (pri), (wmesg), (bt), (pr), (flags))
-void	wakeup(void * chan);
-void	wakeup_one(void * chan);
-void	wakeup_any(void * chan);
+void	wakeup(const void *chan);
+void	wakeup_one(const void *chan);
+void	wakeup_any(const void *chan);
 
 /*
  * Common `struct cdev *' stuff are declared here to avoid #include poisoning
@@ -510,9 +537,14 @@ int poll_no_poll(int events);
 void	DELAY(int usec);
 
 /* Root mount holdback API */
-struct root_hold_token;
+struct root_hold_token {
+	int				flags;
+	const char			*who;
+	TAILQ_ENTRY(root_hold_token)	list;
+};
 
 struct root_hold_token *root_mount_hold(const char *identifier);
+void root_mount_hold_token(const char *identifier, struct root_hold_token *h);
 void root_mount_rel(struct root_hold_token *h);
 int root_mounted(void);
 
@@ -571,7 +603,7 @@ void _gone_in_dev(struct device *dev, int major, const char *msg);
 #ifdef NO_OBSOLETE_CODE
 #define __gone_ok(m, msg)					 \
 	_Static_assert(m < P_OSREL_MAJOR(__FreeBSD_version)),	 \
-	    "Obsolete code" msg);
+	    "Obsolete code: " msg);
 #else
 #define	__gone_ok(m, msg)
 #endif

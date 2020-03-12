@@ -76,7 +76,8 @@ int mp_maxcpus = MAXCPU;
 volatile int smp_started;
 u_int mp_maxid;
 
-static SYSCTL_NODE(_kern, OID_AUTO, smp, CTLFLAG_RD|CTLFLAG_CAPRD, NULL,
+static SYSCTL_NODE(_kern, OID_AUTO, smp,
+    CTLFLAG_RD | CTLFLAG_CAPRD | CTLFLAG_MPSAFE, NULL,
     "Kernel SMP");
 
 SYSCTL_INT(_kern_smp, OID_AUTO, maxid, CTLFLAG_RD|CTLFLAG_CAPRD, &mp_maxid, 0,
@@ -195,7 +196,7 @@ forward_signal(struct thread *td)
 
 	CTR1(KTR_SMP, "forward_signal(%p)", td->td_proc);
 
-	if (!smp_started || cold || panicstr)
+	if (!smp_started || cold || KERNEL_PANICKED())
 		return;
 	if (!forward_signal_enabled)
 		return;
@@ -550,7 +551,7 @@ smp_rendezvous_cpus(cpuset_t map,
 {
 	int curcpumap, i, ncpus = 0;
 
-	/* Look comments in the !SMP case. */
+	/* See comments in the !SMP case. */
 	if (!smp_started) {
 		spinlock_enter();
 		if (setup_func != NULL)
@@ -562,6 +563,12 @@ smp_rendezvous_cpus(cpuset_t map,
 		spinlock_exit();
 		return;
 	}
+
+	/*
+	 * Make sure we come here with interrupts enabled.  Otherwise we
+	 * livelock if smp_ipi_mtx is owned by a thread which sent us an IPI.
+	 */
+	MPASS(curthread->td_md.md_spinlock_count == 0);
 
 	CPU_FOREACH(i) {
 		if (CPU_ISSET(i, &map))
@@ -797,7 +804,6 @@ smp_topo_2level(int l2share, int l2count, int l1share, int l1count,
 	return (top);
 }
 
-
 struct cpu_group *
 smp_topo_find(struct cpu_group *top, int cpu)
 {
@@ -879,6 +885,47 @@ smp_no_rendezvous_barrier(void *dummy)
 #endif
 }
 
+void
+smp_rendezvous_cpus_retry(cpuset_t map,
+	void (* setup_func)(void *),
+	void (* action_func)(void *),
+	void (* teardown_func)(void *),
+	void (* wait_func)(void *, int),
+	struct smp_rendezvous_cpus_retry_arg *arg)
+{
+	int cpu;
+
+	/*
+	 * Execute an action on all specified CPUs while retrying until they
+	 * all acknowledge completion.
+	 */
+	CPU_COPY(&map, &arg->cpus);
+	for (;;) {
+		smp_rendezvous_cpus(
+		    arg->cpus,
+		    setup_func,
+		    action_func,
+		    teardown_func,
+		    arg);
+
+		if (CPU_EMPTY(&arg->cpus))
+			break;
+
+		CPU_FOREACH(cpu) {
+			if (!CPU_ISSET(cpu, &arg->cpus))
+				continue;
+			wait_func(arg, cpu);
+		}
+	}
+}
+
+void
+smp_rendezvous_cpus_done(struct smp_rendezvous_cpus_retry_arg *arg)
+{
+
+	CPU_CLR_ATOMIC(curcpu, &arg->cpus);
+}
+
 /*
  * Wait for specified idle threads to switch once.  This ensures that even
  * preempted threads have cycled through the switch function once,
@@ -929,6 +976,66 @@ quiesce_all_cpus(const char *wmesg, int prio)
 	return quiesce_cpus(all_cpus, wmesg, prio);
 }
 
+/*
+ * Observe all CPUs not executing in critical section.
+ * We are not in one so the check for us is safe. If the found
+ * thread changes to something else we know the section was
+ * exited as well.
+ */
+void
+quiesce_all_critical(void)
+{
+	struct thread *td, *newtd;
+	struct pcpu *pcpu;
+	int cpu;
+
+	MPASS(curthread->td_critnest == 0);
+
+	CPU_FOREACH(cpu) {
+		pcpu = cpuid_to_pcpu[cpu];
+		td = pcpu->pc_curthread;
+		for (;;) {
+			if (td->td_critnest == 0)
+				break;
+			cpu_spinwait();
+			newtd = (struct thread *)
+			    atomic_load_acq_ptr((void *)pcpu->pc_curthread);
+			if (td != newtd)
+				break;
+		}
+	}
+}
+
+static void
+cpus_fence_seq_cst_issue(void *arg __unused)
+{
+
+	atomic_thread_fence_seq_cst();
+}
+
+/*
+ * Send an IPI forcing a sequentially consistent fence.
+ *
+ * Allows replacement of an explicitly fence with a compiler barrier.
+ * Trades speed up during normal execution for a significant slowdown when
+ * the barrier is needed.
+ */
+void
+cpus_fence_seq_cst(void)
+{
+
+#ifdef SMP
+	smp_rendezvous(
+	    smp_no_rendezvous_barrier,
+	    cpus_fence_seq_cst_issue,
+	    smp_no_rendezvous_barrier,
+	    NULL
+	);
+#else
+	cpus_fence_seq_cst_issue(NULL);
+#endif
+}
+
 /* Extra care is taken with this sysctl because the data type is volatile */
 static int
 sysctl_kern_smp_active(SYSCTL_HANDLER_ARGS)
@@ -939,7 +1046,6 @@ sysctl_kern_smp_active(SYSCTL_HANDLER_ARGS)
 	error = SYSCTL_OUT(req, &active, sizeof(active));
 	return (error);
 }
-
 
 #ifdef SMP
 void

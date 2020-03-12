@@ -292,7 +292,7 @@ arge_attach_intr_sysctl(device_t dev, struct sysctl_oid_list *parent)
 	int i;
 
 	tree = SYSCTL_ADD_NODE(ctx, parent, OID_AUTO, "intr",
-	    CTLFLAG_RD, NULL, "Interrupt statistics");
+	    CTLFLAG_RD | CTLFLAG_MPSAFE, NULL, "Interrupt statistics");
 	child = SYSCTL_CHILDREN(tree);
 	for (i = 0; i < 32; i++) {
 		snprintf(sn, sizeof(sn), "%d", i);
@@ -876,7 +876,11 @@ arge_attach(device_t dev)
 		if  (bootverbose)
 			device_printf(dev,
 			    "Generating random ethernet address.\n");
-		(void) ar71xx_mac_addr_random_init(sc->arge_eaddr);
+		if (ar71xx_mac_addr_random_init(ifp, (void *) sc->arge_eaddr) < 0) {
+			device_printf(dev, "Failed to choose random MAC address\n");
+			error = EINVAL;
+			goto fail;
+		}
 	}
 
 	if (arge_dma_alloc(sc) != 0) {

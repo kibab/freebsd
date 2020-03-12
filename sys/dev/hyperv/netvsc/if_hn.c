@@ -576,12 +576,16 @@ SYSCTL_INT(_hw_hn, OID_AUTO, tx_agg_pkts, CTLFLAG_RDTUN,
     &hn_tx_agg_pkts, 0, "Packet transmission aggregation packet limit");
 
 /* VF list */
-SYSCTL_PROC(_hw_hn, OID_AUTO, vflist, CTLFLAG_RD | CTLTYPE_STRING,
-    0, 0, hn_vflist_sysctl, "A", "VF list");
+SYSCTL_PROC(_hw_hn, OID_AUTO, vflist,
+    CTLFLAG_RD | CTLTYPE_STRING | CTLFLAG_NEEDGIANT, 0, 0,
+    hn_vflist_sysctl, "A",
+    "VF list");
 
 /* VF mapping */
-SYSCTL_PROC(_hw_hn, OID_AUTO, vfmap, CTLFLAG_RD | CTLTYPE_STRING,
-    0, 0, hn_vfmap_sysctl, "A", "VF mapping");
+SYSCTL_PROC(_hw_hn, OID_AUTO, vfmap,
+    CTLFLAG_RD | CTLTYPE_STRING | CTLFLAG_NEEDGIANT, 0, 0,
+    hn_vfmap_sysctl, "A",
+    "VF mapping");
 
 /* Transparent VF */
 static int			hn_xpnt_vf = 1;
@@ -1506,7 +1510,7 @@ hn_vf_rss_fixup(struct hn_softc *sc, bool reconf)
 	strlcpy(ifrk.ifrk_name, vf_ifp->if_xname, sizeof(ifrk.ifrk_name));
 	error = vf_ifp->if_ioctl(vf_ifp, SIOCGIFRSSKEY, (caddr_t)&ifrk);
 	if (error) {
-		if_printf(ifp, "%s SIOCGRSSKEY failed: %d\n",
+		if_printf(ifp, "%s SIOCGIFRSSKEY failed: %d\n",
 		    vf_ifp->if_xname, error);
 		goto done;
 	}

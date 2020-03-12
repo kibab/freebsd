@@ -1,9 +1,9 @@
 /*-
  * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
  *
- * Copyright (c) 2006 M. Warner Losh.
  * Copyright (c) 2009 Oleksandr Tymoshenko.  All rights reserved.
  * Copyright (c) 2018 Ian Lepore.  All rights reserved.
+ * Copyright (c) 2006 M. Warner Losh <imp@FreeBSD.org>
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -658,7 +658,7 @@ mx25l_task(void *arg)
 			    bp->bio_data, bp->bio_bcount);
 			break;
 		default:
-			bp->bio_error = EINVAL;
+			bp->bio_error = EOPNOTSUPP;
 		}
 
 

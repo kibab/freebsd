@@ -166,7 +166,6 @@ void	 qsort_r(void *base, size_t nmemb, size_t size, void *thunk,
 	    int (*compar)(void *, const void *, const void *));
 u_long	 random(void);
 int	 scanc(u_int, const u_char *, const u_char *, int);
-void	 srandom(u_long);
 int	 strcasecmp(const char *, const char *);
 char	*strcat(char * __restrict, const char * __restrict);
 char	*strchr(const char *, int);
@@ -190,6 +189,15 @@ char	*strsep(char **, const char *delim);
 size_t	 strspn(const char *, const char *);
 char	*strstr(const char *, const char *);
 int	 strvalid(const char *, size_t);
+
+#ifdef KCSAN
+char	*kcsan_strcpy(char *, const char *);
+int	kcsan_strcmp(const char *, const char *);
+size_t	kcsan_strlen(const char *);
+#define	strcpy(d, s) kcsan_strcpy((d), (s))
+#define	strcmp(s1, s2) kcsan_strcmp((s1), (s2))
+#define	strlen(s) kcsan_strlen((s))
+#endif
 
 static __inline char *
 index(const char *p, int ch)

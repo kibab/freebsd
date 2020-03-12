@@ -84,6 +84,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/kernel.h>
 #include <sys/lock.h>
 #include <sys/rmlock.h>
+#include <sys/sysctl.h>
 #include <sys/syslog.h>
 
 #include <net/if.h>
@@ -167,30 +168,35 @@ static int in6_broadcast_ifa(struct ifnet *, struct in6_aliasreq *,
 void
 in6_newaddrmsg(struct in6_ifaddr *ia, int cmd)
 {
+	struct rt_addrinfo info;
+	struct ifaddr *ifa;
 	struct sockaddr_dl gateway;
-	struct sockaddr_in6 mask, addr;
-	struct rtentry rt;
 	int fibnum;
 
-	/*
-	 * initialize for rtmsg generation
-	 */
-	bzero(&gateway, sizeof(gateway));
-	gateway.sdl_len = sizeof(gateway);
-	gateway.sdl_family = AF_LINK;
+	ifa = &ia->ia_ifa;
 
-	bzero(&rt, sizeof(rt));
-	rt.rt_gateway = (struct sockaddr *)&gateway;
-	memcpy(&mask, &ia->ia_prefixmask, sizeof(ia->ia_prefixmask));
-	memcpy(&addr, &ia->ia_addr, sizeof(ia->ia_addr));
-	rt_mask(&rt) = (struct sockaddr *)&mask;
-	rt_key(&rt) = (struct sockaddr *)&addr;
-	rt.rt_flags = RTF_HOST | RTF_STATIC;
-	if (cmd == RTM_ADD)
-		rt.rt_flags |= RTF_UP;
+	/*
+	 * Prepare info data for the host route.
+	 * This code mimics one from ifa_maintain_loopback_route().
+	 */
+	bzero(&info, sizeof(struct rt_addrinfo));
+	info.rti_flags = ifa->ifa_flags | RTF_HOST | RTF_STATIC | RTF_PINNED;
+	info.rti_info[RTAX_DST] = ifa->ifa_addr;
+	info.rti_info[RTAX_GATEWAY] = (struct sockaddr *)&gateway;
+	link_init_sdl(ifa->ifa_ifp, (struct sockaddr *)&gateway, ifa->ifa_ifp->if_type);
+	if (cmd != RTM_DELETE)
+		info.rti_ifp = V_loif;
+
+
 	fibnum = V_rt_add_addr_allfibs ? RT_ALL_FIBS : ia62ifa(ia)->ifa_ifp->if_fib;
-	/* Announce arrival of local address to this FIB. */
-	rt_newaddrmsg_fib(cmd, &ia->ia_ifa, 0, &rt, fibnum);
+
+	if (cmd == RTM_ADD) {
+		rt_addrmsg(cmd, &ia->ia_ifa, fibnum);
+		rt_routemsg_info(cmd, &info, fibnum);
+	} else if (cmd == RTM_DELETE) {
+		rt_routemsg_info(cmd, &info, fibnum);
+		rt_addrmsg(cmd, &ia->ia_ifa, fibnum);
+	}
 }
 
 int
@@ -2024,8 +2030,6 @@ in6_if2idlen(struct ifnet *ifp)
 	}
 }
 
-#include <sys/sysctl.h>
-
 struct in6_llentry {
 	struct llentry		base;
 };
@@ -2057,7 +2061,7 @@ in6_lltable_destroy_lle(struct llentry *lle)
 {
 
 	LLE_WUNLOCK(lle);
-	epoch_call(net_epoch_preempt,  &lle->lle_epoch_ctx, in6_lltable_destroy_lle_unlocked);
+	NET_EPOCH_CALL(in6_lltable_destroy_lle_unlocked, &lle->lle_epoch_ctx);
 }
 
 static struct llentry *
@@ -2278,7 +2282,7 @@ in6_lltable_alloc(struct lltable *llt, u_int flags,
 		linkhdrsize = LLE_MAX_LINKHDR;
 		if (lltable_calc_llheader(ifp, AF_INET6, IF_LLADDR(ifp),
 		    linkhdr, &linkhdrsize, &lladdr_off) != 0) {
-			epoch_call(net_epoch_preempt,  &lle->lle_epoch_ctx, in6_lltable_destroy_lle_unlocked);
+			NET_EPOCH_CALL(in6_lltable_destroy_lle_unlocked, &lle->lle_epoch_ctx);
 			return (NULL);
 		}
 		lltable_set_entry_addr(ifp, lle, linkhdr, linkhdrsize,

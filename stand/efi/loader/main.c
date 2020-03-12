@@ -180,8 +180,17 @@ static void
 set_currdev(const char *devname)
 {
 
-	env_setenv("currdev", EV_VOLATILE, devname, efi_setcurrdev, env_nounset);
-	env_setenv("loaddev", EV_VOLATILE, devname, env_noset, env_nounset);
+	/*
+	 * Don't execute hooks here; we may need to try setting these more than
+	 * once here if we're probing for the ZFS pool we're supposed to boot.
+	 * The currdev hook is intended to just validate user input anyways,
+	 * while the loaddev hook makes it immutable once we've determined what
+	 * the proper currdev is.
+	 */
+	env_setenv("currdev", EV_VOLATILE | EV_NOHOOK, devname, efi_setcurrdev,
+	    env_nounset);
+	env_setenv("loaddev", EV_VOLATILE | EV_NOHOOK, devname, env_noset,
+	    env_nounset);
 }
 
 static void
@@ -741,7 +750,7 @@ parse_uefi_con_out(void)
 			 */
 			pci_pending = true;
 		}
-		node = NextDevicePathNode(node); /* Skip the end node */
+		node = NextDevicePathNode(node);
 	}
 	if (pci_pending && vid_seen == 0)
 		vid_seen = ++seen;
@@ -843,7 +852,11 @@ read_loader_env(const char *name, char *def_fn, bool once)
 	}
 }
 
-
+caddr_t
+ptov(uintptr_t x)
+{
+	return ((caddr_t)x);
+}
 
 EFI_STATUS
 main(int argc, CHAR16 *argv[])
@@ -999,6 +1012,7 @@ main(int argc, CHAR16 *argv[])
 		printf(" %S", argv[i]);
 	printf("\n");
 
+	printf("   Image base: 0x%lx\n", (unsigned long)boot_img->ImageBase);
 	printf("   EFI version: %d.%02d\n", ST->Hdr.Revision >> 16,
 	    ST->Hdr.Revision & 0xffff);
 	printf("   EFI Firmware: %S (rev %d.%02d)\n", ST->FirmwareVendor,
@@ -1446,7 +1460,7 @@ command_chain(int argc, char *argv[])
 	}
 
 #ifdef LOADER_VERIEXEC
-	if (verify_file(fd, name, 0, VE_MUST) < 0) {
+	if (verify_file(fd, name, 0, VE_MUST, __func__) < 0) {
 		sprintf(command_errbuf, "can't verify: %s", name);
 		close(fd);
 		return (CMD_ERROR);

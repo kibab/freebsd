@@ -2,7 +2,7 @@
 
 CRTARCH=	${MACHINE_CPUARCH:C/amd64/x86_64/}
 
-CRTSRC=		${SRCTOP}/contrib/compiler-rt/lib/builtins
+CRTSRC=		${SRCTOP}/contrib/llvm-project/compiler-rt/lib/builtins
 
 .PATH:		${CRTSRC}/${CRTARCH}
 .PATH:		${CRTSRC}
@@ -80,11 +80,11 @@ SRCF+=		mulodi4
 SRCF+=		mulosi4
 SRCF+=		muloti4
 SRCF+=		mulsc3
+SRCF+=		multc3
 SRCF+=		multi3
 SRCF+=		mulvdi3
 SRCF+=		mulvsi3
 SRCF+=		mulvti3
-SRCF+=		multc3
 SRCF+=		mulxc3
 SRCF+=		negdf2
 SRCF+=		negdi2
@@ -141,6 +141,14 @@ SRCF+=		floatundixf
 # __cpu_model support, only used on x86
 .if ${MACHINE_CPUARCH} == "amd64" || ${MACHINE_CPUARCH} == "i386"
 SRCF+=		cpu_model
+.endif
+
+# The fp_mode implementation for amd64 and i386 is shared, while other
+# architectures use the regular approach.
+.if ${MACHINE_CPUARCH} == "amd64" || ${MACHINE_CPUARCH} == "i386"
+SRCS+=		i386/fp_mode.c
+.else
+SRCF+=		fp_mode
 .endif
 
 #
@@ -205,6 +213,12 @@ CFLAGS+=	-DEMIT_SYNC_ATOMICS
 SRCF+=		stdatomic
 .endif
 
+.if "${COMPILER_TYPE}" == "clang" && \
+    (${MACHINE_ARCH} == "powerpc" || ${MACHINE_ARCH} == "powerpcspe")
+SRCS+=          atomic.c
+CFLAGS.atomic.c+=      -Wno-atomic-alignment
+.endif
+
 .for file in ${SRCF}
 .if ${MACHINE_ARCH:Marmv[67]*} && (!defined(CPUTYPE) || ${CPUTYPE:M*soft*} == "") \
     && exists(${CRTSRC}/${CRTARCH}/${file}vfp.S)
@@ -236,8 +250,11 @@ SRCS+=		sync_synchronize.S
 .endif
 
 # On some archs GCC-6.3 requires bswap32 built-in.
-.if ${MACHINE_CPUARCH} == "mips" || ${MACHINE_CPUARCH} == "riscv" || \
-    ${MACHINE_CPUARCH} == "sparc64"
+.if ${MACHINE_CPUARCH} == "mips" || ${MACHINE_CPUARCH} == "riscv"
 SRCS+=		bswapdi2.c
 SRCS+=		bswapsi2.c
+.endif
+
+.if ${MACHINE_ARCH:Mriscv*sf}
+CFLAGS+=	-D__SOFT_FP__
 .endif

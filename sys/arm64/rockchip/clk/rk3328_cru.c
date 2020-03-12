@@ -2,7 +2,6 @@
  * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
  *
  * Copyright (c) 2018 Emmanuel Vadot <manu@freebsd.org>
- * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -52,6 +51,8 @@ __FBSDID("$FreeBSD$");
 
 /* GATES */
 
+#define	SCLK_USB3OTG_REF	96
+#define	ACLK_USB3OTG		132
 #define	ACLK_PERI		153
 #define	PCLK_GPIO0		200
 #define	PCLK_GPIO1		201
@@ -61,6 +62,10 @@ __FBSDID("$FreeBSD$");
 #define	PCLK_I2C1		206
 #define	PCLK_I2C2		207
 #define	PCLK_I2C3		208
+#define	PCLK_TSADC		213
+#define	PCLK_USB3PHY_OTG	224
+#define	PCLK_USB3PHY_PIPE	225
+#define	PCLK_USB3_GRF		226
 #define	HCLK_SDMMC		317
 #define	HCLK_SDIO		318
 #define	HCLK_EMMC		319
@@ -76,6 +81,7 @@ static struct rk_cru_gate rk3328_gates[] = {
 	/* CRU_CLKGATE_CON4 */
 	CRU_GATE(0, "gpll_peri", "gpll", 0x210, 0)
 	CRU_GATE(0, "cpll_peri", "cpll", 0x210, 1)
+	CRU_GATE(SCLK_USB3OTG_REF, "clk_usb3otg_ref", "xin24m", 0x210, 7)
 
 	/* CRU_CLKGATE_CON8 */
 	CRU_GATE(0, "pclk_bus", "pclk_bus_pre", 0x220, 3)
@@ -91,16 +97,28 @@ static struct rk_cru_gate rk3328_gates[] = {
 	CRU_GATE(PCLK_I2C1, "pclk_i2c1", "pclk_bus", 0x23C, 0)
 	CRU_GATE(PCLK_I2C2, "pclk_i2c2", "pclk_bus", 0x23C, 1)
 	CRU_GATE(PCLK_I2C3, "pclk_i2c3", "pclk_bus", 0x23C, 2)
+	CRU_GATE(PCLK_TSADC, "pclk_tsadc", "pclk_bus", 0x23C, 14)
+
 	CRU_GATE(PCLK_GPIO0, "pclk_gpio0", "pclk_bus", 0x240, 7)
 	CRU_GATE(PCLK_GPIO1, "pclk_gpio1", "pclk_bus", 0x240, 8)
 	CRU_GATE(PCLK_GPIO2, "pclk_gpio2", "pclk_bus", 0x240, 9)
 	CRU_GATE(PCLK_GPIO3, "pclk_gpio3", "pclk_bus", 0x240, 10)
 
+	/* CRU_CLKGATE_CON17 */
+	CRU_GATE(PCLK_USB3_GRF, "pclk_usb3_grf", "pclk_phy_pre", 0x244, 2)
+
 	/* CRU_CLKGATE_CON19 */
 	CRU_GATE(HCLK_SDMMC, "hclk_sdmmc", "hclk_peri", 0x24C, 0)
 	CRU_GATE(HCLK_SDIO, "hclk_sdio", "hclk_peri", 0x24C, 1)
 	CRU_GATE(HCLK_EMMC, "hclk_emmc", "hclk_peri", 0x24C, 2)
+	CRU_GATE(0, "hclk_peri_niu", "hclk_peri", 0x24C, 12)
+	CRU_GATE(0, "pclk_peri_niu", "hclk_peri", 0x24C, 13)
+	CRU_GATE(ACLK_USB3OTG, "aclk_usb3otg", "aclk_peri", 0x24C, 14)
 	CRU_GATE(HCLK_SDMMC_EXT, "hclk_sdmmc_ext", "hclk_peri", 0x24C, 15)
+
+	/* CRU_CLKGATE_CON28 */
+	CRU_GATE(PCLK_USB3PHY_OTG, "pclk_usb3phy_otg", "pclk_phy_pre", 0x270, 1)
+	CRU_GATE(PCLK_USB3PHY_PIPE, "pclk_usb3phy_pipe", "pclk_phy_pre", 0x270, 2)
 };
 
 /*
@@ -731,6 +749,22 @@ static struct rk_clk_composite_def pclk_bus_pre = {
 	.flags = RK_CLK_COMPOSITE_HAVE_GATE,
 };
 
+/* CRU_CLKSEL_CON22 */
+
+#define SCLK_TSADC		36
+
+static const char *clk_tsadc_parents[] = {"xin24m"};
+static struct rk_clk_composite_def clk_tsadc = {
+	.clkdef = {
+		.id = SCLK_TSADC,
+		.name = "clk_tsadc",
+		.parent_names = clk_tsadc_parents,
+		.parent_cnt = nitems(clk_tsadc_parents),
+	},
+	.div_shift = 0,
+	.div_width = 9,
+};
+
 /* CRU_CLKSEL_CON28 */
 
 #define ACLK_PERI_PRE		137
@@ -971,6 +1005,78 @@ static struct rk_clk_composite_def i2c3 = {
 	.flags = RK_CLK_COMPOSITE_HAVE_MUX | RK_CLK_COMPOSITE_HAVE_GATE,
 };
 
+#define	SCLK_USB3_REF		72
+#define	SCLK_USB3_SUSPEND	73
+#define	SCLK_USB3PHY_REF	94
+#define	SCLK_REF_USB3OTG	95
+#define	SCLK_USB3OTG_SUSPEND	97
+#define	SCLK_REF_USB3OTG_SRC	98
+
+static const char *ref_usb3otg_parents[] = { "xin24m", "clk_usb3otg_ref" };
+
+static struct rk_clk_composite_def ref_usb3otg = {
+	.clkdef = {
+		.id = SCLK_REF_USB3OTG,
+		.name = "clk_ref_usb3otg",
+		.parent_names = ref_usb3otg_parents,
+		.parent_cnt = nitems(ref_usb3otg_parents),
+	},
+	.muxdiv_offset = 0x1B4,
+
+	.mux_shift = 8,
+	.mux_width = 1,
+
+	.flags = RK_CLK_COMPOSITE_HAVE_MUX,
+};
+
+static const char *usb3otg_suspend_parents[] = { "xin24m"/*, "clk_rtc32k" */};
+
+static struct rk_clk_composite_def usb3otg_suspend = {
+	.clkdef = {
+		.id = SCLK_USB3OTG_SUSPEND,
+		.name = "clk_usb3otg_suspend",
+		.parent_names = usb3otg_suspend_parents,
+		.parent_cnt = nitems(usb3otg_suspend_parents),
+	},
+	.muxdiv_offset = 0x184,
+
+	.mux_shift = 15,
+	.mux_width = 1,
+
+	.div_shift = 0,
+	.div_width = 10,
+
+	/* CRU_CLKGATE_CON4 */
+	.gate_offset = 0x210,
+	.gate_shift = 8,
+
+	.flags = RK_CLK_COMPOSITE_HAVE_GATE,
+};
+
+static const char *ref_usb3otg_src_parents[] = { "cpll", "gpll" };
+
+static struct rk_clk_composite_def ref_usb3otg_src = {
+	.clkdef = {
+		.id = SCLK_REF_USB3OTG_SRC,
+		.name = "clk_ref_usb3otg_src",
+		.parent_names = ref_usb3otg_src_parents,
+		.parent_cnt = nitems(ref_usb3otg_src_parents),
+	},
+	.muxdiv_offset = 0x1B4,
+
+	.mux_shift = 7,
+	.mux_width = 1,
+
+	.div_shift = 0,
+	.div_width = 7,
+
+	/* CRU_CLKGATE_CON4 */
+	.gate_offset = 0x210,
+	.gate_shift = 9,
+
+	.flags = RK_CLK_COMPOSITE_HAVE_GATE,
+};
+
 static struct rk_clk rk3328_clks[] = {
 	{
 		.type = RK3328_CLK_PLL,
@@ -1013,6 +1119,10 @@ static struct rk_clk rk3328_clks[] = {
 
 	{
 		.type = RK_CLK_COMPOSITE,
+		.clk.composite = &clk_tsadc,
+	},
+	{
+		.type = RK_CLK_COMPOSITE,
 		.clk.composite = &aclk_peri_pre,
 	},
 	{
@@ -1051,6 +1161,19 @@ static struct rk_clk rk3328_clks[] = {
 	{
 		.type = RK_CLK_COMPOSITE,
 		.clk.composite = &i2c3
+	},
+
+	{
+		.type = RK_CLK_COMPOSITE,
+		.clk.composite = &ref_usb3otg
+	},
+	{
+		.type = RK_CLK_COMPOSITE,
+		.clk.composite = &ref_usb3otg_src
+	},
+	{
+		.type = RK_CLK_COMPOSITE,
+		.clk.composite = &usb3otg_suspend
 	},
 };
 

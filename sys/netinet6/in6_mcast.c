@@ -121,8 +121,6 @@ MTX_SYSINIT(in6_multi_free_mtx, &in6_multi_free_mtx, "in6_multi_free_mtx", MTX_D
 struct sx in6_multi_sx;
 SX_SYSINIT(in6_multi_sx, &in6_multi_sx, "in6_multi_sx");
 
-
-
 static void	im6f_commit(struct in6_mfilter *);
 static int	im6f_get_source(struct in6_mfilter *imf,
 		    const struct sockaddr_in6 *psin,
@@ -144,6 +142,8 @@ static void	im6s_merge(struct ip6_msource *ims,
 		    const struct in6_msource *lims, const int rollback);
 static int	in6_getmulti(struct ifnet *, const struct in6_addr *,
 		    struct in6_multi **);
+static int	in6_joingroup_locked(struct ifnet *, const struct in6_addr *,
+		    struct in6_mfilter *, struct in6_multi **, int);
 static int	in6m_get_source(struct in6_multi *inm,
 		    const struct in6_addr *addr, const int noalloc,
 		    struct ip6_msource **pims);
@@ -168,7 +168,8 @@ static int	sysctl_ip6_mcast_filters(SYSCTL_HANDLER_ARGS);
 
 SYSCTL_DECL(_net_inet6_ip6);	/* XXX Not in any common header. */
 
-static SYSCTL_NODE(_net_inet6_ip6, OID_AUTO, mcast, CTLFLAG_RW, 0,
+static SYSCTL_NODE(_net_inet6_ip6, OID_AUTO, mcast,
+    CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "IPv6 multicast");
 
 static u_long in6_mcast_maxgrpsrc = IPV6_MAX_GROUP_SRC_FILTER;
@@ -1197,7 +1198,7 @@ in6_joingroup(struct ifnet *ifp, const struct in6_addr *mcaddr,
  * If the MLD downcall fails, the group is not joined, and an error
  * code is returned.
  */
-int
+static int
 in6_joingroup_locked(struct ifnet *ifp, const struct in6_addr *mcaddr,
     /*const*/ struct in6_mfilter *imf, struct in6_multi **pinm,
     const int delay)
@@ -1267,6 +1268,7 @@ out_in6m_release:
 		struct epoch_tracker et;
 
 		CTR2(KTR_MLD, "%s: dropping ref on %p", __func__, inm);
+		IF_ADDR_WLOCK(ifp);
 		NET_EPOCH_ENTER(et);
 		CK_STAILQ_FOREACH(ifma, &ifp->if_multiaddrs, ifma_link) {
 			if (ifma->ifma_protospec == inm) {
@@ -1277,6 +1279,7 @@ out_in6m_release:
 		in6m_disconnect_locked(&inmh, inm);
 		in6m_rele_locked(&inmh, inm);
 		NET_EPOCH_EXIT(et);
+		IF_ADDR_WUNLOCK(ifp);
 	} else {
 		*pinm = inm;
 	}
@@ -2109,6 +2112,7 @@ in6p_join_group(struct inpcb *inp, struct sockopt *sopt)
 		 * NOTE: Refcount from in6_joingroup_locked()
 		 * is protecting membership.
 		 */
+		ip6_mfilter_insert(&imo->im6o_head, imf);
 	} else {
 		CTR1(KTR_MLD, "%s: merge inm state", __func__);
 		IN6_MULTI_LIST_LOCK();
@@ -2133,9 +2137,6 @@ in6p_join_group(struct inpcb *inp, struct sockopt *sopt)
 			goto out_in6p_locked;
 		}
 	}
-
-	if (is_new)
-		ip6_mfilter_insert(&imo->im6o_head, imf);
 
 	im6f_commit(imf);
 	imf = NULL;
@@ -2328,6 +2329,12 @@ in6p_leave_group(struct inpcb *inp, struct sockopt *sopt)
 	if (is_final) {
 		ip6_mfilter_remove(&imo->im6o_head, imf);
 		im6f_leave(imf);
+
+		/*
+		 * Give up the multicast address record to which
+		 * the membership points.
+		 */
+		(void)in6_leavegroup_locked(inm, imf);
 	} else {
 		if (imf->im6f_st[0] == MCAST_EXCLUDE) {
 			error = EADDRNOTAVAIL;
@@ -2384,14 +2391,8 @@ in6p_leave_group(struct inpcb *inp, struct sockopt *sopt)
 out_in6p_locked:
 	INP_WUNLOCK(inp);
 
-	if (is_final && imf) {
-		/*
-		 * Give up the multicast address record to which
-		 * the membership points.
-		 */
-		(void)in6_leavegroup_locked(inm, imf);
+	if (is_final && imf)
 		ip6_mfilter_free(imf);
-	}
 
 	IN6_MULTI_UNLOCK();
 	return (error);

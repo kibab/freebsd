@@ -78,7 +78,8 @@ devclass_t ata_devclass;
 int ata_dma_check_80pin = 1;
 
 /* sysctl vars */
-static SYSCTL_NODE(_hw, OID_AUTO, ata, CTLFLAG_RD, 0, "ATA driver parameters");
+static SYSCTL_NODE(_hw, OID_AUTO, ata, CTLFLAG_RD | CTLFLAG_MPSAFE, 0,
+    "ATA driver parameters");
 SYSCTL_INT(_hw_ata, OID_AUTO, ata_dma_check_80pin,
 	   CTLFLAG_RWTUN, &ata_dma_check_80pin, 0,
 	   "Check for 80pin cable before setting ATA DMA mode");
@@ -702,10 +703,12 @@ ata_atapi(device_t dev, int target)
 }
 
 void
-ata_timeout(struct ata_request *request)
+ata_timeout(void *arg)
 {
+	struct ata_request *request;
 	struct ata_channel *ch;
 
+	request = arg;
 	ch = device_get_softc(request->parent);
 	//request->flags |= ATA_R_DEBUG;
 	ATA_DEBUG_RQ(request, "timeout");

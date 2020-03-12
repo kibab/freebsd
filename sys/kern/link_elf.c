@@ -51,6 +51,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/fcntl.h>
 #include <sys/vnode.h>
 #include <sys/linker.h>
+#include <sys/sysctl.h>
 
 #include <machine/elf.h>
 
@@ -389,6 +390,13 @@ link_elf_link_common_finish(linker_file_t lf)
 
 extern vm_offset_t __startkernel, __endkernel;
 
+static unsigned long kern_relbase = KERNBASE;
+
+SYSCTL_ULONG(_kern, OID_AUTO, base_address, CTLFLAG_RD,
+	SYSCTL_NULL_ULONG_PTR, KERNBASE, "Kernel base address");
+SYSCTL_ULONG(_kern, OID_AUTO, relbase_address, CTLFLAG_RD,
+	&kern_relbase, 0, "Kernel relocated base address");
+
 static void
 link_elf_init(void* arg)
 {
@@ -397,7 +405,7 @@ link_elf_init(void* arg)
 	Elf_Size *ctors_sizep;
 	caddr_t modptr, baseptr, sizeptr;
 	elf_file_t ef;
-	char *modname;
+	const char *modname;
 
 	linker_add_class(&link_elf_class);
 
@@ -431,6 +439,7 @@ link_elf_init(void* arg)
 #ifdef __powerpc__
 	linker_kernel_file->address = (caddr_t)__startkernel;
 	linker_kernel_file->size = (intptr_t)(__endkernel - __startkernel);
+	kern_relbase = (unsigned long)__startkernel;
 #else
 	linker_kernel_file->address += KERNBASE;
 	linker_kernel_file->size = -(intptr_t)linker_kernel_file->address;
@@ -611,7 +620,7 @@ parse_dynamic(elf_file_t ef)
 	ef->ddbstrtab = ef->strtab;
 	ef->ddbstrcnt = ef->strsz;
 
-	return (0);
+	return elf_cpu_parse_dynamic(&ef->lf, ef->dynamic);
 }
 
 #define	LS_PADDING	0x90909090
@@ -773,6 +782,50 @@ preload_protect(elf_file_t ef, vm_prot_t prot)
 #endif
 }
 
+#ifdef __arm__
+/*
+ * Locate the ARM exception/unwind table info for DDB and stack(9) use by
+ * searching for the section header that describes it.  There may be no unwind
+ * info, for example in a module containing only data.
+ */
+static void
+link_elf_locate_exidx(linker_file_t lf, Elf_Shdr *shdr, int nhdr)
+{
+	int i;
+
+	for (i = 0; i < nhdr; i++) {
+		if (shdr[i].sh_type == SHT_ARM_EXIDX) {
+			lf->exidx_addr = shdr[i].sh_addr + lf->address;
+			lf->exidx_size = shdr[i].sh_size;
+			break;
+		}
+	}
+}
+
+/*
+ * Locate the section headers metadata in a preloaded module, then use it to
+ * locate the exception/unwind table in the module.  The size of the metadata
+ * block is stored in a uint32 word immediately before the data itself, and a
+ * comment in preload_search_info() says it is safe to rely on that.
+ */
+static void
+link_elf_locate_exidx_preload(struct linker_file *lf, caddr_t modptr)
+{
+	uint32_t *modinfo;
+	Elf_Shdr *shdr;
+	uint32_t  nhdr;
+
+	modinfo = (uint32_t *)preload_search_info(modptr,
+	    MODINFO_METADATA | MODINFOMD_SHDR);
+	if (modinfo != NULL) {
+		shdr = (Elf_Shdr *)modinfo;
+		nhdr = modinfo[-1] / sizeof(Elf_Shdr);
+		link_elf_locate_exidx(lf, shdr, nhdr);
+	}
+}
+
+#endif /* __arm__ */
+
 static int
 link_elf_link_preload(linker_class_t cls, const char *filename,
     linker_file_t *result)
@@ -827,6 +880,10 @@ link_elf_link_preload(linker_class_t cls, const char *filename,
 		lf->ctors_addr = ef->address + *ctors_addrp;
 		lf->ctors_size = *ctors_sizep;
 	}
+
+#ifdef __arm__
+	link_elf_locate_exidx_preload(lf, modptr);
+#endif
 
 	error = parse_dynamic(ef);
 	if (error == 0)
@@ -1120,7 +1177,7 @@ link_elf_load_file(linker_class_t cls, const char* filename,
 #endif
 	link_elf_reloc_local(lf);
 
-	VOP_UNLOCK(nd.ni_vp, 0);
+	VOP_UNLOCK(nd.ni_vp);
 	error = linker_load_dependencies(lf);
 	vn_lock(nd.ni_vp, LK_EXCLUSIVE | LK_RETRY);
 	if (error != 0)
@@ -1225,6 +1282,11 @@ link_elf_load_file(linker_class_t cls, const char* filename,
 	ef->ddbstrtab = ef->strbase;
 
 nosyms:
+
+#ifdef __arm__
+	link_elf_locate_exidx(lf, shdr, hdr->e_shnum);
+#endif
+
 	error = link_elf_link_common_finish(lf);
 	if (error != 0)
 		goto out;
@@ -1232,7 +1294,7 @@ nosyms:
 	*result = lf;
 
 out:
-	VOP_UNLOCK(nd.ni_vp, 0);
+	VOP_UNLOCK(nd.ni_vp);
 	vn_close(nd.ni_vp, FREAD, td->td_ucred, td);
 	if (error != 0 && lf != NULL)
 		linker_file_unload(lf, LINKER_UNLOAD_FORCE);
@@ -1260,7 +1322,6 @@ elf_relocaddr(linker_file_t lf, Elf_Addr x)
 #endif
 	return (x);
 }
-
 
 static void
 link_elf_unload_file(linker_file_t file)

@@ -1,6 +1,5 @@
 /*-
  * Copyright (c) 2016 Jared McNeill <jmcneill@invisible.ca>
- * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -279,7 +278,7 @@ aw_sid_attach(device_t dev)
 		SYSCTL_ADD_PROC(device_get_sysctl_ctx(dev),
 		    SYSCTL_CHILDREN(device_get_sysctl_tree(dev)),
 		    OID_AUTO, sc->sid_conf->efuses[i].name,
-		    CTLTYPE_STRING | CTLFLAG_RD,
+		    CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_NEEDGIANT,
 		    dev, sc->sid_conf->efuses[i].id, aw_sid_sysctl,
 		    "A", sc->sid_conf->efuses[i].desc);
 	}

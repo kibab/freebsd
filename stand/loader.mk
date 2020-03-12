@@ -19,9 +19,6 @@ SRCS+=	load_elf32.c reloc_elf32.c
 SRCS+=	load_elf32.c reloc_elf32.c
 SRCS+=	load_elf64.c reloc_elf64.c
 SRCS+=	metadata.c
-.elif ${MACHINE_CPUARCH} == "sparc64"
-SRCS+=	load_elf64.c reloc_elf64.c
-SRCS+=	metadata.c
 .elif ${MACHINE_ARCH:Mmips64*} != ""
 SRCS+= load_elf64.c reloc_elf64.c
 SRCS+=	metadata.c
@@ -76,6 +73,9 @@ SRCS+=	interp_simple.c
 
 .if ${MK_LOADER_VERIEXEC} != "no"
 CFLAGS+= -DLOADER_VERIEXEC -I${SRCTOP}/lib/libsecureboot/h
+.if ${MK_LOADER_VERIEXEC_VECTX} != "no"
+CFLAGS+= -DLOADER_VERIEXEC_VECTX
+.endif
 .endif
 
 .if ${MK_LOADER_VERIEXEC_PASS_MANIFEST} != "no"

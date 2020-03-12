@@ -1382,7 +1382,8 @@ static const u_long pc_freemask[_NPCM] = {
 #endif
 };
 
-static SYSCTL_NODE(_vm, OID_AUTO, pmap, CTLFLAG_RD, 0, "VM/pmap parameters");
+static SYSCTL_NODE(_vm, OID_AUTO, pmap, CTLFLAG_RD | CTLFLAG_MPSAFE, 0,
+    "VM/pmap parameters");
 
 SYSCTL_INT(_vm_pmap, OID_AUTO, pv_entry_count, CTLFLAG_RD, &pv_entry_count, 0,
     "Current number of pv entries");
@@ -2158,7 +2159,7 @@ pmap_enter(pmap_t pmap, vm_offset_t va, vm_page_t m, vm_prot_t prot,
 			pv = pmap_pvh_remove(&om->md, pmap, va);
 			if (!pte_test(&newpte, PTE_MANAGED))
 				free_pv_entry(pmap, pv);
-			if ((om->aflags & PGA_WRITEABLE) != 0 &&
+			if ((om->a.flags & PGA_WRITEABLE) != 0 &&
 			    TAILQ_EMPTY(&om->md.pv_list))
 				vm_page_aflag_clear(om, PGA_WRITEABLE);
 		}
@@ -3223,7 +3224,7 @@ pmap_mincore(pmap_t pmap, vm_offset_t addr, vm_paddr_t *pap)
 		 * determine if the address is MINCORE_REFERENCED.
 		 */
 		m = PHYS_TO_VM_PAGE(pa);
-		if ((m->aflags & PGA_REFERENCED) != 0)
+		if ((m->a.flags & PGA_REFERENCED) != 0)
 			val |= MINCORE_REFERENCED | MINCORE_REFERENCED_OTHER;
 	}
 	if ((val & (MINCORE_MODIFIED_OTHER | MINCORE_REFERENCED_OTHER)) !=

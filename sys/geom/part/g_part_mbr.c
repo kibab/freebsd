@@ -52,7 +52,8 @@ __FBSDID("$FreeBSD$");
 FEATURE(geom_part_mbr, "GEOM partitioning class for MBR support");
 
 SYSCTL_DECL(_kern_geom_part);
-static SYSCTL_NODE(_kern_geom_part, OID_AUTO, mbr, CTLFLAG_RW, 0,
+static SYSCTL_NODE(_kern_geom_part, OID_AUTO, mbr,
+    CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "GEOM_PART_MBR Master Boot Record");
 
 static u_int enforce_chs = 0;
@@ -381,7 +382,7 @@ g_part_mbr_resize(struct g_part_table *basetable,
 		return (EINVAL);
 	/* XXX: prevent unexpected shrinking. */
 	pp = baseentry->gpe_pp;
-	if ((g_debugflags & 0x10) == 0 && size < gpp->gpp_size &&
+	if ((g_debugflags & G_F_FOOTSHOOTING) == 0 && size < gpp->gpp_size &&
 	    pp->mediasize / pp->sectorsize > size)
 		return (EBUSY);
 	entry = (struct g_part_mbr_entry *)baseentry;

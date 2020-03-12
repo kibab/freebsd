@@ -122,7 +122,7 @@ static void	smc_task_rx(void *, int);
 static void	smc_task_tx(void *, int);
 
 static driver_filter_t	smc_intr;
-static timeout_t	smc_watchdog;
+static callout_func_t	smc_watchdog;
 #ifdef DEVICE_POLLING
 static poll_handler_t	smc_poll;
 #endif
@@ -395,7 +395,7 @@ smc_attach(device_t dev)
 
 	/* Set up taskqueue */
 	TASK_INIT(&sc->smc_intr, SMC_INTR_PRIORITY, smc_task_intr, ifp);
-	TASK_INIT(&sc->smc_rx, SMC_RX_PRIORITY, smc_task_rx, ifp);
+	NET_TASK_INIT(&sc->smc_rx, SMC_RX_PRIORITY, smc_task_rx, ifp);
 	TASK_INIT(&sc->smc_tx, SMC_TX_PRIORITY, smc_task_tx, ifp);
 	sc->smc_tq = taskqueue_create_fast("smc_taskq", M_NOWAIT,
 	    taskqueue_thread_enqueue, &sc->smc_tq);

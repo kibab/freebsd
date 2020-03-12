@@ -197,8 +197,8 @@ sysctl_ip6_maxfragpackets(SYSCTL_HANDLER_ARGS)
 	return (0);
 }
 SYSCTL_PROC(_net_inet6_ip6, IPV6CTL_MAXFRAGPACKETS, maxfragpackets,
-	CTLFLAG_VNET | CTLTYPE_INT | CTLFLAG_RW, NULL, 0,
-	sysctl_ip6_maxfragpackets, "I",
+	CTLFLAG_VNET | CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+	NULL, 0, sysctl_ip6_maxfragpackets, "I",
 	"Default maximum number of outstanding fragmented IPv6 packets. "
 	"A value of 0 means no fragmented packets will be accepted, while a "
 	"a value of -1 means no limit");
@@ -389,11 +389,13 @@ frag6_input(struct mbuf **mp, int *offp, int proto)
 
 	M_ASSERTPKTHDR(m);
 
-	m = m_pullup(m, offset + sizeof(struct ip6_frag));
-	if (m == NULL) {
-		IP6STAT_INC(ip6s_exthdrtoolong);
-		*mp = NULL;
-		return (IPPROTO_DONE);
+	if (m->m_len < offset + sizeof(struct ip6_frag)) {
+		m = m_pullup(m, offset + sizeof(struct ip6_frag));
+		if (m == NULL) {
+			IP6STAT_INC(ip6s_exthdrtoolong);
+			*mp = NULL;
+			return (IPPROTO_DONE);
+		}
 	}
 	ip6 = mtod(m, struct ip6_hdr *);
 

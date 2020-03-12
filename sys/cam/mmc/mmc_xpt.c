@@ -1128,7 +1128,6 @@ mmcprobe_done(struct cam_periph *periph, union ccb *done_ccb)
                 //xpt_async(AC_LOST_DEVICE, path, NULL);
         }
 
-	xpt_release_ccb(done_ccb);
         if (softc->action != PROBE_INVALID)
                 xpt_schedule(periph, priority);
 	/* Drop freeze taken due to CAM_DEV_QFREEZE flag set. */
@@ -1145,8 +1144,38 @@ mmcprobe_done(struct cam_periph *periph, union ccb *done_ccb)
 			xpt_async(AC_FOUND_DEVICE, path, done_ccb);
 		}
 	}
+	xpt_release_ccb(done_ccb);
         if (softc->action == PROBE_DONE || softc->action == PROBE_INVALID) {
                 cam_periph_invalidate(periph);
                 cam_periph_release_locked(periph);
         }
+}
+
+void
+mmc_path_inq(struct ccb_pathinq *cpi, const char *hba,
+    const struct cam_sim *sim, size_t maxio)
+{
+
+	cpi->version_num = 1;
+	cpi->hba_inquiry = 0;
+	cpi->target_sprt = 0;
+	cpi->hba_misc = PIM_NOBUSRESET | PIM_SEQSCAN;
+	cpi->hba_eng_cnt = 0;
+	cpi->max_target = 0;
+	cpi->max_lun = 0;
+	cpi->initiator_id = 1;
+	cpi->maxio = maxio;
+	strncpy(cpi->sim_vid, "FreeBSD", SIM_IDLEN);
+	strncpy(cpi->hba_vid, hba, HBA_IDLEN);
+	strncpy(cpi->dev_name, cam_sim_name(sim), DEV_IDLEN);
+	cpi->unit_number = cam_sim_unit(sim);
+	cpi->bus_id = cam_sim_bus(sim);
+	cpi->protocol = PROTO_MMCSD;
+	cpi->protocol_version = SCSI_REV_0;
+	cpi->transport = XPORT_MMCSD;
+	cpi->transport_version = 1;
+
+	cpi->base_transfer_speed = 100; /* XXX WTF? */
+
+	cpi->ccb_h.status = CAM_REQ_CMP;
 }

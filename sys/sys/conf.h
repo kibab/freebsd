@@ -256,7 +256,6 @@ void make_dev_args_init_impl(struct make_dev_args *_args, size_t _sz);
 #define	make_dev_args_init(a) \
     make_dev_args_init_impl((a), sizeof(struct make_dev_args))
 	
-int	count_dev(struct cdev *_dev);
 void	delist_dev(struct cdev *_dev);
 void	destroy_dev(struct cdev *_dev);
 int	destroy_dev_sched(struct cdev *dev);
@@ -375,7 +374,7 @@ int dump_append(struct dumperinfo *, void *, vm_offset_t, size_t);
 int dump_write(struct dumperinfo *, void *, vm_offset_t, off_t, size_t);
 int dump_finish(struct dumperinfo *di, struct kerneldumpheader *kdh);
 void dump_init_header(const struct dumperinfo *di, struct kerneldumpheader *kdh,
-    char *magic, uint32_t archver, uint64_t dumplen);
+    const char *magic, uint32_t archver, uint64_t dumplen);
 
 #endif /* _KERNEL */
 

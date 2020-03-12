@@ -369,7 +369,8 @@ VNET_DEFINE(struct pf_keyhash *, pf_keyhash);
 VNET_DEFINE(struct pf_idhash *, pf_idhash);
 VNET_DEFINE(struct pf_srchash *, pf_srchash);
 
-SYSCTL_NODE(_net, OID_AUTO, pf, CTLFLAG_RW, 0, "pf(4)");
+SYSCTL_NODE(_net, OID_AUTO, pf, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "pf(4)");
 
 u_long	pf_hashmask;
 u_long	pf_srchashmask;
@@ -381,7 +382,7 @@ SYSCTL_ULONG(_net_pf, OID_AUTO, states_hashsize, CTLFLAG_RDTUN,
     &pf_hashsize, 0, "Size of pf(4) states hashtable");
 SYSCTL_ULONG(_net_pf, OID_AUTO, source_nodes_hashsize, CTLFLAG_RDTUN,
     &pf_srchashsize, 0, "Size of pf(4) source nodes hashtable");
-SYSCTL_ULONG(_net_pf, OID_AUTO, request_maxcount, CTLFLAG_RDTUN,
+SYSCTL_ULONG(_net_pf, OID_AUTO, request_maxcount, CTLFLAG_RW,
     &pf_ioctl_maxcount, 0, "Maximum number of tables, addresses, ... in a single ioctl() call");
 
 VNET_DEFINE(void *, pf_swi_cookie);
@@ -3755,7 +3756,8 @@ pf_create_state(struct pf_rule *r, struct pf_rule *nr, struct pf_rule *a,
 		    &s->src, &s->dst, rewrite)) {
 			/* This really shouldn't happen!!! */
 			DPFPRINTF(PF_DEBUG_URGENT,
-			    ("pf_normalize_tcp_stateful failed on first pkt"));
+			    ("pf_normalize_tcp_stateful failed on first "
+			     "pkt\n"));
 			pf_normalize_tcp_cleanup(s);
 			pf_src_tree_remove_state(s);
 			STATE_DEC_COUNTERS(s);

@@ -57,8 +57,8 @@ static void isp_loop_changed(ispsoftc_t *isp, int chan);
 static d_ioctl_t ispioctl;
 static void isp_cam_async(void *, uint32_t, struct cam_path *, void *);
 static void isp_poll(struct cam_sim *);
-static timeout_t isp_watchdog;
-static timeout_t isp_gdt;
+static callout_func_t isp_watchdog;
+static callout_func_t isp_gdt;
 static task_fn_t isp_gdt_task;
 static void isp_kthread(void *);
 static void isp_action(struct cam_sim *, union ccb *);
@@ -203,7 +203,8 @@ isp_attach_chan(ispsoftc_t *isp, struct cam_devq *devq, int chan)
 		if (chan > 0) {
 			snprintf(name, sizeof(name), "chan%d", chan);
 			tree = SYSCTL_ADD_NODE(ctx, SYSCTL_CHILDREN(tree),
-			    OID_AUTO, name, CTLFLAG_RW, 0, "Virtual channel");
+			    OID_AUTO, name, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+			    "Virtual channel");
 		}
 		SYSCTL_ADD_QUAD(ctx, SYSCTL_CHILDREN(tree), OID_AUTO,
 		    "wwnn", CTLFLAG_RD, &fcp->isp_wwnn,
@@ -223,8 +224,8 @@ isp_attach_chan(ispsoftc_t *isp, struct cam_devq *devq, int chan)
 		    "Cause a Lost Frame on a Read");
 #endif
 		SYSCTL_ADD_PROC(ctx, SYSCTL_CHILDREN(tree), OID_AUTO,
-		    "role", CTLTYPE_INT | CTLFLAG_RW, isp, chan,
-		    isp_role_sysctl, "I", "Current role");
+		    "role", CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+		    isp, chan, isp_role_sysctl, "I", "Current role");
 		SYSCTL_ADD_UINT(ctx, SYSCTL_CHILDREN(tree), OID_AUTO,
 		    "speed", CTLFLAG_RD, &fcp->isp_gbspeed, 0,
 		    "Connection speed in gigabits");
@@ -764,8 +765,8 @@ static cam_status create_lun_state(ispsoftc_t *, int, struct cam_path *, tstate_
 static void destroy_lun_state(ispsoftc_t *, int, tstate_t *);
 static void isp_enable_lun(ispsoftc_t *, union ccb *);
 static void isp_disable_lun(ispsoftc_t *, union ccb *);
-static timeout_t isp_refire_putback_atio;
-static timeout_t isp_refire_notify_ack;
+static callout_func_t isp_refire_putback_atio;
+static callout_func_t isp_refire_notify_ack;
 static void isp_complete_ctio(union ccb *);
 static void isp_target_putback_atio(union ccb *);
 enum Start_Ctio_How { FROM_CAM, FROM_TIMER, FROM_SRR, FROM_CTIO_DONE };

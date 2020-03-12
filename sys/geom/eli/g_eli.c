@@ -63,7 +63,8 @@ FEATURE(geom_eli, "GEOM crypto module");
 MALLOC_DEFINE(M_ELI, "eli data", "GEOM_ELI Data");
 
 SYSCTL_DECL(_kern_geom);
-SYSCTL_NODE(_kern_geom, OID_AUTO, eli, CTLFLAG_RW, 0, "GEOM_ELI stuff");
+SYSCTL_NODE(_kern_geom, OID_AUTO, eli, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "GEOM_ELI stuff");
 static int g_eli_version = G_ELI_VERSION;
 SYSCTL_INT(_kern_geom_eli, OID_AUTO, version, CTLFLAG_RD, &g_eli_version, 0,
     "GELI version");
@@ -429,6 +430,7 @@ g_eli_start(struct bio *bp)
 	case BIO_GETATTR:
 	case BIO_FLUSH:
 	case BIO_ZONE:
+	case BIO_SPEEDUP:
 		break;
 	case BIO_DELETE:
 		/*
@@ -468,6 +470,7 @@ g_eli_start(struct bio *bp)
 	case BIO_GETATTR:
 	case BIO_FLUSH:
 	case BIO_DELETE:
+	case BIO_SPEEDUP:
 	case BIO_ZONE:
 		if (bp->bio_cmd == BIO_GETATTR)
 			cbp->bio_done = g_eli_getattr_done;
@@ -1048,8 +1051,7 @@ g_eli_destroy(struct g_eli_softc *sc, boolean_t force)
 	bzero(sc, sizeof(*sc));
 	free(sc, M_ELI);
 
-	if (pp == NULL || (pp->acr == 0 && pp->acw == 0 && pp->ace == 0))
-		G_ELI_DEBUG(0, "Device %s destroyed.", gp->name);
+	G_ELI_DEBUG(0, "Device %s destroyed.", gp->name);
 	g_wither_geom_close(gp, ENXIO);
 
 	return (0);
@@ -1168,7 +1170,8 @@ g_eli_taste(struct g_class *mp, struct g_provider *pp, int flags __unused)
 	if (md.md_provsize != pp->mediasize)
 		return (NULL);
 	/* Should we attach it on boot? */
-	if (!(md.md_flags & G_ELI_FLAG_BOOT))
+	if (!(md.md_flags & G_ELI_FLAG_BOOT) &&
+	    !(md.md_flags & G_ELI_FLAG_GELIBOOT))
 		return (NULL);
 	if (md.md_keys == 0x00) {
 		G_ELI_DEBUG(0, "No valid keys on %s.", pp->name);

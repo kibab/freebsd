@@ -159,7 +159,8 @@ sysctl_netinet6_intr_queue_maxlen(SYSCTL_HANDLER_ARGS)
 }
 SYSCTL_DECL(_net_inet6_ip6);
 SYSCTL_PROC(_net_inet6_ip6, IPV6CTL_INTRQMAXLEN, intr_queue_maxlen,
-    CTLTYPE_INT|CTLFLAG_RW, 0, 0, sysctl_netinet6_intr_queue_maxlen, "I",
+    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE,
+    0, 0, sysctl_netinet6_intr_queue_maxlen, "I",
     "Maximum size of the IPv6 input queue");
 
 #ifdef RSS
@@ -186,8 +187,9 @@ sysctl_netinet6_intr_direct_queue_maxlen(SYSCTL_HANDLER_ARGS)
 	return (netisr_setqlimit(&ip6_direct_nh, qlimit));
 }
 SYSCTL_PROC(_net_inet6_ip6, IPV6CTL_INTRDQMAXLEN, intr_direct_queue_maxlen,
-    CTLTYPE_INT|CTLFLAG_RW, 0, 0, sysctl_netinet6_intr_direct_queue_maxlen,
-    "I", "Maximum size of the IPv6 direct input queue");
+    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE,
+    0, 0, sysctl_netinet6_intr_direct_queue_maxlen, "I",
+    "Maximum size of the IPv6 direct input queue");
 
 #endif
 
@@ -677,11 +679,10 @@ ip6_input(struct mbuf *m)
 	 * and bypass security checks (act as if it was from 127.0.0.1 by using
 	 * IPv6 src ::ffff:127.0.0.1).  Be cautious.
 	 *
-	 * This check chokes if we are in an SIIT cloud.  As none of BSDs
-	 * support IPv4-less kernel compilation, we cannot support SIIT
-	 * environment at all.  So, it makes more sense for us to reject any
-	 * malicious packets for non-SIIT environment, than try to do a
-	 * partial support for SIIT environment.
+	 * We have supported IPv6-only kernels for a few years and this issue
+	 * has not come up.  The world seems to move mostly towards not using
+	 * v4mapped on the wire, so it makes sense for us to keep rejecting
+	 * any such packets.
 	 */
 	if (IN6_IS_ADDR_V4MAPPED(&ip6->ip6_src) ||
 	    IN6_IS_ADDR_V4MAPPED(&ip6->ip6_dst)) {
@@ -897,24 +898,6 @@ passin:
 		return;
 	}
 
-	ip6 = mtod(m, struct ip6_hdr *);
-
-	/*
-	 * Malicious party may be able to use IPv4 mapped addr to confuse
-	 * tcp/udp stack and bypass security checks (act as if it was from
-	 * 127.0.0.1 by using IPv6 src ::ffff:127.0.0.1).  Be cautious.
-	 *
-	 * For SIIT end node behavior, you may want to disable the check.
-	 * However, you will  become vulnerable to attacks using IPv4 mapped
-	 * source.
-	 */
-	if (IN6_IS_ADDR_V4MAPPED(&ip6->ip6_src) ||
-	    IN6_IS_ADDR_V4MAPPED(&ip6->ip6_dst)) {
-		IP6STAT_INC(ip6s_badscope);
-		in6_ifstat_inc(rcvif, ifs6_in_addrerr);
-		goto bad;
-	}
-
 	/*
 	 * Tell launch routine the next header
 	 */
@@ -969,20 +952,24 @@ ip6_hopopts_input(u_int32_t *plenp, u_int32_t *rtalertp,
 	struct ip6_hbh *hbh;
 
 	/* validation of the length of the header */
-	m = m_pullup(m, off + sizeof(*hbh));
-	if (m == NULL) {
-		IP6STAT_INC(ip6s_exthdrtoolong);
-		*mp = NULL;
-		return (-1);
+	if (m->m_len < off + sizeof(*hbh)) {
+		m = m_pullup(m, off + sizeof(*hbh));
+		if (m == NULL) {
+			IP6STAT_INC(ip6s_exthdrtoolong);
+			*mp = NULL;
+			return (-1);
+		}
 	}
 	hbh = (struct ip6_hbh *)(mtod(m, caddr_t) + off);
 	hbhlen = (hbh->ip6h_len + 1) << 3;
 
-	m = m_pullup(m, off + hbhlen);
-	if (m == NULL) {
-		IP6STAT_INC(ip6s_exthdrtoolong);
-		*mp = NULL;
-		return (-1);
+	if (m->m_len < off + hbhlen) {
+		m = m_pullup(m, off + hbhlen);
+		if (m == NULL) {
+			IP6STAT_INC(ip6s_exthdrtoolong);
+			*mp = NULL;
+			return (-1);
+		}
 	}
 	hbh = (struct ip6_hbh *)(mtod(m, caddr_t) + off);
 	off += hbhlen;

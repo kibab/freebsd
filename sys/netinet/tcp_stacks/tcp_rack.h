@@ -137,7 +137,7 @@ struct rack_opts_stats {
 	uint64_t tcp_rack_min_pace_seg;
 	uint64_t tcp_rack_min_pace;
 	uint64_t tcp_rack_cheat;
-	uint64_t tcp_rack_no_sack;
+	uint64_t tcp_rack_do_detection;
 };
 
 #define TLP_USE_ID	1	/* Internet draft behavior */
@@ -251,7 +251,7 @@ struct rack_control {
 	uint32_t rc_rcvtime;	/* When we last received data */
 	uint32_t rc_num_split_allocs;	/* num split map entries allocated */
 
-	uint32_t rc_last_output_to; 
+	uint32_t rc_last_output_to;
 	uint32_t rc_went_idle_time;
 
 	struct rack_sendmap *rc_sacklast;	/* sack remembered place
@@ -266,7 +266,7 @@ struct rack_control {
 	/* Cache line split 0x140 */
 	/* Flags for various things */
 	uint32_t rc_pace_max_segs;
-	uint32_t rc_pace_min_segs;	
+	uint32_t rc_pace_min_segs;
 	uint32_t rc_high_rwnd;
 	uint32_t ack_count;
 	uint32_t sack_count;
@@ -300,7 +300,7 @@ struct tcp_rack {
 	TAILQ_ENTRY(tcp_rack) r_hpts;	/* hptsi queue next Lock(b) */
 	int32_t(*r_substate) (struct mbuf *, struct tcphdr *,
 	    struct socket *, struct tcpcb *, struct tcpopt *,
-	    int32_t, int32_t, uint32_t, int, int);	/* Lock(a) */
+	    int32_t, int32_t, uint32_t, int, int, uint8_t);	/* Lock(a) */
 	struct tcpcb *rc_tp;	/* The tcpcb Lock(a) */
 	struct inpcb *rc_inp;	/* The inpcb Lock(a) */
 	uint32_t rc_free_cnt;	/* Number of free entries on the rc_free list
@@ -333,7 +333,7 @@ struct tcp_rack {
 	uint8_t rc_allow_data_af_clo: 1,
 		delayed_ack : 1,
 		set_pacing_done_a_iw : 1,
-		use_rack_cheat : 1, 
+		use_rack_cheat : 1,
 		alloc_limit_reported : 1,
 		sack_attack_disable : 1,
 		do_detection : 1,

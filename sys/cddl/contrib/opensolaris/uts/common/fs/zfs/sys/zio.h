@@ -233,12 +233,11 @@ enum zio_wait_type {
 };
 
 /*
- * We'll take the number 122 and 123 to indicate checksum errors and
- * fragmentation. Those doesn't collide with any errno values as they
- * are greater than ELAST.
+ * These are bespoke errnos used in ZFS. We map them to their closest FreeBSD
+ * equivalents. This gives us more useful error messages from strerror(3).
  */
-#define	ECKSUM	122
-#define	EFRAGS	123
+#define	ECKSUM	EINTEGRITY
+#define	EFRAGS	ENOSPC
 
 typedef void zio_done_func_t(zio_t *zio);
 
@@ -307,6 +306,7 @@ typedef struct zio_prop {
 	boolean_t		zp_dedup;
 	boolean_t		zp_dedup_verify;
 	boolean_t		zp_nopwrite;
+	uint32_t		zp_zpl_smallblk;
 } zio_prop_t;
 
 typedef struct zio_cksum_report zio_cksum_report_t;
@@ -460,6 +460,7 @@ struct zio {
 	vdev_t		*io_vd;
 	void		*io_vsd;
 	const zio_vsd_ops_t *io_vsd_ops;
+	metaslab_class_t *io_metaslab_class;	/* dva throttle class */
 
 	uint64_t	io_offset;
 	hrtime_t	io_timestamp;
@@ -472,6 +473,9 @@ struct zio {
 
 #ifdef __FreeBSD__
 	struct bio	*io_bio;
+#ifdef _KERNEL
+	struct callout	io_timer;
+#endif
 #endif
 
 	/* Internal pipeline state */

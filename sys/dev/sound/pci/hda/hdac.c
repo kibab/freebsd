@@ -106,6 +106,7 @@ static const struct {
 	{ HDA_INTEL_ICLK,    "Intel Ice Lake",		0, 0 },
 	{ HDA_INTEL_CMLKLP,  "Intel Comet Lake-LP",	0, 0 },
 	{ HDA_INTEL_CMLKH,   "Intel Comet Lake-H",	0, 0 },
+	{ HDA_INTEL_TGLK,    "Intel Tiger Lake",	0, 0 },
 	{ HDA_INTEL_GMLK,    "Intel Gemini Lake",	0, 0 },
 	{ HDA_INTEL_82801F,  "Intel 82801F",	0, 0 },
 	{ HDA_INTEL_63XXESB, "Intel 631x/632xESB",	0, 0 },
@@ -1564,12 +1565,12 @@ hdac_attach2(void *arg)
 
 	SYSCTL_ADD_PROC(device_get_sysctl_ctx(sc->dev),
 	    SYSCTL_CHILDREN(device_get_sysctl_tree(sc->dev)), OID_AUTO,
-	    "pindump", CTLTYPE_INT | CTLFLAG_RW, sc->dev, sizeof(sc->dev),
-	    sysctl_hdac_pindump, "I", "Dump pin states/data");
+	    "pindump", CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT, sc->dev,
+	    sizeof(sc->dev), sysctl_hdac_pindump, "I", "Dump pin states/data");
 	SYSCTL_ADD_PROC(device_get_sysctl_ctx(sc->dev),
 	    SYSCTL_CHILDREN(device_get_sysctl_tree(sc->dev)), OID_AUTO,
-	    "polling", CTLTYPE_INT | CTLFLAG_RW, sc->dev, sizeof(sc->dev),
-	    sysctl_hdac_polling, "I", "Enable polling mode");
+	    "polling", CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT, sc->dev,
+	    sizeof(sc->dev), sysctl_hdac_polling, "I", "Enable polling mode");
 }
 
 /****************************************************************************

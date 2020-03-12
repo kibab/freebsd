@@ -206,7 +206,7 @@ static char an_conf_cache[256];
 
 /* sysctl vars */
 
-static SYSCTL_NODE(_hw, OID_AUTO, an, CTLFLAG_RD, 0,
+static SYSCTL_NODE(_hw, OID_AUTO, an, CTLFLAG_RD | CTLFLAG_MPSAFE, 0,
     "Wireless driver parameters");
 
 /* XXX violate ethernet/netgraph callback hooks */
@@ -266,8 +266,10 @@ sysctl_an_dump(SYSCTL_HANDLER_ARGS)
 	return error;
 }
 
-SYSCTL_PROC(_hw_an, OID_AUTO, an_dump, CTLTYPE_STRING | CTLFLAG_RW,
-	    0, sizeof(an_conf), sysctl_an_dump, "A", "");
+SYSCTL_PROC(_hw_an, OID_AUTO, an_dump,
+    CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_NEEDGIANT, 0, sizeof(an_conf),
+    sysctl_an_dump, "A",
+    "");
 
 static int
 sysctl_an_cache_mode(SYSCTL_HANDLER_ARGS)
@@ -302,8 +304,10 @@ sysctl_an_cache_mode(SYSCTL_HANDLER_ARGS)
 	return error;
 }
 
-SYSCTL_PROC(_hw_an, OID_AUTO, an_cache_mode, CTLTYPE_STRING | CTLFLAG_RW,
-	    0, sizeof(an_conf_cache), sysctl_an_cache_mode, "A", "");
+SYSCTL_PROC(_hw_an, OID_AUTO, an_cache_mode,
+    CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_NEEDGIANT, 0, sizeof(an_conf_cache),
+    sysctl_an_cache_mode, "A",
+    "");
 
 /*
  * We probe for an Aironet 4500/4800 card by attempting to
@@ -1875,6 +1879,7 @@ an_ioctl(struct ifnet *ifp, u_long command, caddr_t data)
 	int			len;
 	int			i, max;
 	struct an_softc		*sc;
+	struct an_req		*areq;
 	struct ifreq		*ifr;
 	struct thread		*td = curthread;
 	struct ieee80211req	*ireq;
@@ -1934,17 +1939,21 @@ an_ioctl(struct ifnet *ifp, u_long command, caddr_t data)
 		error = 0;
 		break;
 	case SIOCGAIRONET:
-		error = copyin(ifr_data_get_ptr(ifr), &sc->areq,
-		    sizeof(sc->areq));
-		if (error != 0)
+		error = priv_check(td, PRIV_DRIVER);
+		if (error)
 			break;
+		areq = malloc(sizeof(*areq), M_TEMP, M_WAITOK);
+		error = copyin(ifr_data_get_ptr(ifr), areq, sizeof(*areq));
+		if (error != 0) {
+			free(areq, M_TEMP);
+			break;
+		}
 		AN_LOCK(sc);
+		memcpy(&sc->areq, areq, sizeof(sc->areq));
 #ifdef ANCACHE
 		if (sc->areq.an_type == AN_RID_ZERO_CACHE) {
-			error = priv_check(td, PRIV_DRIVER);
-			if (error)
-				break;
 			sc->an_sigitems = sc->an_nextitem = 0;
+			free(areq, M_TEMP);
 			break;
 		} else if (sc->areq.an_type == AN_RID_READ_CACHE) {
 			char *pt = (char *)&sc->areq.an_val;
@@ -1960,12 +1969,14 @@ an_ioctl(struct ifnet *ifp, u_long command, caddr_t data)
 #endif
 		if (an_read_record(sc, (struct an_ltv_gen *)&sc->areq)) {
 			AN_UNLOCK(sc);
+			free(areq, M_TEMP);
 			error = EINVAL;
 			break;
 		}
+		memcpy(areq, &sc->areq, sizeof(*areq));
 		AN_UNLOCK(sc);
-		error = copyout(&sc->areq, ifr_data_get_ptr(ifr),
-		    sizeof(sc->areq));
+		error = copyout(areq, ifr_data_get_ptr(ifr), sizeof(*areq));
+		free(areq, M_TEMP);
 		break;
 	case SIOCSAIRONET:
 		if ((error = priv_check(td, PRIV_DRIVER)))

@@ -206,7 +206,7 @@ static driver_t ixl_if_driver = {
 ** TUNEABLE PARAMETERS:
 */
 
-static SYSCTL_NODE(_hw, OID_AUTO, ixl, CTLFLAG_RD, 0,
+static SYSCTL_NODE(_hw, OID_AUTO, ixl, CTLFLAG_RD | CTLFLAG_MPSAFE, 0,
     "ixl driver parameters");
 
 /*
@@ -398,10 +398,10 @@ ixl_if_attach_pre(if_ctx_t ctx)
 	enum i40e_status_code status;
 	int error = 0;
 
-	INIT_DBG_DEV(dev, "begin");
-
 	dev = iflib_get_dev(ctx);
 	pf = iflib_get_softc(ctx);
+
+	INIT_DBG_DEV(dev, "begin");
 
 	vsi = &pf->vsi;
 	vsi->back = pf;
@@ -588,10 +588,11 @@ ixl_if_attach_post(if_ctx_t ctx)
 	int error = 0;
 	enum i40e_status_code status;
 
-	INIT_DBG_DEV(dev, "begin");
-
 	dev = iflib_get_dev(ctx);
 	pf = iflib_get_softc(ctx);
+
+	INIT_DBG_DEV(dev, "begin");
+
 	vsi = &pf->vsi;
 	vsi->ifp = iflib_get_ifp(ctx);
 	hw = &pf->hw;
@@ -1624,11 +1625,29 @@ ixl_if_priv_ioctl(if_ctx_t ctx, u_long command, caddr_t data)
 	struct ifdrv *ifd = (struct ifdrv *)data;
 	int error = 0;
 
-	/* NVM update command */
-	if (ifd->ifd_cmd == I40E_NVM_ACCESS)
-		error = ixl_handle_nvmupd_cmd(pf, ifd);
-	else
-		error = EINVAL;
+	/*
+	 * The iflib_if_ioctl forwards SIOCxDRVSPEC and SIOGPRIVATE_0 without
+	 * performing privilege checks. It is important that this function
+	 * perform the necessary checks for commands which should only be
+	 * executed by privileged threads.
+	 */
+
+	switch(command) {
+	case SIOCGDRVSPEC:
+	case SIOCSDRVSPEC:
+		/* NVM update command */
+		if (ifd->ifd_cmd == I40E_NVM_ACCESS) {
+			error = priv_check(curthread, PRIV_DRIVER);
+			if (error)
+				break;
+			error = ixl_handle_nvmupd_cmd(pf, ifd);
+		} else {
+			error = EINVAL;
+		}
+		break;
+	default:
+		error = EOPNOTSUPP;
+	}
 
 	return (error);
 }

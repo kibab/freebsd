@@ -84,7 +84,8 @@ FEATURE(regression,
 
 static MALLOC_DEFINE(M_CRED, "cred", "credentials");
 
-SYSCTL_NODE(_security, OID_AUTO, bsd, CTLFLAG_RW, 0, "BSD security policy");
+SYSCTL_NODE(_security, OID_AUTO, bsd, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "BSD security policy");
 
 static void crsetgroups_locked(struct ucred *cr, int ngrp,
     gid_t *groups);
@@ -190,14 +191,21 @@ struct getsid_args {
 int
 sys_getsid(struct thread *td, struct getsid_args *uap)
 {
+
+	return (kern_getsid(td, uap->pid));
+}
+
+int
+kern_getsid(struct thread *td, pid_t pid)
+{
 	struct proc *p;
 	int error;
 
-	if (uap->pid == 0) {
+	if (pid == 0) {
 		p = td->td_proc;
 		PROC_LOCK(p);
 	} else {
-		p = pfind(uap->pid);
+		p = pfind(pid);
 		if (p == NULL)
 			return (ESRCH);
 		error = p_cansee(td, p);
@@ -1671,8 +1679,8 @@ sysctl_unprivileged_proc_debug(SYSCTL_HANDLER_ARGS)
  * systems.
  */
 SYSCTL_PROC(_security_bsd, OID_AUTO, unprivileged_proc_debug,
-    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_PRISON | CTLFLAG_SECURE, 0, 0,
-    sysctl_unprivileged_proc_debug, "I",
+    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_PRISON | CTLFLAG_SECURE |
+    CTLFLAG_MPSAFE, 0, 0, sysctl_unprivileged_proc_debug, "I",
     "Unprivileged processes may use process debugging facilities");
 
 /*-
@@ -1988,10 +1996,9 @@ proc_set_cred_init(struct proc *p, struct ucred *newcred)
  * only used when the process is about to be freed, at which point it should
  * not be visible anymore).
  */
-struct ucred *
+void
 proc_set_cred(struct proc *p, struct ucred *newcred)
 {
-	struct ucred *oldcred;
 
 	MPASS(p->p_ucred != NULL);
 	if (newcred == NULL)
@@ -1999,11 +2006,9 @@ proc_set_cred(struct proc *p, struct ucred *newcred)
 	else
 		PROC_LOCK_ASSERT(p, MA_OWNED);
 
-	oldcred = p->p_ucred;
 	p->p_ucred = newcred;
 	if (newcred != NULL)
 		PROC_UPDATE_COW(p);
-	return (oldcred);
 }
 
 struct ucred *
@@ -2050,7 +2055,7 @@ crextend(struct ucred *cr, int n)
 	 */
 	if ( n < PAGE_SIZE / sizeof(gid_t) ) {
 		if (cr->cr_agroups == 0)
-			cnt = MINALLOCSIZE / sizeof(gid_t);
+			cnt = MAX(1, MINALLOCSIZE / sizeof(gid_t));
 		else
 			cnt = cr->cr_agroups * 2;
 

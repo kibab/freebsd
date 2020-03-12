@@ -222,7 +222,7 @@ VNET_DEFINE_STATIC(int, current_state_timers_running6);
 
 SYSCTL_DECL(_net_inet6);	/* Note: Not in any common header. */
 
-SYSCTL_NODE(_net_inet6, OID_AUTO, mld, CTLFLAG_RW, 0,
+SYSCTL_NODE(_net_inet6, OID_AUTO, mld, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "IPv6 Multicast Listener Discovery");
 
 /*
@@ -283,6 +283,7 @@ mld_save_context(struct mbuf *m, struct ifnet *ifp)
 #ifdef VIMAGE
 	m->m_pkthdr.PH_loc.ptr = ifp->if_vnet;
 #endif /* VIMAGE */
+	m->m_pkthdr.rcvif = ifp;
 	m->m_pkthdr.flowid = ifp->if_index;
 }
 
@@ -1263,10 +1264,12 @@ mld_input(struct mbuf **mp, int off, int icmp6len)
 	ifp = m->m_pkthdr.rcvif;
 
 	/* Pullup to appropriate size. */
-	m = m_pullup(m, off + sizeof(*mld));
-	if (m == NULL) {
-		ICMP6STAT_INC(icp6s_badlen);
-		return (IPPROTO_DONE);
+	if (m->m_len < off + sizeof(*mld)) {
+		m = m_pullup(m, off + sizeof(*mld));
+		if (m == NULL) {
+			ICMP6STAT_INC(icp6s_badlen);
+			return (IPPROTO_DONE);
+		}
 	}
 	mld = (struct mld_hdr *)(mtod(m, uint8_t *) + off);
 	if (mld->mld_type == MLD_LISTENER_QUERY &&
@@ -1275,10 +1278,12 @@ mld_input(struct mbuf **mp, int off, int icmp6len)
 	} else {
 		mldlen = sizeof(struct mld_hdr);
 	}
-	m = m_pullup(m, off + mldlen);
-	if (m == NULL) {
-		ICMP6STAT_INC(icp6s_badlen);
-		return (IPPROTO_DONE);
+	if (m->m_len < off + mldlen) {
+		m = m_pullup(m, off + mldlen);
+		if (m == NULL) {
+			ICMP6STAT_INC(icp6s_badlen);
+			return (IPPROTO_DONE);
+		}
 	}
 	*mp = m;
 	ip6 = mtod(m, struct ip6_hdr *);
@@ -3091,6 +3096,7 @@ mld_dispatch_packet(struct mbuf *m)
 	uint32_t		 ifindex;
 
 	CTR2(KTR_MLD, "%s: transmit %p", __func__, m);
+	NET_EPOCH_ASSERT();
 
 	/*
 	 * Set VNET image pointer from enqueued mbuf chain
@@ -3153,6 +3159,7 @@ mld_dispatch_packet(struct mbuf *m)
 	mld = (struct mld_hdr *)(mtod(md, uint8_t *) + off);
 	type = mld->mld_type;
 
+	oifp = NULL;
 	error = ip6_output(m0, &mld_po, NULL, IPV6_UNSPECSRC, &im6o,
 	    &oifp, NULL);
 	if (error) {

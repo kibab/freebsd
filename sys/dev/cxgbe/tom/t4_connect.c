@@ -237,6 +237,7 @@ t4_connect(struct toedev *tod, struct socket *so, struct rtentry *rt,
 	struct tcpcb *tp = intotcpcb(inp);
 	int reason;
 	struct offload_settings settings;
+	struct epoch_tracker et;
 	uint16_t vid = 0xfff, pcp = 0;
 
 	INP_WLOCK_ASSERT(inp);
@@ -254,6 +255,8 @@ t4_connect(struct toedev *tod, struct socket *so, struct rtentry *rt,
 	} else if (rt_ifp->if_type == IFT_IEEE8023ADLAG)
 		DONT_OFFLOAD_ACTIVE_OPEN(ENOSYS); /* XXX: implement lagg+TOE */
 	else
+		DONT_OFFLOAD_ACTIVE_OPEN(ENOTSUP);
+	if (sc->flags & KERN_TLS_OK)
 		DONT_OFFLOAD_ACTIVE_OPEN(ENOTSUP);
 
 	rw_rlock(&sc->policy_lock);
@@ -369,7 +372,9 @@ t4_connect(struct toedev *tod, struct socket *so, struct rtentry *rt,
 	}
 
 	offload_socket(so, toep);
+	NET_EPOCH_ENTER(et);
 	rc = t4_l2t_send(sc, wr, toep->l2te);
+	NET_EPOCH_EXIT(et);
 	if (rc == 0) {
 		toep->flags |= TPF_CPL_PENDING;
 		return (0);

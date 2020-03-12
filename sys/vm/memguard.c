@@ -64,7 +64,8 @@ __FBSDID("$FreeBSD$");
 #include <vm/uma_int.h>
 #include <vm/memguard.h>
 
-static SYSCTL_NODE(_vm, OID_AUTO, memguard, CTLFLAG_RW, NULL, "MemGuard data");
+static SYSCTL_NODE(_vm, OID_AUTO, memguard, CTLFLAG_RW | CTLFLAG_MPSAFE, NULL,
+    "MemGuard data");
 /*
  * The vm_memguard_divisor variable controls how much of kernel_arena should be
  * reserved for MemGuard.
@@ -237,7 +238,7 @@ memguard_sysinit(void)
 	    CTLFLAG_RD, &memguard_mapsize,
 	    "MemGuard KVA size");
 	SYSCTL_ADD_PROC(NULL, parent, OID_AUTO, "mapused",
-	    CTLFLAG_RD | CTLTYPE_ULONG, NULL, 0, memguard_sysctl_mapused, "LU",
+	    CTLFLAG_RD | CTLFLAG_MPSAFE | CTLTYPE_ULONG, NULL, 0, memguard_sysctl_mapused, "LU",
 	    "MemGuard KVA used");
 }
 SYSINIT(memguard, SI_SUB_KLD, SI_ORDER_ANY, memguard_sysinit, NULL);
@@ -262,7 +263,7 @@ v2sizep(vm_offset_t va)
 	if (pa == 0)
 		panic("MemGuard detected double-free of %p", (void *)va);
 	p = PHYS_TO_VM_PAGE(pa);
-	KASSERT(vm_page_wired(p) && p->queue == PQ_NONE,
+	KASSERT(vm_page_wired(p) && p->a.queue == PQ_NONE,
 	    ("MEMGUARD: Expected wired page %p in vtomgfifo!", p));
 	return (&p->plinks.memguard.p);
 }
@@ -277,7 +278,7 @@ v2sizev(vm_offset_t va)
 	if (pa == 0)
 		panic("MemGuard detected double-free of %p", (void *)va);
 	p = PHYS_TO_VM_PAGE(pa);
-	KASSERT(vm_page_wired(p) && p->queue == PQ_NONE,
+	KASSERT(vm_page_wired(p) && p->a.queue == PQ_NONE,
 	    ("MEMGUARD: Expected wired page %p in vtomgfifo!", p));
 	return (&p->plinks.memguard.v);
 }
@@ -311,7 +312,7 @@ memguard_alloc(unsigned long req_size, int flags)
 	 * When we pass our memory limit, reject sub-page allocations.
 	 * Page-size and larger allocations will use the same amount
 	 * of physical memory whether we allocate or hand off to
-	 * uma_large_alloc(), so keep those.
+	 * malloc_large(), so keep those.
 	 */
 	if (vmem_size(memguard_arena, VMEM_ALLOC) >= memguard_physlimit &&
 	    req_size < PAGE_SIZE) {

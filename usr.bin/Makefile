@@ -31,7 +31,7 @@ SUBDIR=	alias \
 	diff \
 	dirname \
 	du \
-	elf2aout \
+	elfctl \
 	elfdump \
 	enigma \
 	env \
@@ -211,10 +211,8 @@ SUBDIR.${MK_GAMES}+=	number
 SUBDIR.${MK_GAMES}+=	pom
 SUBDIR.${MK_GAMES}+=	primes
 SUBDIR.${MK_GAMES}+=	random
-.if ${MK_GPL_DTC} != "yes"
 .if ${COMPILER_FEATURES:Mc++11}
 SUBDIR+=	dtc
-.endif
 .endif
 SUBDIR.${MK_HESIOD}+=	hesinfo
 SUBDIR.${MK_ICONV}+=	iconv
@@ -261,7 +259,7 @@ SUBDIR.${MK_TOOLCHAIN}+=	objcopy
 SUBDIR.${MK_TOOLCHAIN}+=	file2c
 # ARM64TODO gprof does not build
 # RISCVTODO gprof does not build
-.if ${MACHINE_ARCH} != "aarch64" && ${MACHINE_CPUARCH} != "riscv"
+.if ${MACHINE_ARCH} != "aarch64"
 SUBDIR.${MK_TOOLCHAIN}+=	gprof
 .endif
 SUBDIR.${MK_TOOLCHAIN}+=	indent

@@ -88,67 +88,22 @@ static int	tmpfs_root(struct mount *, int flags, struct vnode **);
 static int	tmpfs_fhtovp(struct mount *, struct fid *, int,
 		    struct vnode **);
 static int	tmpfs_statfs(struct mount *, struct statfs *);
-static void	tmpfs_susp_clean(struct mount *);
 
 static const char *tmpfs_opts[] = {
 	"from", "size", "maxfilesize", "inodes", "uid", "gid", "mode", "export",
-	"union", "nonc", NULL
+	"union", "nonc", "nomtime", NULL
 };
 
 static const char *tmpfs_updateopts[] = {
-	"from", "export", "size", NULL
+	"from", "export", "nomtime", "size", NULL
 };
 
-static int
-tmpfs_node_ctor(void *mem, int size, void *arg, int flags)
-{
-	struct tmpfs_node *node = (struct tmpfs_node *)mem;
-
-	node->tn_gen++;
-	node->tn_size = 0;
-	node->tn_status = 0;
-	node->tn_flags = 0;
-	node->tn_links = 0;
-	node->tn_vnode = NULL;
-	node->tn_vpstate = 0;
-
-	return (0);
-}
-
-static void
-tmpfs_node_dtor(void *mem, int size, void *arg)
-{
-	struct tmpfs_node *node = (struct tmpfs_node *)mem;
-	node->tn_type = VNON;
-}
-
-static int
-tmpfs_node_init(void *mem, int size, int flags)
-{
-	struct tmpfs_node *node = (struct tmpfs_node *)mem;
-	node->tn_id = 0;
-
-	mtx_init(&node->tn_interlock, "tmpfs node interlock", NULL, MTX_DEF);
-	node->tn_gen = arc4random();
-
-	return (0);
-}
-
-static void
-tmpfs_node_fini(void *mem, int size)
-{
-	struct tmpfs_node *node = (struct tmpfs_node *)mem;
-
-	mtx_destroy(&node->tn_interlock);
-}
-
 /*
- * Handle updates of time from writes to mmaped regions.  Use
- * MNT_VNODE_FOREACH_ALL instead of MNT_VNODE_FOREACH_ACTIVE, since
+ * Handle updates of time from writes to mmaped regions, if allowed.
+ * Use MNT_VNODE_FOREACH_ALL instead of MNT_VNODE_FOREACH_LAZY, since
  * unmap of the tmpfs-backed vnode does not call vinactive(), due to
- * vm object type is OBJT_SWAP.
- * If lazy, only handle delayed update of mtime due to the writes to
- * mapped files.
+ * vm object type is OBJT_SWAP.  If lazy, only handle delayed update
+ * of mtime due to the writes to mapped files.
  */
 static void
 tmpfs_update_mtime(struct mount *mp, bool lazy)
@@ -156,6 +111,8 @@ tmpfs_update_mtime(struct mount *mp, bool lazy)
 	struct vnode *vp, *mvp;
 	struct vm_object *obj;
 
+	if (VFS_TO_TMPFS(mp)->tm_nomtime)
+		return;
 	MNT_VNODE_FOREACH_ALL(vp, mp, mvp) {
 		if (vp->v_type != VREG) {
 			VI_UNLOCK(vp);
@@ -370,7 +327,7 @@ tmpfs_mount(struct mount *mp)
 	struct tmpfs_mount *tmp;
 	struct tmpfs_node *root;
 	int error;
-	bool nonc;
+	bool nomtime, nonc;
 	/* Size counters. */
 	u_quad_t pages;
 	off_t nodes_max, size_max, maxfilesize;
@@ -389,6 +346,7 @@ tmpfs_mount(struct mount *mp)
 		/* Only support update mounts for certain options. */
 		if (vfs_filteropt(mp->mnt_optnew, tmpfs_updateopts) != 0)
 			return (EOPNOTSUPP);
+		tmp = VFS_TO_TMPFS(mp);
 		if (vfs_getopt_size(mp->mnt_optnew, "size", &size_max) == 0) {
 			/*
 			 * On-the-fly resizing is not supported (yet). We still
@@ -397,27 +355,29 @@ tmpfs_mount(struct mount *mp)
 			 * parameter, say trying to change rw to ro or vice
 			 * versa, would cause vfs_filteropt() to bail.
 			 */
-			if (size_max != VFS_TO_TMPFS(mp)->tm_size_max)
+			if (size_max != tmp->tm_size_max)
 				return (EOPNOTSUPP);
 		}
 		if (vfs_flagopt(mp->mnt_optnew, "ro", NULL, 0) &&
-		    !(VFS_TO_TMPFS(mp)->tm_ronly)) {
+		    !tmp->tm_ronly) {
 			/* RW -> RO */
 			return (tmpfs_rw_to_ro(mp));
 		} else if (!vfs_flagopt(mp->mnt_optnew, "ro", NULL, 0) &&
-		    VFS_TO_TMPFS(mp)->tm_ronly) {
+		    tmp->tm_ronly) {
 			/* RO -> RW */
-			VFS_TO_TMPFS(mp)->tm_ronly = 0;
+			tmp->tm_ronly = 0;
 			MNT_ILOCK(mp);
 			mp->mnt_flag &= ~MNT_RDONLY;
 			MNT_IUNLOCK(mp);
 		}
+		tmp->tm_nomtime = vfs_getopt(mp->mnt_optnew, "nomtime", NULL,
+		    0) == 0;
 		return (0);
 	}
 
 	vn_lock(mp->mnt_vnodecovered, LK_SHARED | LK_RETRY);
 	error = VOP_GETATTR(mp->mnt_vnodecovered, &va, mp->mnt_cred);
-	VOP_UNLOCK(mp->mnt_vnodecovered, 0);
+	VOP_UNLOCK(mp->mnt_vnodecovered);
 	if (error)
 		return (error);
 
@@ -437,6 +397,7 @@ tmpfs_mount(struct mount *mp)
 	if (vfs_getopt_size(mp->mnt_optnew, "maxfilesize", &maxfilesize) != 0)
 		maxfilesize = 0;
 	nonc = vfs_getopt(mp->mnt_optnew, "nonc", NULL, NULL) == 0;
+	nomtime = vfs_getopt(mp->mnt_optnew, "nomtime", NULL, NULL) == 0;
 
 	/* Do not allow mounts if we do not have enough memory to preserve
 	 * the minimum reserved pages. */
@@ -481,22 +442,15 @@ tmpfs_mount(struct mount *mp)
 	tmp->tm_pages_max = pages;
 	tmp->tm_pages_used = 0;
 	new_unrhdr64(&tmp->tm_ino_unr, 2);
-	tmp->tm_dirent_pool = uma_zcreate("TMPFS dirent",
-	    sizeof(struct tmpfs_dirent), NULL, NULL, NULL, NULL,
-	    UMA_ALIGN_PTR, 0);
-	tmp->tm_node_pool = uma_zcreate("TMPFS node",
-	    sizeof(struct tmpfs_node), tmpfs_node_ctor, tmpfs_node_dtor,
-	    tmpfs_node_init, tmpfs_node_fini, UMA_ALIGN_PTR, 0);
 	tmp->tm_ronly = (mp->mnt_flag & MNT_RDONLY) != 0;
 	tmp->tm_nonc = nonc;
+	tmp->tm_nomtime = nomtime;
 
 	/* Allocate the root node. */
 	error = tmpfs_alloc_node(mp, tmp, VDIR, root_uid, root_gid,
 	    root_mode & ALLPERMS, NULL, NULL, VNOVAL, &root);
 
 	if (error != 0 || root == NULL) {
-		uma_zdestroy(tmp->tm_node_pool);
-		uma_zdestroy(tmp->tm_dirent_pool);
 		free(tmp, M_TMPFSMNT);
 		return (error);
 	}
@@ -589,9 +543,6 @@ tmpfs_free_tmp(struct tmpfs_mount *tmp)
 		return;
 	}
 	TMPFS_UNLOCK(tmp);
-
-	uma_zdestroy(tmp->tm_dirent_pool);
-	uma_zdestroy(tmp->tm_node_pool);
 
 	mtx_destroy(&tmp->tm_allnode_lock);
 	MPASS(tmp->tm_pages_used == 0);
@@ -694,18 +645,23 @@ tmpfs_sync(struct mount *mp, int waitfor)
 	return (0);
 }
 
-/*
- * The presence of a susp_clean method tells the VFS to track writes.
- */
-static void
-tmpfs_susp_clean(struct mount *mp __unused)
+static int
+tmpfs_init(struct vfsconf *conf)
 {
+	tmpfs_subr_init();
+	return (0);
+}
+
+static int
+tmpfs_uninit(struct vfsconf *conf)
+{
+	tmpfs_subr_uninit();
+	return (0);
 }
 
 /*
  * tmpfs vfs operations.
  */
-
 struct vfsops tmpfs_vfsops = {
 	.vfs_mount =			tmpfs_mount,
 	.vfs_unmount =			tmpfs_unmount,
@@ -714,6 +670,7 @@ struct vfsops tmpfs_vfsops = {
 	.vfs_statfs =			tmpfs_statfs,
 	.vfs_fhtovp =			tmpfs_fhtovp,
 	.vfs_sync =			tmpfs_sync,
-	.vfs_susp_clean =		tmpfs_susp_clean,
+	.vfs_init =			tmpfs_init,
+	.vfs_uninit =			tmpfs_uninit,
 };
 VFS_SET(tmpfs_vfsops, tmpfs, VFCF_JAIL);

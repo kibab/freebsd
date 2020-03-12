@@ -68,9 +68,77 @@ __FBSDID("$FreeBSD$");
 #include <fs/tmpfs/tmpfs_fifoops.h>
 #include <fs/tmpfs/tmpfs_vnops.h>
 
-SYSCTL_NODE(_vfs, OID_AUTO, tmpfs, CTLFLAG_RW, 0, "tmpfs file system");
+SYSCTL_NODE(_vfs, OID_AUTO, tmpfs, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "tmpfs file system");
 
 static long tmpfs_pages_reserved = TMPFS_PAGES_MINRESERVED;
+
+static uma_zone_t tmpfs_dirent_pool;
+static uma_zone_t tmpfs_node_pool;
+
+static int
+tmpfs_node_ctor(void *mem, int size, void *arg, int flags)
+{
+	struct tmpfs_node *node;
+
+	node = mem;
+	node->tn_gen++;
+	node->tn_size = 0;
+	node->tn_status = 0;
+	node->tn_flags = 0;
+	node->tn_links = 0;
+	node->tn_vnode = NULL;
+	node->tn_vpstate = 0;
+	return (0);
+}
+
+static void
+tmpfs_node_dtor(void *mem, int size, void *arg)
+{
+	struct tmpfs_node *node;
+
+	node = mem;
+	node->tn_type = VNON;
+}
+
+static int
+tmpfs_node_init(void *mem, int size, int flags)
+{
+	struct tmpfs_node *node;
+
+	node = mem;
+	node->tn_id = 0;
+	mtx_init(&node->tn_interlock, "tmpfsni", NULL, MTX_DEF);
+	node->tn_gen = arc4random();
+	return (0);
+}
+
+static void
+tmpfs_node_fini(void *mem, int size)
+{
+	struct tmpfs_node *node;
+
+	node = mem;
+	mtx_destroy(&node->tn_interlock);
+}
+
+void
+tmpfs_subr_init(void)
+{
+	tmpfs_dirent_pool = uma_zcreate("TMPFS dirent",
+	    sizeof(struct tmpfs_dirent), NULL, NULL, NULL, NULL,
+	    UMA_ALIGN_PTR, 0);
+	tmpfs_node_pool = uma_zcreate("TMPFS node",
+	    sizeof(struct tmpfs_node), tmpfs_node_ctor, tmpfs_node_dtor,
+	    tmpfs_node_init, tmpfs_node_fini, UMA_ALIGN_PTR, 0);
+}
+
+void
+tmpfs_subr_uninit(void)
+{
+	uma_zdestroy(tmpfs_node_pool);
+	uma_zdestroy(tmpfs_dirent_pool);
+}
 
 static int
 sysctl_mem_reserved(SYSCTL_HANDLER_ARGS)
@@ -93,8 +161,9 @@ sysctl_mem_reserved(SYSCTL_HANDLER_ARGS)
 	return (0);
 }
 
-SYSCTL_PROC(_vfs_tmpfs, OID_AUTO, memory_reserved, CTLTYPE_LONG|CTLFLAG_RW,
-    &tmpfs_pages_reserved, 0, sysctl_mem_reserved, "L",
+SYSCTL_PROC(_vfs_tmpfs, OID_AUTO, memory_reserved,
+    CTLTYPE_LONG|CTLFLAG_MPSAFE|CTLFLAG_RW, &tmpfs_pages_reserved, 0,
+    sysctl_mem_reserved, "L",
     "Amount of available memory and swap below which tmpfs growth stops");
 
 static __inline int tmpfs_dirtree_cmp(struct tmpfs_dirent *a,
@@ -219,8 +288,7 @@ tmpfs_alloc_node(struct mount *mp, struct tmpfs_mount *tmp, enum vtype type,
 	if ((mp->mnt_kern_flag & MNT_RDONLY) != 0)
 		return (EROFS);
 
-	nnode = (struct tmpfs_node *)uma_zalloc_arg(tmp->tm_node_pool, tmp,
-	    M_WAITOK);
+	nnode = uma_zalloc_arg(tmpfs_node_pool, tmp, M_WAITOK);
 
 	/* Generic initialization. */
 	nnode->tn_type = type;
@@ -273,8 +341,7 @@ tmpfs_alloc_node(struct mount *mp, struct tmpfs_mount *tmp, enum vtype type,
 			NULL /* XXXKIB - tmpfs needs swap reservation */);
 		VM_OBJECT_WLOCK(obj);
 		/* OBJ_TMPFS is set together with the setting of vp->v_object */
-		vm_object_set_flag(obj, OBJ_NOSPLIT | OBJ_TMPFS_NODE);
-		vm_object_clear_flag(obj, OBJ_ONEMAPPING);
+		vm_object_set_flag(obj, OBJ_TMPFS_NODE);
 		VM_OBJECT_WUNLOCK(obj);
 		break;
 
@@ -368,7 +435,7 @@ tmpfs_free_node_locked(struct tmpfs_mount *tmp, struct tmpfs_node *node,
 		panic("tmpfs_free_node: type %p %d", node, (int)node->tn_type);
 	}
 
-	uma_zfree(tmp->tm_node_pool, node);
+	uma_zfree(tmpfs_node_pool, node);
 	TMPFS_LOCK(tmp);
 	tmpfs_free_tmp(tmp);
 	return (true);
@@ -435,7 +502,7 @@ tmpfs_alloc_dirent(struct tmpfs_mount *tmp, struct tmpfs_node *node,
 {
 	struct tmpfs_dirent *nde;
 
-	nde = uma_zalloc(tmp->tm_dirent_pool, M_WAITOK);
+	nde = uma_zalloc(tmpfs_dirent_pool, M_WAITOK);
 	nde->td_node = node;
 	if (name != NULL) {
 		nde->ud.td_name = malloc(len, M_TMPFSNAME, M_WAITOK);
@@ -471,7 +538,7 @@ tmpfs_free_dirent(struct tmpfs_mount *tmp, struct tmpfs_dirent *de)
 	}
 	if (!tmpfs_dirent_duphead(de) && de->ud.td_name != NULL)
 		free(de->ud.td_name, M_TMPFSNAME);
-	uma_zfree(tmp->tm_dirent_pool, de);
+	uma_zfree(tmpfs_dirent_pool, de);
 }
 
 void
@@ -533,15 +600,15 @@ loop:
 		MPASS((node->tn_vpstate & TMPFS_VNODE_DOOMED) == 0);
 		VI_LOCK(vp);
 		if ((node->tn_type == VDIR && node->tn_dir.tn_parent == NULL) ||
-		    ((vp->v_iflag & VI_DOOMED) != 0 &&
-		    (lkflag & LK_NOWAIT) != 0)) {
+		    (VN_IS_DOOMED(vp) &&
+		     (lkflag & LK_NOWAIT) != 0)) {
 			VI_UNLOCK(vp);
 			TMPFS_NODE_UNLOCK(node);
 			error = ENOENT;
 			vp = NULL;
 			goto out;
 		}
-		if ((vp->v_iflag & VI_DOOMED) != 0) {
+		if (VN_IS_DOOMED(vp)) {
 			VI_UNLOCK(vp);
 			node->tn_vpstate |= TMPFS_VNODE_WRECLAIM;
 			while ((node->tn_vpstate & TMPFS_VNODE_WRECLAIM) != 0) {
@@ -606,7 +673,7 @@ loop:
 	MPASS(vp != NULL);
 
 	/* lkflag is ignored, the lock is exclusive */
-	(void) vn_lock(vp, lkflag | LK_RETRY);
+	(void) vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
 
 	vp->v_data = node;
 	vp->v_type = node->tn_type;
@@ -1414,8 +1481,12 @@ retry:
 				    VM_ALLOC_WAITFAIL);
 				if (m == NULL)
 					goto retry;
+				vm_object_pip_add(uobj, 1);
+				VM_OBJECT_WUNLOCK(uobj);
 				rv = vm_pager_get_pages(uobj, &m, 1, NULL,
 				    NULL);
+				VM_OBJECT_WLOCK(uobj);
+				vm_object_pip_wakeup(uobj);
 				if (rv == VM_PAGER_OK) {
 					/*
 					 * Since the page was not resident,
@@ -1425,9 +1496,7 @@ retry:
 					 * current operation is not regarded
 					 * as an access.
 					 */
-					vm_page_lock(m);
 					vm_page_launder(m);
-					vm_page_unlock(m);
 				} else {
 					vm_page_free(m);
 					if (ignerr)
@@ -1440,9 +1509,8 @@ retry:
 			}
 			if (m != NULL) {
 				pmap_zero_page_area(m, base, PAGE_SIZE - base);
-				vm_page_dirty(m);
+				vm_page_set_dirty(m);
 				vm_page_xunbusy(m);
-				vm_pager_page_unswapped(m);
 			}
 		}
 
@@ -1820,13 +1888,6 @@ tmpfs_itimes(struct vnode *vp, const struct timespec *acc,
 
 	/* XXX: FIX? The entropy here is desirable, but the harvesting may be expensive */
 	random_harvest_queue(node, sizeof(*node), RANDOM_FS_ATIME);
-}
-
-void
-tmpfs_update(struct vnode *vp)
-{
-
-	tmpfs_itimes(vp, NULL, NULL);
 }
 
 int

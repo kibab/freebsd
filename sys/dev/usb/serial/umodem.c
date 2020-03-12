@@ -6,8 +6,7 @@ __FBSDID("$FreeBSD$");
 /*-
  * SPDX-License-Identifier: BSD-2-Clause-FreeBSD AND BSD-2-Clause-NetBSD
  *
- * Copyright (c) 2003, M. Warner Losh <imp@FreeBSD.org>.
- * All rights reserved.
+ * Copyright (c) 2003 M. Warner Losh <imp@FreeBSD.org>
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -114,7 +113,8 @@ __FBSDID("$FreeBSD$");
 #ifdef USB_DEBUG
 static int umodem_debug = 0;
 
-static SYSCTL_NODE(_hw_usb, OID_AUTO, umodem, CTLFLAG_RW, 0, "USB umodem");
+static SYSCTL_NODE(_hw_usb, OID_AUTO, umodem, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "USB umodem");
 SYSCTL_INT(_hw_usb_umodem, OID_AUTO, debug, CTLFLAG_RWTUN,
     &umodem_debug, 0, "Debug level");
 #endif

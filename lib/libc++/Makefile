@@ -4,14 +4,9 @@
 
 PACKAGE=	clibs
 _LIBCXXRTDIR=	${SRCTOP}/contrib/libcxxrt
-HDRDIR=		${SRCTOP}/contrib/libc++/include
-SRCDIR=		${SRCTOP}/contrib/libc++/src
+HDRDIR=		${SRCTOP}/contrib/llvm-project/libcxx/include
+SRCDIR=		${SRCTOP}/contrib/llvm-project/libcxx/src
 CXXINCLUDEDIR=	${INCLUDEDIR}/c++/v${SHLIB_MAJOR}
-.if ${MACHINE_CPUARCH} == "arm"
-STATIC_CXXFLAGS+= -mlong-calls
-.endif
-
-ALLOW_MIPS_SHARED_TEXTREL=
 
 .PATH: ${SRCDIR}
 
@@ -80,7 +75,9 @@ CFLAGS+=	-nostdinc++
 CFLAGS+=	-nostdlib
 CFLAGS+=	-D_LIBCPP_BUILDING_LIBRARY
 CFLAGS+=	-DLIBCXXRT
-CXXSTD?=	c++11
+CFLAGS+=	-ffunction-sections
+CFLAGS+=	-fdata-sections
+CXXSTD?=	c++14
 
 LIBADD+=	cxxrt
 INCSGROUPS=	STD EXP EXT

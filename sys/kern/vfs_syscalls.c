@@ -114,17 +114,8 @@ static int kern_readlink_vp(struct vnode *vp, char *buf, enum uio_seg bufseg,
 static int kern_linkat_vp(struct thread *td, struct vnode *vp, int fd,
     const char *path, enum uio_seg segflag);
 
-/*
- * Sync each mounted filesystem.
- */
-#ifndef _SYS_SYSPROTO_H_
-struct sync_args {
-	int     dummy;
-};
-#endif
-/* ARGSUSED */
 int
-sys_sync(struct thread *td, struct sync_args *uap)
+kern_sync(struct thread *td)
 {
 	struct mount *mp, *nmp;
 	int save;
@@ -138,7 +129,7 @@ sys_sync(struct thread *td, struct sync_args *uap)
 		if ((mp->mnt_flag & MNT_RDONLY) == 0 &&
 		    vn_start_write(NULL, &mp, V_NOWAIT) == 0) {
 			save = curthread_pflags_set(TDP_SYNCIO);
-			vfs_msync(mp, MNT_NOWAIT);
+			vfs_periodic(mp, MNT_NOWAIT);
 			VFS_SYNC(mp, MNT_NOWAIT);
 			curthread_pflags_restore(save);
 			vn_finished_write(mp);
@@ -149,6 +140,22 @@ sys_sync(struct thread *td, struct sync_args *uap)
 	}
 	mtx_unlock(&mountlist_mtx);
 	return (0);
+}
+
+/*
+ * Sync each mounted filesystem.
+ */
+#ifndef _SYS_SYSPROTO_H_
+struct sync_args {
+	int     dummy;
+};
+#endif
+/* ARGSUSED */
+int
+sys_sync(struct thread *td, struct sync_args *uap)
+{
+
+	return (kern_sync(td));
 }
 
 /*
@@ -182,9 +189,10 @@ sys_quotactl(struct thread *td, struct quotactl_args *uap)
 	vfs_ref(mp);
 	vput(nd.ni_vp);
 	error = vfs_busy(mp, 0);
-	vfs_rel(mp);
-	if (error != 0)
+	if (error != 0) {
+		vfs_rel(mp);
 		return (error);
+	}
 	error = VFS_QUOTACTL(mp, uap->cmd, uap->uid, uap->arg);
 
 	/*
@@ -201,6 +209,7 @@ sys_quotactl(struct thread *td, struct quotactl_args *uap)
 	if ((uap->cmd >> SUBCMDSHIFT) != Q_QUOTAON &&
 	    (uap->cmd >> SUBCMDSHIFT) != Q_QUOTAOFF)
 		vfs_unbusy(mp);
+	vfs_rel(mp);
 	return (error);
 }
 
@@ -264,7 +273,7 @@ kern_do_statfs(struct thread *td, struct mount *mp, struct statfs *buf)
 	error = VFS_STATFS(mp, buf);
 	if (error != 0)
 		goto out;
-	if (priv_check(td, PRIV_VFS_GENERATION)) {
+	if (priv_check_cred_vfs_generation(td->td_ucred)) {
 		buf->f_fsid.val[0] = buf->f_fsid.val[1] = 0;
 		prison_enforce_statfs(td->td_ucred, mp, buf);
 	}
@@ -359,7 +368,7 @@ kern_fstatfs(struct thread *td, int fd, struct statfs *buf)
 	mp = vp->v_mount;
 	if (mp != NULL)
 		vfs_ref(mp);
-	VOP_UNLOCK(vp, 0);
+	VOP_UNLOCK(vp);
 	fdrop(fp, td);
 	return (kern_do_statfs(td, mp, buf));
 }
@@ -479,7 +488,7 @@ restart:
 					continue;
 				}
 			}
-			if (priv_check(td, PRIV_VFS_GENERATION)) {
+			if (priv_check_cred_vfs_generation(td->td_ucred)) {
 				sptmp = malloc(sizeof(struct statfs), M_STATFS,
 				    M_WAITOK);
 				*sptmp = *sp;
@@ -847,7 +856,7 @@ sys_fchdir(struct thread *td, struct fchdir_args *uap)
 		vput(vp);
 		return (error);
 	}
-	VOP_UNLOCK(vp, 0);
+	VOP_UNLOCK(vp);
 	pwd_chdir(td, vp);
 	return (0);
 }
@@ -882,7 +891,7 @@ kern_chdir(struct thread *td, const char *path, enum uio_seg pathseg)
 		NDFREE(&nd, NDF_ONLY_PNBUF);
 		return (error);
 	}
-	VOP_UNLOCK(nd.ni_vp, 0);
+	VOP_UNLOCK(nd.ni_vp);
 	NDFREE(&nd, NDF_ONLY_PNBUF);
 	pwd_chdir(td, nd.ni_vp);
 	return (0);
@@ -918,7 +927,7 @@ sys_chroot(struct thread *td, struct chroot_args *uap)
 	if (error != 0)
 		goto e_vunlock;
 #endif
-	VOP_UNLOCK(nd.ni_vp, 0);
+	VOP_UNLOCK(nd.ni_vp);
 	error = pwd_chroot(td, nd.ni_vp);
 	vrele(nd.ni_vp);
 	NDFREE(&nd, NDF_ONLY_PNBUF);
@@ -957,34 +966,34 @@ flags_to_rights(int flags, cap_rights_t *rightsp)
 {
 
 	if (flags & O_EXEC) {
-		cap_rights_set(rightsp, CAP_FEXECVE);
+		cap_rights_set_one(rightsp, CAP_FEXECVE);
 	} else {
 		switch ((flags & O_ACCMODE)) {
 		case O_RDONLY:
-			cap_rights_set(rightsp, CAP_READ);
+			cap_rights_set_one(rightsp, CAP_READ);
 			break;
 		case O_RDWR:
-			cap_rights_set(rightsp, CAP_READ);
+			cap_rights_set_one(rightsp, CAP_READ);
 			/* FALLTHROUGH */
 		case O_WRONLY:
-			cap_rights_set(rightsp, CAP_WRITE);
+			cap_rights_set_one(rightsp, CAP_WRITE);
 			if (!(flags & (O_APPEND | O_TRUNC)))
-				cap_rights_set(rightsp, CAP_SEEK);
+				cap_rights_set_one(rightsp, CAP_SEEK);
 			break;
 		}
 	}
 
 	if (flags & O_CREAT)
-		cap_rights_set(rightsp, CAP_CREATE);
+		cap_rights_set_one(rightsp, CAP_CREATE);
 
 	if (flags & O_TRUNC)
-		cap_rights_set(rightsp, CAP_FTRUNCATE);
+		cap_rights_set_one(rightsp, CAP_FTRUNCATE);
 
 	if (flags & (O_SYNC | O_FSYNC))
-		cap_rights_set(rightsp, CAP_FSYNC);
+		cap_rights_set_one(rightsp, CAP_FSYNC);
 
 	if (flags & (O_EXLOCK | O_SHLOCK))
-		cap_rights_set(rightsp, CAP_FLOCK);
+		cap_rights_set_one(rightsp, CAP_FLOCK);
 }
 
 /*
@@ -1039,7 +1048,7 @@ kern_openat(struct thread *td, int fd, const char *path, enum uio_seg pathseg,
 
 	AUDIT_ARG_FFLAGS(flags);
 	AUDIT_ARG_MODE(mode);
-	cap_rights_init(&rights, CAP_LOOKUP);
+	cap_rights_init_one(&rights, CAP_LOOKUP);
 	flags_to_rights(flags, &rights);
 	/*
 	 * Only one of the O_EXEC, O_RDONLY, O_WRONLY and O_RDWR flags
@@ -1120,7 +1129,7 @@ kern_openat(struct thread *td, int fd, const char *path, enum uio_seg pathseg,
 		    DTYPE_VNODE, vp, &vnops);
 	}
 
-	VOP_UNLOCK(vp, 0);
+	VOP_UNLOCK(vp);
 	if (flags & O_TRUNC) {
 		error = fo_truncate(fp, 0, td->td_ucred, td);
 		if (error != 0)
@@ -1561,7 +1570,7 @@ kern_linkat_vp(struct thread *td, struct vnode *vp, int fd, const char *path,
 				return (EAGAIN);
 			}
 			error = VOP_LINK(nd.ni_dvp, vp, &nd.ni_cnd);
-			VOP_UNLOCK(vp, 0);
+			VOP_UNLOCK(vp);
 			vput(nd.ni_dvp);
 			vn_finished_write(mp);
 			NDFREE(&nd, NDF_ONLY_PNBUF);
@@ -1820,7 +1829,7 @@ restart:
 		  sb.st_ino != oldinum) {
 		error = EIDRM;	/* Identifier removed */
 	} else if (fp != NULL && fp->f_vnode != vp) {
-		if ((fp->f_vnode->v_iflag & VI_DOOMED) != 0)
+		if (VN_IS_DOOMED(fp->f_vnode))
 			error = EBADF;
 		else
 			error = EDEADLK;
@@ -2340,8 +2349,6 @@ kern_statat(struct thread *td, int flag, int fd, const char *path,
 	}
 	NDFREE(&nd, NDF_ONLY_PNBUF);
 	vput(nd.ni_vp);
-	if (error != 0)
-		return (error);
 #ifdef __STAT_TIME_T_EXT
 	sbp->st_atim_ext = 0;
 	sbp->st_mtim_ext = 0;
@@ -2350,9 +2357,9 @@ kern_statat(struct thread *td, int flag, int fd, const char *path,
 #endif
 #ifdef KTRACE
 	if (KTRPOINT(td, KTR_STRUCT))
-		ktrstat(sbp);
+		ktrstat_error(sbp, error);
 #endif
-	return (0);
+	return (error);
 }
 
 #if defined(COMPAT_FREEBSD11)
@@ -2615,7 +2622,7 @@ setfflags(struct thread *td, struct vnode *vp, u_long flags)
 	if (error == 0)
 #endif
 		error = VOP_SETATTR(vp, &vattr, td->td_ucred);
-	VOP_UNLOCK(vp, 0);
+	VOP_UNLOCK(vp);
 	vn_finished_write(mp);
 	return (error);
 }
@@ -2717,7 +2724,7 @@ sys_fchflags(struct thread *td, struct fchflags_args *uap)
 #ifdef AUDIT
 	vn_lock(fp->f_vnode, LK_SHARED | LK_RETRY);
 	AUDIT_ARG_VNODE1(fp->f_vnode);
-	VOP_UNLOCK(fp->f_vnode, 0);
+	VOP_UNLOCK(fp->f_vnode);
 #endif
 	error = setfflags(td, fp->f_vnode, uap->flags);
 	fdrop(fp, td);
@@ -2744,7 +2751,7 @@ setfmode(struct thread *td, struct ucred *cred, struct vnode *vp, int mode)
 	if (error == 0)
 #endif
 		error = VOP_SETATTR(vp, &vattr, cred);
-	VOP_UNLOCK(vp, 0);
+	VOP_UNLOCK(vp);
 	vn_finished_write(mp);
 	return (error);
 }
@@ -2871,7 +2878,7 @@ setfown(struct thread *td, struct ucred *cred, struct vnode *vp, uid_t uid,
 	if (error == 0)
 #endif
 		error = VOP_SETATTR(vp, &vattr, cred);
-	VOP_UNLOCK(vp, 0);
+	VOP_UNLOCK(vp);
 	vn_finished_write(mp);
 	return (error);
 }
@@ -3090,7 +3097,7 @@ setutimes(struct thread *td, struct vnode *vp, const struct timespec *ts,
 #endif
 	if (error == 0)
 		error = VOP_SETATTR(vp, &vattr, td->td_ucred);
-	VOP_UNLOCK(vp, 0);
+	VOP_UNLOCK(vp);
 	vn_finished_write(mp);
 	return (error);
 }
@@ -3218,7 +3225,7 @@ kern_futimes(struct thread *td, int fd, struct timeval *tptr,
 #ifdef AUDIT
 	vn_lock(fp->f_vnode, LK_SHARED | LK_RETRY);
 	AUDIT_ARG_VNODE1(fp->f_vnode);
-	VOP_UNLOCK(fp->f_vnode, 0);
+	VOP_UNLOCK(fp->f_vnode);
 #endif
 	error = setutimes(td, fp->f_vnode, ts, 2, tptr == NULL);
 	fdrop(fp, td);
@@ -3252,7 +3259,7 @@ kern_futimens(struct thread *td, int fd, struct timespec *tptr,
 #ifdef AUDIT
 	vn_lock(fp->f_vnode, LK_SHARED | LK_RETRY);
 	AUDIT_ARG_VNODE1(fp->f_vnode);
-	VOP_UNLOCK(fp->f_vnode, 0);
+	VOP_UNLOCK(fp->f_vnode);
 #endif
 	error = setutimes(td, fp->f_vnode, ts, 2, flags & UTIMENS_NULL);
 	fdrop(fp, td);
@@ -3353,7 +3360,7 @@ kern_truncate(struct thread *td, const char *path, enum uio_seg pathseg,
 		vattr.va_size = length;
 		error = VOP_SETATTR(vp, &vattr, td->td_ucred);
 	}
-	VOP_UNLOCK(vp, 0);
+	VOP_UNLOCK(vp);
 	vn_finished_write(mp);
 	vn_rangelock_unlock(vp, rl_cookie);
 	vrele(vp);
@@ -3429,7 +3436,7 @@ kern_fsync(struct thread *td, int fd, bool fullsync)
 		VM_OBJECT_WUNLOCK(vp->v_object);
 	}
 	error = fullsync ? VOP_FSYNC(vp, MNT_WAIT, td) : VOP_FDATASYNC(vp, td);
-	VOP_UNLOCK(vp, 0);
+	VOP_UNLOCK(vp);
 	vn_finished_write(mp);
 drop:
 	fdrop(fp, td);
@@ -3518,9 +3525,9 @@ again:
 #ifdef MAC
 	error = mac_vnode_check_rename_from(td->td_ucred, fromnd.ni_dvp,
 	    fromnd.ni_vp, &fromnd.ni_cnd);
-	VOP_UNLOCK(fromnd.ni_dvp, 0);
+	VOP_UNLOCK(fromnd.ni_dvp);
 	if (fromnd.ni_dvp != fromnd.ni_vp)
-		VOP_UNLOCK(fromnd.ni_vp, 0);
+		VOP_UNLOCK(fromnd.ni_vp);
 #endif
 	fvp = fromnd.ni_vp;
 	NDINIT_ATRIGHTS(&tond, RENAME, LOCKPARENT | LOCKLEAF | NOCACHE |
@@ -3745,7 +3752,7 @@ kern_frmdirat(struct thread *td, int dfd, const char *path, int fd,
 
 	fp = NULL;
 	if (fd != FD_NONE) {
-		error = getvnode(td, fd, cap_rights_init(&rights, CAP_LOOKUP),
+		error = getvnode(td, fd, cap_rights_init_one(&rights, CAP_LOOKUP),
 		    &fp);
 		if (error != 0)
 			return (error);
@@ -3779,7 +3786,7 @@ restart:
 	}
 
 	if (fp != NULL && fp->f_vnode != vp) {
-		if ((fp->f_vnode->v_iflag & VI_DOOMED) != 0)
+		if (VN_IS_DOOMED(fp->f_vnode))
 			error = EBADF;
 		else
 			error = EDEADLK;
@@ -4060,7 +4067,7 @@ unionread:
 		    NULL);
 	foffset = auio.uio_offset;
 	if (error != 0) {
-		VOP_UNLOCK(vp, 0);
+		VOP_UNLOCK(vp);
 		goto fail;
 	}
 	if (count == auio.uio_resid &&
@@ -4076,7 +4083,7 @@ unionread:
 		vput(tvp);
 		goto unionread;
 	}
-	VOP_UNLOCK(vp, 0);
+	VOP_UNLOCK(vp);
 	*basep = loff;
 	if (residp != NULL)
 		*residp = auio.uio_resid;
@@ -4148,7 +4155,7 @@ sys_revoke(struct thread *td, struct revoke_args *uap)
 		if (error != 0)
 			goto out;
 	}
-	if (vcount(vp) > 1)
+	if (vp->v_usecount > 1 || vcount(vp) > 1)
 		VOP_REVOKE(vp, REVOKEALL);
 out:
 	vput(vp);
@@ -4166,7 +4173,7 @@ getvnode(struct thread *td, int fd, cap_rights_t *rightsp, struct file **fpp)
 	struct file *fp;
 	int error;
 
-	error = fget_unlocked(td->td_proc->p_fd, fd, rightsp, &fp, NULL);
+	error = fget_unlocked(td->td_proc->p_fd, fd, rightsp, &fp);
 	if (error != 0)
 		return (error);
 
@@ -4189,7 +4196,6 @@ getvnode(struct thread *td, int fd, cap_rights_t *rightsp, struct file **fpp)
 	*fpp = fp;
 	return (0);
 }
-
 
 /*
  * Get an (NFS) file handle.
@@ -4326,7 +4332,7 @@ kern_fhlinkat(struct thread *td, int fd, const char *path,
 		vfs_unbusy(mp);
 		if (error != 0)
 			return (error);
-		VOP_UNLOCK(vp, 0);
+		VOP_UNLOCK(vp);
 	} while ((error = kern_linkat_vp(td, vp, fd, path, pathseg)) == EAGAIN);
 	return (error);
 }
@@ -4439,7 +4445,7 @@ sys_fhopen(struct thread *td, struct fhopen_args *uap)
 	fp->f_seqcount = 1;
 	finit(fp, (fmode & FMASK) | (fp->f_flag & FHASLOCK), DTYPE_VNODE, vp,
 	    &vnops);
-	VOP_UNLOCK(vp, 0);
+	VOP_UNLOCK(vp);
 	if ((fmode & O_TRUNC) != 0) {
 		error = fo_truncate(fp, 0, td->td_ucred, td);
 		if (error != 0)
@@ -4556,99 +4562,6 @@ kern_fhstatfs(struct thread *td, fhandle_t fh, struct statfs *buf)
 out:
 	vfs_unbusy(mp);
 	return (error);
-}
-
-int
-kern_posix_fallocate(struct thread *td, int fd, off_t offset, off_t len)
-{
-	struct file *fp;
-	struct mount *mp;
-	struct vnode *vp;
-	off_t olen, ooffset;
-	int error;
-#ifdef AUDIT
-	int audited_vnode1 = 0;
-#endif
-
-	AUDIT_ARG_FD(fd);
-	if (offset < 0 || len <= 0)
-		return (EINVAL);
-	/* Check for wrap. */
-	if (offset > OFF_MAX - len)
-		return (EFBIG);
-	AUDIT_ARG_FD(fd);
-	error = fget(td, fd, &cap_pwrite_rights, &fp);
-	if (error != 0)
-		return (error);
-	AUDIT_ARG_FILE(td->td_proc, fp);
-	if ((fp->f_ops->fo_flags & DFLAG_SEEKABLE) == 0) {
-		error = ESPIPE;
-		goto out;
-	}
-	if ((fp->f_flag & FWRITE) == 0) {
-		error = EBADF;
-		goto out;
-	}
-	if (fp->f_type != DTYPE_VNODE) {
-		error = ENODEV;
-		goto out;
-	}
-	vp = fp->f_vnode;
-	if (vp->v_type != VREG) {
-		error = ENODEV;
-		goto out;
-	}
-
-	/* Allocating blocks may take a long time, so iterate. */
-	for (;;) {
-		olen = len;
-		ooffset = offset;
-
-		bwillwrite();
-		mp = NULL;
-		error = vn_start_write(vp, &mp, V_WAIT | PCATCH);
-		if (error != 0)
-			break;
-		error = vn_lock(vp, LK_EXCLUSIVE);
-		if (error != 0) {
-			vn_finished_write(mp);
-			break;
-		}
-#ifdef AUDIT
-		if (!audited_vnode1) {
-			AUDIT_ARG_VNODE1(vp);
-			audited_vnode1 = 1;
-		}
-#endif
-#ifdef MAC
-		error = mac_vnode_check_write(td->td_ucred, fp->f_cred, vp);
-		if (error == 0)
-#endif
-			error = VOP_ALLOCATE(vp, &offset, &len);
-		VOP_UNLOCK(vp, 0);
-		vn_finished_write(mp);
-
-		if (olen + ooffset != offset + len) {
-			panic("offset + len changed from %jx/%jx to %jx/%jx",
-			    ooffset, olen, offset, len);
-		}
-		if (error != 0 || len == 0)
-			break;
-		KASSERT(olen > len, ("Iteration did not make progress?"));
-		maybe_yield();
-	}
- out:
-	fdrop(fp, td);
-	return (error);
-}
-
-int
-sys_posix_fallocate(struct thread *td, struct posix_fallocate_args *uap)
-{
-	int error;
-
-	error = kern_posix_fallocate(td, uap->fd, uap->offset, uap->len);
-	return (kern_posix_error(td, error));
 }
 
 /*

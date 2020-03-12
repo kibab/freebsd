@@ -6,9 +6,8 @@ __FBSDID("$FreeBSD$");
 /*-
  * SPDX-License-Identifier: BSD-2-Clause-FreeBSD AND BSD-2-Clause-NetBSD
  *
- * Copyright (c) 2005, Takanori Watanabe
- * Copyright (c) 2003, M. Warner Losh <imp@FreeBSD.org>.
- * All rights reserved.
+ * Copyright (c) 2005, Takanori Watanabe All rights reserved.
+ * Copyright (c) 2003 M. Warner Losh <imp@FreeBSD.org>
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -458,16 +457,16 @@ ufoma_attach(device_t dev)
 	soid = device_get_sysctl_tree(dev);
 
 	SYSCTL_ADD_PROC(sctx, SYSCTL_CHILDREN(soid), OID_AUTO, "supportmode",
-			CTLFLAG_RD|CTLTYPE_STRING, sc, 0, ufoma_sysctl_support,
-			"A", "Supporting port role");
+	    CTLFLAG_RD | CTLTYPE_STRING | CTLFLAG_MPSAFE, sc, 0,
+	    ufoma_sysctl_support, "A", "Supporting port role");
 
 	SYSCTL_ADD_PROC(sctx, SYSCTL_CHILDREN(soid), OID_AUTO, "currentmode",
-			CTLFLAG_RD|CTLTYPE_STRING, sc, 0, ufoma_sysctl_current,
-			"A", "Current port role");
+	CTLFLAG_RD | CTLTYPE_STRING | CTLFLAG_MPSAFE, sc, 0,
+	ufoma_sysctl_current, "A", "Current port role");
 
 	SYSCTL_ADD_PROC(sctx, SYSCTL_CHILDREN(soid), OID_AUTO, "openmode",
-			CTLFLAG_RW|CTLTYPE_STRING, sc, 0, ufoma_sysctl_open,
-			"A", "Mode to transit when port is opened");
+	CTLFLAG_RW | CTLTYPE_STRING | CTLFLAG_MPSAFE, sc, 0,
+	ufoma_sysctl_open, "A", "Mode to transit when port is opened");
 	SYSCTL_ADD_UINT(sctx, SYSCTL_CHILDREN(soid), OID_AUTO, "comunit",
 			CTLFLAG_RD, &(sc->sc_super_ucom.sc_unit), 0, 
 			"Unit number as USB serial");

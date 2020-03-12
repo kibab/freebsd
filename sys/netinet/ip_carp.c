@@ -218,19 +218,22 @@ static int carp_allow_sysctl(SYSCTL_HANDLER_ARGS);
 static int carp_dscp_sysctl(SYSCTL_HANDLER_ARGS);
 static int carp_demote_adj_sysctl(SYSCTL_HANDLER_ARGS);
 
-SYSCTL_NODE(_net_inet, IPPROTO_CARP,	carp,	CTLFLAG_RW, 0,	"CARP");
+SYSCTL_NODE(_net_inet, IPPROTO_CARP, carp, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "CARP");
 SYSCTL_PROC(_net_inet_carp, OID_AUTO, allow,
-    CTLFLAG_VNET | CTLTYPE_INT | CTLFLAG_RW, 0, 0, carp_allow_sysctl, "I",
+    CTLFLAG_VNET | CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE,
+    0, 0, carp_allow_sysctl, "I",
     "Accept incoming CARP packets");
 SYSCTL_PROC(_net_inet_carp, OID_AUTO, dscp,
-    CTLFLAG_VNET | CTLTYPE_INT | CTLFLAG_RW, 0, 0, carp_dscp_sysctl, "I",
+    CTLFLAG_VNET | CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE,
+    0, 0, carp_dscp_sysctl, "I",
     "DSCP value for carp packets");
 SYSCTL_INT(_net_inet_carp, OID_AUTO, preempt, CTLFLAG_VNET | CTLFLAG_RW,
     &VNET_NAME(carp_preempt), 0, "High-priority backup preemption mode");
 SYSCTL_INT(_net_inet_carp, OID_AUTO, log, CTLFLAG_VNET | CTLFLAG_RW,
     &VNET_NAME(carp_log), 0, "CARP log level");
 SYSCTL_PROC(_net_inet_carp, OID_AUTO, demotion,
-    CTLFLAG_VNET | CTLTYPE_INT | CTLFLAG_RW,
+    CTLFLAG_VNET | CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE,
     0, 0, carp_demote_adj_sysctl, "I",
     "Adjust demotion factor (skew of advskew)");
 SYSCTL_INT(_net_inet_carp, OID_AUTO, senderr_demotion_factor,
@@ -566,14 +569,16 @@ carp6_input(struct mbuf **mp, int *offp, int proto)
 	}
 
 	/* verify that we have a complete carp packet */
-	len = m->m_len;
-	m = m_pullup(m, *offp + sizeof(*ch));
-	if (m == NULL) {
-		CARPSTATS_INC(carps_badlen);
-		CARP_DEBUG("%s: packet size %u too small\n", __func__, len);
-		return (IPPROTO_DONE);
+	if (m->m_len < *offp + sizeof(*ch)) {
+		len = m->m_len;
+		m = m_pullup(m, *offp + sizeof(*ch));
+		if (m == NULL) {
+			CARPSTATS_INC(carps_badlen);
+			CARP_DEBUG("%s: packet size %u too small\n", __func__, len);
+			return (IPPROTO_DONE);
+		}
 	}
-	ch = (struct carp_header *)(mtod(m, caddr_t) + *offp);
+	ch = (struct carp_header *)(mtod(m, char *) + *offp);
 
 
 	/* verify the CARP checksum */
@@ -902,6 +907,7 @@ carp_send_ad_locked(struct carp_softc *sc)
 {
 	struct carp_header ch;
 	struct timeval tv;
+	struct epoch_tracker et;
 	struct ifaddr *ifa;
 	struct carp_header *ch_ptr;
 	struct mbuf *m;
@@ -970,8 +976,10 @@ carp_send_ad_locked(struct carp_softc *sc)
 
 		CARPSTATS_INC(carps_opackets);
 
+		NET_EPOCH_ENTER(et);
 		carp_send_ad_error(sc, ip_output(m, NULL, NULL, IP_RAWOUTPUT,
 		    &sc->sc_carpdev->if_carp->cif_imo, NULL));
+		NET_EPOCH_EXIT(et);
 	}
 #endif /* INET */
 #ifdef INET6
@@ -1029,8 +1037,10 @@ carp_send_ad_locked(struct carp_softc *sc)
 
 		CARPSTATS_INC(carps_opackets6);
 
+		NET_EPOCH_ENTER(et);
 		carp_send_ad_error(sc, ip6_output(m, NULL, NULL, 0,
 		    &sc->sc_carpdev->if_carp->cif_im6o, NULL, NULL));
+		NET_EPOCH_EXIT(et);
 	}
 #endif /* INET6 */
 
@@ -1188,7 +1198,7 @@ carp_iamatch6(struct ifnet *ifp, struct in6_addr *taddr)
 	return (ifa);
 }
 
-caddr_t
+char *
 carp_macmatch6(struct ifnet *ifp, struct mbuf *m, const struct in6_addr *taddr)
 {
 	struct ifaddr *ifa;
@@ -1228,14 +1238,15 @@ carp_forus(struct ifnet *ifp, u_char *dhost)
 
 	CIF_LOCK(ifp->if_carp);
 	IFNET_FOREACH_CARP(ifp, sc) {
-		CARP_LOCK(sc);
+		/*
+		 * CARP_LOCK() is not here, since would protect nothing, but
+		 * cause deadlock with if_bridge, calling this under its lock.
+		 */
 		if (sc->sc_state == MASTER && !bcmp(dhost, LLADDR(&sc->sc_addr),
 		    ETHER_ADDR_LEN)) {
-			CARP_UNLOCK(sc);
 			CIF_UNLOCK(ifp->if_carp);
 			return (1);
 		}
-		CARP_UNLOCK(sc);
 	}
 	CIF_UNLOCK(ifp->if_carp);
 
@@ -1845,7 +1856,7 @@ carp_ioctl(struct ifreq *ifr, u_long cmd, struct thread *td)
 				carp_carprcp(&carpr, sc, priveleged);
 				carpr.carpr_count = count;
 				error = copyout(&carpr,
-				    (caddr_t)ifr_data_get_ptr(ifr) +
+				    (char *)ifr_data_get_ptr(ifr) +
 				    (i * sizeof(carpr)), sizeof(carpr));
 				if (error) {
 					CIF_UNLOCK(ifp->if_carp);

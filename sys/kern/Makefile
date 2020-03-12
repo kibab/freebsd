@@ -3,18 +3,13 @@
 #
 # Makefile for init_sysent
 
-# Don't use an OBJDIR
-.OBJDIR: ${.CURDIR}
+SRCS+=		capabilities.conf
+SYSENT_CONF=
+GENERATED=	init_sysent.c			\
+		syscalls.c			\
+		systrace_args.c			\
+		${SYSDIR}/sys/syscall.h		\
+		${SYSDIR}/sys/syscall.mk	\
+		${SYSDIR}/sys/sysproto.h
 
-.include <src.lua.mk>
-
-all:
-	@echo "make sysent only"
-
-sysent: init_sysent.c syscalls.c ../sys/syscall.h ../sys/syscall.mk \
-../sys/sysproto.h
-
-init_sysent.c syscalls.c systrace_args.c ../sys/syscall.h \
-../sys/syscall.mk ../sys/sysproto.h: ../tools/makesyscalls.lua syscalls.master \
-capabilities.conf
-	${LUA} ../tools/makesyscalls.lua syscalls.master
+.include "../conf/sysent.mk"

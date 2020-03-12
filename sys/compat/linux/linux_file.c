@@ -54,6 +54,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/vnode.h>
 
 #ifdef COMPAT_LINUX32
+#include <compat/freebsd32/freebsd32_misc.h>
 #include <machine/../linux32/linux.h>
 #include <machine/../linux32/linux32_proto.h>
 #else
@@ -66,7 +67,6 @@ __FBSDID("$FreeBSD$");
 
 static int	linux_common_open(struct thread *, int, char *, int, int);
 static int	linux_getdents_error(struct thread *, int, int);
-
 
 #ifdef LINUX_LEGACY_SYSCALLS
 int
@@ -137,6 +137,8 @@ linux_common_open(struct thread *td, int dirfd, char *path, int l_flags, int mod
 			error = ELOOP;
 		goto done;
 	}
+	if (p->p_flag & P_CONTROLT)
+		goto done;
 	if (bsd_flags & O_NOCTTY)
 		goto done;
 
@@ -818,7 +820,6 @@ linux_truncate(struct thread *td, struct linux_truncate_args *args)
 	int error;
 
 	LCONVPATHEXIST(td, args->path, &path);
-
 	error = kern_truncate(td, path, UIO_SYSSPACE, args->length);
 	LFREEPATH(path);
 	return (error);
@@ -829,11 +830,17 @@ int
 linux_truncate64(struct thread *td, struct linux_truncate64_args *args)
 {
 	char *path;
+	off_t length;
 	int error;
 
-	LCONVPATHEXIST(td, args->path, &path);
+#if defined(__amd64__) && defined(COMPAT_LINUX32)
+	length = PAIR32TO64(off_t, args->length);
+#else
+	length = args->length;
+#endif
 
-	error = kern_truncate(td, path, UIO_SYSSPACE, args->length);
+	LCONVPATHEXIST(td, args->path, &path);
+	error = kern_truncate(td, path, UIO_SYSSPACE, length);
 	LFREEPATH(path);
 	return (error);
 }
@@ -845,6 +852,22 @@ linux_ftruncate(struct thread *td, struct linux_ftruncate_args *args)
 
 	return (kern_ftruncate(td, args->fd, args->length));
 }
+
+#if defined(__i386__) || (defined(__amd64__) && defined(COMPAT_LINUX32))
+int
+linux_ftruncate64(struct thread *td, struct linux_ftruncate64_args *args)
+{
+	off_t length;
+
+#if defined(__amd64__) && defined(COMPAT_LINUX32)
+	length = PAIR32TO64(off_t, args->length);
+#else
+	length = args->length;
+#endif
+
+	return (kern_ftruncate(td, args->fd, length));
+}
+#endif
 
 #ifdef LINUX_LEGACY_SYSCALLS
 int
@@ -897,10 +920,31 @@ linux_linkat(struct thread *td, struct linux_linkat_args *args)
 }
 
 int
-linux_fdatasync(td, uap)
-	struct thread *td;
-	struct linux_fdatasync_args *uap;
+linux_fdatasync(struct thread *td, struct linux_fdatasync_args *uap)
 {
+
+	return (kern_fsync(td, uap->fd, false));
+}
+
+int
+linux_sync_file_range(struct thread *td, struct linux_sync_file_range_args *uap)
+{
+	off_t nbytes, offset;
+
+#if defined(__amd64__) && defined(COMPAT_LINUX32)
+	nbytes = PAIR32TO64(off_t, uap->nbytes);
+	offset = PAIR32TO64(off_t, uap->offset);
+#else
+	nbytes = uap->nbytes;
+	offset = uap->offset;
+#endif
+
+	if (offset < 0 || nbytes < 0 ||
+	    (uap->flags & ~(LINUX_SYNC_FILE_RANGE_WAIT_BEFORE |
+	    LINUX_SYNC_FILE_RANGE_WRITE |
+	    LINUX_SYNC_FILE_RANGE_WAIT_AFTER)) != 0) {
+		return (EINVAL);
+	}
 
 	return (kern_fsync(td, uap->fd, false));
 }
@@ -909,18 +953,23 @@ int
 linux_pread(struct thread *td, struct linux_pread_args *uap)
 {
 	struct vnode *vp;
+	off_t offset;
 	int error;
 
-	error = kern_pread(td, uap->fd, uap->buf, uap->nbyte, uap->offset);
+#if defined(__amd64__) && defined(COMPAT_LINUX32)
+	offset = PAIR32TO64(off_t, uap->offset);
+#else
+	offset = uap->offset;
+#endif
+
+	error = kern_pread(td, uap->fd, uap->buf, uap->nbyte, offset);
 	if (error == 0) {
 		/* This seems to violate POSIX but Linux does it. */
 		error = fgetvp(td, uap->fd, &cap_pread_rights, &vp);
 		if (error != 0)
 			return (error);
-		if (vp->v_type == VDIR) {
-			vrele(vp);
-			return (EISDIR);
-		}
+		if (vp->v_type == VDIR)
+			error = EISDIR;
 		vrele(vp);
 	}
 	return (error);
@@ -929,8 +978,15 @@ linux_pread(struct thread *td, struct linux_pread_args *uap)
 int
 linux_pwrite(struct thread *td, struct linux_pwrite_args *uap)
 {
+	off_t offset;
 
-	return (kern_pwrite(td, uap->fd, uap->buf, uap->nbyte, uap->offset));
+#if defined(__amd64__) && defined(COMPAT_LINUX32)
+	offset = PAIR32TO64(off_t, uap->offset);
+#else
+	offset = uap->offset;
+#endif
+
+	return (kern_pwrite(td, uap->fd, uap->buf, uap->nbyte, offset));
 }
 
 int
@@ -1002,9 +1058,13 @@ linux_mount(struct thread *td, struct linux_mount_args *args)
 	    NULL);
 	if (error != 0)
 		goto out;
-	error = copyinstr(args->specialfile, mntfromname, MNAMELEN - 1, NULL);
-	if (error != 0)
-		goto out;
+	if (args->specialfile != NULL) {
+		error = copyinstr(args->specialfile, mntfromname, MNAMELEN - 1, NULL);
+		if (error != 0)
+			goto out;
+	} else {
+		mntfromname[0] = '\0';
+	}
 	error = copyinstr(args->dir, mntonname, MNAMELEN - 1, NULL);
 	if (error != 0)
 		goto out;
@@ -1019,20 +1079,18 @@ linux_mount(struct thread *td, struct linux_mount_args *args)
 
 	fsflags = 0;
 
-	if ((args->rwflag & 0xffff0000) == 0xc0ed0000) {
-		/*
-		 * Linux SYNC flag is not included; the closest equivalent
-		 * FreeBSD has is !ASYNC, which is our default.
-		 */
-		if (args->rwflag & LINUX_MS_RDONLY)
-			fsflags |= MNT_RDONLY;
-		if (args->rwflag & LINUX_MS_NOSUID)
-			fsflags |= MNT_NOSUID;
-		if (args->rwflag & LINUX_MS_NOEXEC)
-			fsflags |= MNT_NOEXEC;
-		if (args->rwflag & LINUX_MS_REMOUNT)
-			fsflags |= MNT_UPDATE;
-	}
+	/*
+	 * Linux SYNC flag is not included; the closest equivalent
+	 * FreeBSD has is !ASYNC, which is our default.
+	 */
+	if (args->rwflag & LINUX_MS_RDONLY)
+		fsflags |= MNT_RDONLY;
+	if (args->rwflag & LINUX_MS_NOSUID)
+		fsflags |= MNT_NOSUID;
+	if (args->rwflag & LINUX_MS_NOEXEC)
+		fsflags |= MNT_NOEXEC;
+	if (args->rwflag & LINUX_MS_REMOUNT)
+		fsflags |= MNT_UPDATE;
 
 	error = kernel_vmount(fsflags,
 	    "fstype", fstypename,
@@ -1049,11 +1107,8 @@ out:
 int
 linux_oldumount(struct thread *td, struct linux_oldumount_args *args)
 {
-	struct linux_umount_args args2;
 
-	args2.path = args->path;
-	args2.flags = 0;
-	return (linux_umount(td, &args2));
+	return (kern_unmount(td, args->path, 0));
 }
 #endif /* __i386__ || (__amd64__ && COMPAT_LINUX32) */
 
@@ -1061,11 +1116,19 @@ linux_oldumount(struct thread *td, struct linux_oldumount_args *args)
 int
 linux_umount(struct thread *td, struct linux_umount_args *args)
 {
-	struct unmount_args bsd;
+	int flags;
 
-	bsd.path = args->path;
-	bsd.flags = args->flags;	/* XXX correct? */
-	return (sys_unmount(td, &bsd));
+	flags = 0;
+	if ((args->flags & LINUX_MNT_FORCE) != 0) {
+		args->flags &= ~LINUX_MNT_FORCE;
+		flags |= MNT_FORCE;
+	}
+	if (args->flags != 0) {
+		linux_msg(td, "unsupported umount2 flags %#x", args->flags);
+		return (EINVAL);
+	}
+
+	return (kern_unmount(td, args->path, flags));
 }
 #endif
 
@@ -1445,26 +1508,40 @@ convert_fadvice(int advice)
 int
 linux_fadvise64(struct thread *td, struct linux_fadvise64_args *args)
 {
+	off_t offset;
 	int advice;
+
+#if defined(__amd64__) && defined(COMPAT_LINUX32)
+	offset = PAIR32TO64(off_t, args->offset);
+#else
+	offset = args->offset;
+#endif
 
 	advice = convert_fadvice(args->advice);
 	if (advice == -1)
 		return (EINVAL);
-	return (kern_posix_fadvise(td, args->fd, args->offset, args->len,
-	    advice));
+	return (kern_posix_fadvise(td, args->fd, offset, args->len, advice));
 }
 
 #if defined(__i386__) || (defined(__amd64__) && defined(COMPAT_LINUX32))
 int
 linux_fadvise64_64(struct thread *td, struct linux_fadvise64_64_args *args)
 {
+	off_t len, offset;
 	int advice;
+
+#if defined(__amd64__) && defined(COMPAT_LINUX32)
+	len = PAIR32TO64(off_t, args->len);
+	offset = PAIR32TO64(off_t, args->offset);
+#else
+	len = args->len;
+	offset = args->offset;
+#endif
 
 	advice = convert_fadvice(args->advice);
 	if (advice == -1)
 		return (EINVAL);
-	return (kern_posix_fadvise(td, args->fd, args->offset, args->len,
-	    advice));
+	return (kern_posix_fadvise(td, args->fd, offset, len, advice));
 }
 #endif /* __i386__ || (__amd64__ && COMPAT_LINUX32) */
 
@@ -1538,6 +1615,7 @@ linux_dup3(struct thread *td, struct linux_dup3_args *args)
 int
 linux_fallocate(struct thread *td, struct linux_fallocate_args *args)
 {
+	off_t len, offset;
 
 	/*
 	 * We emulate only posix_fallocate system call for which
@@ -1546,6 +1624,54 @@ linux_fallocate(struct thread *td, struct linux_fallocate_args *args)
 	if (args->mode != 0)
 		return (ENOSYS);
 
-	return (kern_posix_fallocate(td, args->fd, args->offset,
-	    args->len));
+#if defined(__amd64__) && defined(COMPAT_LINUX32)
+	len = PAIR32TO64(off_t, args->len);
+	offset = PAIR32TO64(off_t, args->offset);
+#else
+	len = args->len;
+	offset = args->offset;
+#endif
+
+	return (kern_posix_fallocate(td, args->fd, offset, len));
 }
+
+int
+linux_copy_file_range(struct thread *td, struct linux_copy_file_range_args
+    *args)
+{
+	l_loff_t inoff, outoff, *inoffp, *outoffp;
+	int error, flags;
+
+	/*
+	 * copy_file_range(2) on Linux doesn't define any flags (yet), so is
+	 * the native implementation.  Enforce it.
+	 */
+	if (args->flags != 0) {
+		linux_msg(td, "copy_file_range unsupported flags 0x%x",
+		    args->flags);
+		return (EINVAL);
+	}
+	flags = 0;
+	inoffp = outoffp = NULL;
+	if (args->off_in != NULL) {
+		error = copyin(args->off_in, &inoff, sizeof(l_loff_t));
+		if (error != 0)
+			return (error);
+		inoffp = &inoff;
+	}
+	if (args->off_out != NULL) {
+		error = copyin(args->off_out, &outoff, sizeof(l_loff_t));
+		if (error != 0)
+			return (error);
+		outoffp = &outoff;
+	}
+
+	error = kern_copy_file_range(td, args->fd_in, inoffp, args->fd_out,
+	    outoffp, args->len, flags);
+	if (error == 0 && args->off_in != NULL)
+		error = copyout(inoffp, args->off_in, sizeof(l_loff_t));
+	if (error == 0 && args->off_out != NULL)
+		error = copyout(outoffp, args->off_out, sizeof(l_loff_t));
+	return (error);
+}
+

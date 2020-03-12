@@ -2,6 +2,10 @@
 
 .include <src.opts.mk>
 
+.ifndef LLVM_BASE
+.error Please define LLVM_BASE before including this file
+.endif
+
 .ifndef LLVM_SRCS
 .error Please define LLVM_SRCS before including this file
 .endif
@@ -10,7 +14,7 @@
 .error Please define SRCDIR before including this file
 .endif
 
-.PATH:		${LLVM_SRCS}/${SRCDIR}
+.PATH:		${LLVM_BASE}/${SRCDIR}
 
 CFLAGS+=	-I${SRCTOP}/lib/clang/include
 CFLAGS+=	-I${LLVM_SRCS}/include
@@ -102,12 +106,7 @@ CFLAGS+=	-ffunction-sections
 CFLAGS+=	-fdata-sections
 LDFLAGS+=	-Wl,--gc-sections
 
-CXXSTD?=	c++11
+CXXSTD?=	c++14
 CXXFLAGS+=	-fno-exceptions
 CXXFLAGS+=	-fno-rtti
 CXXFLAGS.clang+= -stdlib=libc++
-
-.if ${MACHINE_CPUARCH} == "arm"
-STATIC_CFLAGS+= -mlong-calls
-STATIC_CXXFLAGS+= -mlong-calls
-.endif

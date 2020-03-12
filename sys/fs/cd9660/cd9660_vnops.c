@@ -260,12 +260,12 @@ cd9660_ioctl(ap)
 
 	vp = ap->a_vp;
 	vn_lock(vp, LK_SHARED | LK_RETRY);
-	if (vp->v_iflag & VI_DOOMED) {
-		VOP_UNLOCK(vp, 0);
+	if (VN_IS_DOOMED(vp)) {
+		VOP_UNLOCK(vp);
 		return (EBADF);
 	}
 	if (vp->v_type == VCHR || vp->v_type == VBLK) {
-		VOP_UNLOCK(vp, 0);
+		VOP_UNLOCK(vp);
 		return (EOPNOTSUPP);
 	}
 
@@ -281,7 +281,7 @@ cd9660_ioctl(ap)
 		break;
 	}
 
-	VOP_UNLOCK(vp, 0);
+	VOP_UNLOCK(vp);
 	return (error);
 }
 
@@ -844,7 +844,8 @@ cd9660_vptofh(ap)
 	return (0);
 }
 
-SYSCTL_NODE(_vfs, OID_AUTO, cd9660, CTLFLAG_RW, 0, "cd9660 filesystem");
+SYSCTL_NODE(_vfs, OID_AUTO, cd9660, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "cd9660 filesystem");
 static int use_buf_pager = 1;
 SYSCTL_INT(_vfs_cd9660, OID_AUTO, use_buf_pager, CTLFLAG_RWTUN,
     &use_buf_pager, 0,
@@ -906,6 +907,7 @@ struct vop_vector cd9660_vnodeops = {
 	.vop_vptofh =		cd9660_vptofh,
 	.vop_getpages =		cd9660_getpages,
 };
+VFS_VOP_VECTOR_REGISTER(cd9660_vnodeops);
 
 /*
  * Special device vnode ops
@@ -920,3 +922,4 @@ struct vop_vector cd9660_fifoops = {
 	.vop_setattr =		cd9660_setattr,
 	.vop_vptofh =		cd9660_vptofh,
 };
+VFS_VOP_VECTOR_REGISTER(cd9660_fifoops);

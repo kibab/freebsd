@@ -107,8 +107,10 @@ lock_destroy(struct lock_object *lock)
 	lock->lo_flags &= ~LO_INITIALIZED;
 }
 
-static SYSCTL_NODE(_debug, OID_AUTO, lock, CTLFLAG_RD, NULL, "lock debugging");
-static SYSCTL_NODE(_debug_lock, OID_AUTO, delay, CTLFLAG_RD, NULL,
+static SYSCTL_NODE(_debug, OID_AUTO, lock, CTLFLAG_RD | CTLFLAG_MPSAFE, NULL,
+    "lock debugging");
+static SYSCTL_NODE(_debug_lock, OID_AUTO, delay,
+    CTLFLAG_RD | CTLFLAG_MPSAFE, NULL,
     "lock delay");
 
 static u_int __read_mostly starvation_limit = 131072;
@@ -123,7 +125,7 @@ void
 lock_delay(struct lock_delay_arg *la)
 {
 	struct lock_delay_config *lc = la->config;
-	u_int i;
+	u_short i;
 
 	la->delay <<= 1;
 	if (__predict_false(la->delay > lc->max))
@@ -160,6 +162,29 @@ lock_delay_default_init(struct lock_delay_config *lc)
 	if (lc->max > 32678)
 		lc->max = 32678;
 }
+
+struct lock_delay_config __read_frequently locks_delay;
+u_short __read_frequently locks_delay_retries;
+u_short __read_frequently locks_delay_loops;
+
+SYSCTL_U16(_debug_lock, OID_AUTO, delay_base, CTLFLAG_RW, &locks_delay.base,
+    0, "");
+SYSCTL_U16(_debug_lock, OID_AUTO, delay_max, CTLFLAG_RW, &locks_delay.max,
+    0, "");
+SYSCTL_U16(_debug_lock, OID_AUTO, delay_retries, CTLFLAG_RW, &locks_delay_retries,
+    0, "");
+SYSCTL_U16(_debug_lock, OID_AUTO, delay_loops, CTLFLAG_RW, &locks_delay_loops,
+    0, "");
+
+static void
+locks_delay_init(void *arg __unused)
+{
+
+	lock_delay_default_init(&locks_delay);
+	locks_delay_retries = 10;
+	locks_delay_loops = max(10000, locks_delay.max);
+}
+LOCK_DELAY_SYSINIT(locks_delay_init);
 
 #ifdef DDB
 DB_SHOW_COMMAND(lock, db_show_lock)
@@ -324,7 +349,13 @@ lock_prof_reset(void)
 	atomic_store_rel_int(&lock_prof_resetting, 1);
 	enabled = lock_prof_enable;
 	lock_prof_enable = 0;
-	quiesce_all_cpus("profreset", 0);
+	/*
+	 * This both publishes lock_prof_enable as disabled and makes sure
+	 * everyone else reads it if they are not far enough. We wait for the
+	 * rest down below.
+	 */
+	cpus_fence_seq_cst();
+	quiesce_all_critical();
 	/*
 	 * Some objects may have migrated between CPUs.  Clear all links
 	 * before we zero the structures.  Some items may still be linked
@@ -343,6 +374,9 @@ lock_prof_reset(void)
 		lock_prof_init_type(&lpc->lpc_types[0]);
 		lock_prof_init_type(&lpc->lpc_types[1]);
 	}
+	/*
+	 * Paired with the fence from cpus_fence_seq_cst()
+	 */
 	atomic_store_rel_int(&lock_prof_resetting, 0);
 	lock_prof_enable = enabled;
 }
@@ -433,12 +467,17 @@ dump_lock_prof_stats(SYSCTL_HANDLER_ARGS)
 	    "max", "wait_max", "total", "wait_total", "count", "avg", "wait_avg", "cnt_hold", "cnt_lock", "name");
 	enabled = lock_prof_enable;
 	lock_prof_enable = 0;
-	quiesce_all_cpus("profstat", 0);
+	/*
+	 * See the comment in lock_prof_reset
+	 */
+	cpus_fence_seq_cst();
+	quiesce_all_critical();
 	t = ticks;
 	CPU_FOREACH(cpu) {
 		lock_prof_type_stats(&LP_CPU(cpu)->lpc_types[0], sb, 0, t);
 		lock_prof_type_stats(&LP_CPU(cpu)->lpc_types[1], sb, 1, t);
 	}
+	atomic_thread_fence_rel();
 	lock_prof_enable = enabled;
 
 	error = sbuf_finish(sb);
@@ -591,6 +630,10 @@ lock_profile_obtain_lock_success(struct lock_object *lo, int contested,
 	else
 		l->lpo_waittime = 0;
 out:
+	/*
+	 * Paired with cpus_fence_seq_cst().
+	 */
+	atomic_thread_fence_rel();
 	critical_exit();
 }
 
@@ -677,10 +720,15 @@ release:
 	type = &LP_CPU_SELF->lpc_types[spin];
 	LIST_INSERT_HEAD(&type->lpt_lpoalloc, l, lpo_link);
 out:
+	/*
+	 * Paired with cpus_fence_seq_cst().
+	 */
+	atomic_thread_fence_rel();
 	critical_exit();
 }
 
-static SYSCTL_NODE(_debug_lock, OID_AUTO, prof, CTLFLAG_RD, NULL,
+static SYSCTL_NODE(_debug_lock, OID_AUTO, prof,
+    CTLFLAG_RD | CTLFLAG_MPSAFE, NULL,
     "lock profiling");
 SYSCTL_INT(_debug_lock_prof, OID_AUTO, skipspin, CTLFLAG_RW,
     &lock_prof_skipspin, 0, "Skip profiling on spinlocks.");
@@ -688,11 +736,17 @@ SYSCTL_INT(_debug_lock_prof, OID_AUTO, skipcount, CTLFLAG_RW,
     &lock_prof_skipcount, 0, "Sample approximately every N lock acquisitions.");
 SYSCTL_INT(_debug_lock_prof, OID_AUTO, rejected, CTLFLAG_RD,
     &lock_prof_rejected, 0, "Number of rejected profiling records");
-SYSCTL_PROC(_debug_lock_prof, OID_AUTO, stats, CTLTYPE_STRING | CTLFLAG_RD,
-    NULL, 0, dump_lock_prof_stats, "A", "Lock profiling statistics");
-SYSCTL_PROC(_debug_lock_prof, OID_AUTO, reset, CTLTYPE_INT | CTLFLAG_RW,
-    NULL, 0, reset_lock_prof_stats, "I", "Reset lock profiling statistics");
-SYSCTL_PROC(_debug_lock_prof, OID_AUTO, enable, CTLTYPE_INT | CTLFLAG_RW,
-    NULL, 0, enable_lock_prof, "I", "Enable lock profiling");
+SYSCTL_PROC(_debug_lock_prof, OID_AUTO, stats,
+    CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_MPSAFE, NULL, 0,
+    dump_lock_prof_stats, "A",
+    "Lock profiling statistics");
+SYSCTL_PROC(_debug_lock_prof, OID_AUTO, reset,
+    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT, NULL, 0,
+    reset_lock_prof_stats, "I",
+    "Reset lock profiling statistics");
+SYSCTL_PROC(_debug_lock_prof, OID_AUTO, enable,
+    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE, NULL, 0,
+    enable_lock_prof, "I",
+    "Enable lock profiling");
 
 #endif

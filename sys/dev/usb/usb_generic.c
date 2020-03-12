@@ -132,7 +132,8 @@ struct usb_fifo_methods usb_ugen_methods = {
 #ifdef USB_DEBUG
 static int ugen_debug = 0;
 
-static SYSCTL_NODE(_hw_usb, OID_AUTO, ugen, CTLFLAG_RW, 0, "USB generic");
+static SYSCTL_NODE(_hw_usb, OID_AUTO, ugen, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "USB generic");
 SYSCTL_INT(_hw_usb_ugen, OID_AUTO, debug, CTLFLAG_RWTUN, &ugen_debug,
     0, "Debug level");
 #endif
@@ -2223,10 +2224,9 @@ ugen_ioctl_post(struct usb_fifo *f, u_long cmd, void *addr, int fflags)
 		for (n = 0; n != 4; n++) {
 
 			u.stat->uds_requests_fail[n] =
-			    f->udev->bus->stats_err.uds_requests[n];
-
+			    f->udev->stats_err.uds_requests[n];
 			u.stat->uds_requests_ok[n] =
-			    f->udev->bus->stats_ok.uds_requests[n];
+			    f->udev->stats_ok.uds_requests[n];
 		}
 		break;
 

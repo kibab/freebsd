@@ -262,9 +262,9 @@ struct buf {
 #define	BX_VNDIRTY	0x00000001	/* On vnode dirty list */
 #define	BX_VNCLEAN	0x00000002	/* On vnode clean list */
 #define	BX_BKGRDWRITE	0x00000010	/* Do writes in background */
-#define BX_BKGRDMARKER	0x00000020	/* Mark buffer for splay tree */
+#define	BX_BKGRDMARKER	0x00000020	/* Mark buffer for splay tree */
 #define	BX_ALTDATA	0x00000040	/* Holds extended data */
-#define	BX_FSPRIV	0x00FF0000	/* filesystem-specific flags mask */
+#define	BX_FSPRIV	0x00FF0000	/* Filesystem-specific flags mask */
 
 #define	PRINT_BUF_XFLAGS "\20\7altdata\6bkgrdmarker\5bkgrdwrite\2clean\1dirty"
 
@@ -520,15 +520,16 @@ int	buf_dirty_count_severe(void);
 void	bremfree(struct buf *);
 void	bremfreef(struct buf *);	/* XXX Force bremfree, only for nfs. */
 #define bread(vp, blkno, size, cred, bpp) \
-	    breadn_flags(vp, blkno, size, NULL, NULL, 0, cred, 0, NULL, bpp)
+	    breadn_flags(vp, blkno, blkno, size, NULL, NULL, 0, cred, 0, \
+		NULL, bpp)
 #define bread_gb(vp, blkno, size, cred, gbflags, bpp) \
-	    breadn_flags(vp, blkno, size, NULL, NULL, 0, cred, \
+	    breadn_flags(vp, blkno, blkno, size, NULL, NULL, 0, cred, \
 		gbflags, NULL, bpp)
 #define breadn(vp, blkno, size, rablkno, rabsize, cnt, cred, bpp) \
-	    breadn_flags(vp, blkno, size, rablkno, rabsize, cnt, cred, \
+	    breadn_flags(vp, blkno, blkno, size, rablkno, rabsize, cnt, cred, \
 		0, NULL, bpp)
-int	breadn_flags(struct vnode *, daddr_t, int, daddr_t *, int *, int,
-	    struct ucred *, int, void (*)(struct buf *), struct buf **);
+int	breadn_flags(struct vnode *, daddr_t, daddr_t, int, daddr_t *, int *, 
+	    int, struct ucred *, int, void (*)(struct buf *), struct buf **);
 void	bdwrite(struct buf *);
 void	bawrite(struct buf *);
 void	babarrierwrite(struct buf *);
@@ -544,8 +545,8 @@ void	vfs_busy_pages_release(struct buf *bp);
 struct buf *incore(struct bufobj *, daddr_t);
 struct buf *gbincore(struct bufobj *, daddr_t);
 struct buf *getblk(struct vnode *, daddr_t, int, int, int, int);
-int	getblkx(struct vnode *vp, daddr_t blkno, int size, int slpflag,
-	    int slptimeo, int flags, struct buf **bpp);
+int	getblkx(struct vnode *vp, daddr_t blkno, daddr_t dblkno, int size,
+	    int slpflag, int slptimeo, int flags, struct buf **bpp);
 struct buf *geteblk(int, int);
 int	bufwait(struct buf *);
 int	bufwrite(struct buf *);
@@ -553,7 +554,7 @@ void	bufdone(struct buf *);
 void	bd_speedup(void);
 
 extern uma_zone_t pbuf_zone;
-uma_zone_t pbuf_zsecond_create(char *name, int max);
+uma_zone_t pbuf_zsecond_create(const char *name, int max);
 
 int	cluster_read(struct vnode *, u_quad_t, daddr_t, long,
 	    struct ucred *, long, int, int, struct buf **);

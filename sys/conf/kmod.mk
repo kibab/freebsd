@@ -73,27 +73,8 @@ KMODUNLOAD?=	/sbin/kldunload
 KMODISLOADED?=	/sbin/kldstat -q -n
 OBJCOPY?=	objcopy
 
-.include <bsd.init.mk>
-# Grab all the options for a kernel build. For backwards compat, we need to
-# do this after bsd.own.mk.
-.include "kern.opts.mk"
-.include <bsd.compiler.mk>
-.include "config.mk"
-
-# Search for kernel source tree in standard places.
-.if empty(KERNBUILDDIR)
-.if !defined(SYSDIR)
-.for _dir in ${SRCTOP:D${SRCTOP}/sys} \
-    ${.CURDIR}/../.. ${.CURDIR}/../../.. /sys /usr/src/sys
-.if !defined(SYSDIR) && exists(${_dir}/kern/)
-SYSDIR=	${_dir:tA}
-.endif
-.endfor
-.endif
-.if !defined(SYSDIR) || !exists(${SYSDIR}/kern/)
-.error "can't find kernel source tree"
-.endif
-.endif
+.include "kmod.opts.mk"
+.include <bsd.sysdir.mk>
 
 .SUFFIXES: .out .o .c .cc .cxx .C .y .l .s .S .m
 
@@ -125,6 +106,9 @@ NOSTDINC=	-nostdinc
 CFLAGS:=	${CFLAGS:N-I*} ${NOSTDINC} ${INCLMAGIC} ${CFLAGS:M-I*}
 .if defined(KERNBUILDDIR)
 CFLAGS+=	-DHAVE_KERNEL_OPTION_HEADERS -include ${KERNBUILDDIR}/opt_global.h
+.else
+SRCS+=		opt_global.h
+CFLAGS+=	-include ${.OBJDIR}/opt_global.h
 .endif
 
 # Add -I paths for system headers.  Individual module makefiles don't
@@ -151,7 +135,8 @@ CFLAGS+=	${DEBUG_FLAGS}
 CFLAGS+=	-fno-omit-frame-pointer -mno-omit-leaf-frame-pointer
 .endif
 
-.if ${MACHINE_CPUARCH} == "aarch64" || ${MACHINE_CPUARCH} == "riscv"
+.if ${MACHINE_CPUARCH} == "aarch64" || ${MACHINE_CPUARCH} == "riscv" || \
+    ${MACHINE_CPUARCH} == "powerpc"
 CFLAGS+=	-fPIC
 .endif
 

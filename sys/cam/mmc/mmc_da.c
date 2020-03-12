@@ -1,11 +1,10 @@
 /*-
  * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
  *
- * Copyright (c) 2006 Bernd Walter <tisco@FreeBSD.org>
+ * Copyright (c) 2006 Bernd Walter <tisco@FreeBSD.org> All rights reserved.
+ * Copyright (c) 2009 Alexander Motin <mav@FreeBSD.org> All rights reserved.
+ * Copyright (c) 2015-2017 Ilya Bakulin <kibab@FreeBSD.org> All rights reserved.
  * Copyright (c) 2006 M. Warner Losh <imp@FreeBSD.org>
- * Copyright (c) 2009 Alexander Motin <mav@FreeBSD.org>
- * Copyright (c) 2015-2017 Ilya Bakulin <kibab@FreeBSD.org>
- * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -2121,6 +2120,10 @@ sddastart(struct cam_periph *periph, union ccb *start_ccb)
 		CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("BIO_DELETE\n"));
 		sddaschedule(periph);
 		break;
+	default:
+		biofinish(bp, NULL, EOPNOTSUPP);
+		xpt_release_ccb(start_ccb);
+		return;
 	}
 	start_ccb->ccb_h.ccb_bp = bp;
 	softc->outstanding_cmds++;

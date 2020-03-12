@@ -42,6 +42,7 @@ __FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/systm.h>
+#include <sys/arb.h>
 #include <sys/domain.h>
 #ifdef TCP_HHOOK
 #include <sys/hhook.h>
@@ -54,10 +55,12 @@ __FBSDID("$FreeBSD$");
 #include <sys/mbuf.h>
 #include <sys/mutex.h>
 #include <sys/protosw.h>
+#include <sys/qmath.h>
 #include <sys/sdt.h>
 #include <sys/socket.h>
 #include <sys/socketvar.h>
 #include <sys/sysctl.h>
+#include <sys/stats.h>
 
 #include <net/if.h>
 #include <net/route.h>
@@ -229,6 +232,7 @@ tcp_output(struct tcpcb *tp)
 	const bool hw_tls = false;
 #endif
 
+	NET_EPOCH_ASSERT();
 	INP_WLOCK_ASSERT(tp->t_inpcb);
 
 #ifdef TCP_OFFLOAD
@@ -297,7 +301,7 @@ again:
 	if ((tp->t_flags & TF_SACK_PERMIT) && IN_FASTRECOVERY(tp->t_flags) &&
 	    (p = tcp_sack_output(tp, &sack_bytes_rxmt))) {
 		uint32_t cwin;
-		
+
 		cwin =
 		    imax(min(tp->snd_wnd, tp->snd_cwnd) - sack_bytes_rxmt, 0);
 		/* Do not retransmit SACK segments beyond snd_recover */
@@ -408,15 +412,15 @@ after_sack_rexmit:
 			    off);
 			/*
 			 * Don't remove this (len > 0) check !
-			 * We explicitly check for len > 0 here (although it 
-			 * isn't really necessary), to work around a gcc 
+			 * We explicitly check for len > 0 here (although it
+			 * isn't really necessary), to work around a gcc
 			 * optimization issue - to force gcc to compute
 			 * len above. Without this check, the computation
 			 * of len is bungled by the optimizer.
 			 */
 			if (len > 0) {
-				cwin = tp->snd_cwnd - 
-					(tp->snd_nxt - tp->sack_newdata) -
+				cwin = tp->snd_cwnd -
+					(tp->snd_nxt - tp->snd_recover) -
 					sack_bytes_rxmt;
 				if (cwin < 0)
 					cwin = 0;
@@ -654,7 +658,7 @@ after_sack_rexmit:
 		} else
 			oldwin = 0;
 
-		/* 
+		/*
 		 * If the new window size ends up being the same as or less
 		 * than the old size when it is scaled, then don't force
 		 * a window update.
@@ -702,7 +706,7 @@ dontupdate:
 	    !tcp_timer_active(tp, TT_PERSIST)) {
 		tcp_timer_activate(tp, TT_REXMT, tp->t_rxtcur);
 		goto just_return;
-	} 
+	}
 	/*
 	 * TCP window updates are not reliable, rather a polling protocol
 	 * using ``persist'' packets is used to insure receipt of window
@@ -991,15 +995,31 @@ send:
 		struct sockbuf *msb;
 		u_int moff;
 
-		if ((tp->t_flags & TF_FORCEDATA) && len == 1)
+		if ((tp->t_flags & TF_FORCEDATA) && len == 1) {
 			TCPSTAT_INC(tcps_sndprobe);
-		else if (SEQ_LT(tp->snd_nxt, tp->snd_max) || sack_rxmit) {
+#ifdef STATS
+			if (SEQ_LT(tp->snd_nxt, tp->snd_max))
+				stats_voi_update_abs_u32(tp->t_stats,
+				VOI_TCP_RETXPB, len);
+			else
+				stats_voi_update_abs_u64(tp->t_stats,
+				    VOI_TCP_TXPB, len);
+#endif /* STATS */
+		} else if (SEQ_LT(tp->snd_nxt, tp->snd_max) || sack_rxmit) {
 			tp->t_sndrexmitpack++;
 			TCPSTAT_INC(tcps_sndrexmitpack);
 			TCPSTAT_ADD(tcps_sndrexmitbyte, len);
+#ifdef STATS
+			stats_voi_update_abs_u32(tp->t_stats, VOI_TCP_RETXPB,
+			    len);
+#endif /* STATS */
 		} else {
 			TCPSTAT_INC(tcps_sndpack);
 			TCPSTAT_ADD(tcps_sndbyte, len);
+#ifdef STATS
+			stats_voi_update_abs_u64(tp->t_stats, VOI_TCP_TXPB,
+			    len);
+#endif /* STATS */
 		}
 #ifdef INET6
 		if (MHLEN < hdrlen + max_linkhdr)
@@ -1038,7 +1058,7 @@ send:
 			    &len, if_hw_tsomaxsegcount,
 			    if_hw_tsomaxsegsize, msb, hw_tls);
 			if (len <= (tp->t_maxseg - optlen)) {
-				/* 
+				/*
 				 * Must have ran out of mbufs for the copy
 				 * shorten it to no longer need tso. Lets
 				 * not put on sendalot since we are low on
@@ -1133,15 +1153,16 @@ send:
 		} else
 			flags |= TH_ECE|TH_CWR;
 	}
-	
+
 	if (tp->t_state == TCPS_ESTABLISHED &&
-	    (tp->t_flags & TF_ECN_PERMIT)) {
+	    (tp->t_flags2 & TF2_ECN_PERMIT)) {
 		/*
 		 * If the peer has ECN, mark data packets with
 		 * ECN capable transmission (ECT).
 		 * Ignore pure ack packets, retransmissions and window probes.
 		 */
 		if (len > 0 && SEQ_GEQ(tp->snd_nxt, tp->snd_max) &&
+		    (sack_rxmit == 0) &&
 		    !((tp->t_flags & TF_FORCEDATA) && len == 1)) {
 #ifdef INET6
 			if (isipv6)
@@ -1151,18 +1172,18 @@ send:
 				ip->ip_tos |= IPTOS_ECN_ECT0;
 			TCPSTAT_INC(tcps_ecn_ect0);
 		}
-		
+
 		/*
 		 * Reply with proper ECN notifications.
 		 */
-		if (tp->t_flags & TF_ECN_SND_CWR) {
+		if (tp->t_flags2 & TF2_ECN_SND_CWR) {
 			flags |= TH_CWR;
-			tp->t_flags &= ~TF_ECN_SND_CWR;
-		} 
-		if (tp->t_flags & TF_ECN_SND_ECE)
+			tp->t_flags2 &= ~TF2_ECN_SND_CWR;
+		}
+		if (tp->t_flags2 & TF2_ECN_SND_ECE)
 			flags |= TH_ECE;
 	}
-	
+
 	/*
 	 * If we are doing retransmissions, then snd_nxt will
 	 * not reflect the first unsent octet.  For ACK only
@@ -1443,7 +1464,7 @@ out:
 	 * In transmit state, time the transmission and arrange for
 	 * the retransmit.  In persist state, just set snd_max.
 	 */
-	if ((tp->t_flags & TF_FORCEDATA) == 0 || 
+	if ((tp->t_flags & TF_FORCEDATA) == 0 ||
 	    !tcp_timer_active(tp, TT_PERSIST)) {
 		tcp_seq startseq = tp->snd_nxt;
 
@@ -1472,6 +1493,15 @@ out:
 				tp->t_rtseq = startseq;
 				TCPSTAT_INC(tcps_segstimed);
 			}
+#ifdef STATS
+			if (!(tp->t_flags & TF_GPUTINPROG) && len) {
+				tp->t_flags |= TF_GPUTINPROG;
+				tp->gput_seq = startseq;
+				tp->gput_ack = startseq +
+				    ulmin(sbavail(&so->so_snd) - off, sendwin);
+				tp->gput_ts = tcp_ts_getticks();
+			}
+#endif /* STATS */
 		}
 
 		/*

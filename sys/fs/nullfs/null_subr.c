@@ -113,6 +113,8 @@ null_hashget(mp, lowervp)
 	 * reference count (but NOT the lower vnode's VREF counter).
 	 */
 	hd = NULL_NHASH(lowervp);
+	if (LIST_EMPTY(hd))
+		return (NULLVP);
 	rw_rlock(&null_hash_lock);
 	LIST_FOREACH(a, hd, null_hash) {
 		if (a->null_lowervp == lowervp && NULLTOV(a)->v_mount == mp) {
@@ -207,7 +209,7 @@ null_nodeget(mp, lowervp, vpp)
 	int error;
 
 	ASSERT_VOP_LOCKED(lowervp, "lowervp");
-	KASSERT(lowervp->v_usecount >= 1, ("Unreferenced vnode %p", lowervp));
+	VNPASS(lowervp->v_usecount > 0, lowervp);
 
 	/* Lookup the hash firstly. */
 	*vpp = null_hashget(mp, lowervp);
@@ -223,7 +225,7 @@ null_nodeget(mp, lowervp, vpp)
 	 */
 	if (VOP_ISLOCKED(lowervp) != LK_EXCLUSIVE) {
 		vn_lock(lowervp, LK_UPGRADE | LK_RETRY);
-		if ((lowervp->v_iflag & VI_DOOMED) != 0) {
+		if (VN_IS_DOOMED(lowervp)) {
 			vput(lowervp);
 			return (ENOENT);
 		}
@@ -253,6 +255,9 @@ null_nodeget(mp, lowervp, vpp)
 	error = insmntque1(vp, mp, null_insmntque_dtr, xp);
 	if (error != 0)
 		return (error);
+	if (lowervp == MOUNTTONULLMOUNT(mp)->nullm_lowerrootvp)
+		vp->v_vflag |= VV_ROOT;
+
 	/*
 	 * Atomically insert our new node into the hash or vget existing 
 	 * if someone else has beaten us to it.

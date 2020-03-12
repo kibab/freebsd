@@ -98,6 +98,10 @@ STATIC_CFLAGS+= -ftls-model=initial-exec
 STATIC_CXXFLAGS+= -ftls-model=initial-exec
 .endif
 
+.if ${MACHINE_CPUARCH} == "riscv" && ${LINKER_FEATURES:Mriscv-relaxations} == ""
+CFLAGS += -mno-relax
+.endif
+
 .include <bsd.libnames.mk>
 
 # prefer .s to a .c, add .po, remove stuff not used in the BSD libraries
@@ -107,13 +111,8 @@ STATIC_CXXFLAGS+= -ftls-model=initial-exec
 .SUFFIXES: .out .o .bc .ll .po .pico .nossppico .pieo .S .asm .s .c .cc .cpp .cxx .C .f .y .l .ln
 
 .if !defined(PICFLAG)
-.if ${MACHINE_CPUARCH} == "sparc64"
-PICFLAG=-fPIC
-PIEFLAG=-fPIE
-.else
 PICFLAG=-fpic
 PIEFLAG=-fpie
-.endif
 .endif
 
 PO_FLAG=-pg
@@ -287,10 +286,6 @@ CLEANFILES+=	${SOBJS}
 .if defined(SHLIB_NAME)
 _LIBS+=		${SHLIB_NAME}
 
-.if ${CFLAGS:M-fexceptions} || defined(SHLIB_CXX) || defined(LIB_CXX)
-ALLOW_MIPS_SHARED_TEXTREL=
-.endif
-
 SOLINKOPTS+=	-shared -Wl,-x
 .if defined(LD_FATAL_WARNINGS) && ${LD_FATAL_WARNINGS} == "no"
 SOLINKOPTS+=	-Wl,--no-fatal-warnings
@@ -298,15 +293,6 @@ SOLINKOPTS+=	-Wl,--no-fatal-warnings
 SOLINKOPTS+=	-Wl,--fatal-warnings
 .endif
 SOLINKOPTS+=	-Wl,--warn-shared-textrel
-
-.if defined(ALLOW_MIPS_SHARED_TEXTREL) && ${MACHINE_CPUARCH:Mmips}
-# Check if we should be defining ALLOW_SHARED_TEXTREL... basically, C++
-# or -fexceptions in CFLAGS on MIPS.  This works around clang/lld attempting
-# to generate text relocations in read-only .eh_frame.  A future version of
-# clang/lld should instead transform them into relative references at link
-# time, and then we can stop doing this.
-SOLINKOPTS+=	-Wl,-z,notext
-.endif
 
 .if target(beforelinking)
 beforelinking: ${SOBJS}
@@ -446,7 +432,7 @@ _libinstall:
 	    ${_INSTALLFLAGS} lib${LIB_PRIVATE}${LIB}.a ${DESTDIR}${_LIBDIR}/
 .endif
 .if ${MK_PROFILE} != "no" && defined(LIB) && !empty(LIB)
-	${INSTALL} ${TAG_ARGS:D${TAG_ARGS},profile} -C -o ${LIBOWN} -g ${LIBGRP} -m ${LIBMODE} \
+	${INSTALL} ${TAG_ARGS:D${TAG_ARGS},development} -C -o ${LIBOWN} -g ${LIBGRP} -m ${LIBMODE} \
 	    ${_INSTALLFLAGS} lib${LIB_PRIVATE}${LIB}_p.a ${DESTDIR}${_LIBDIR}/
 .endif
 .if defined(SHLIB_NAME)

@@ -107,7 +107,7 @@ static int mpt_raid_reply_frame_handler(struct mpt_softc *mpt, request_t *req,
 static int mpt_spawn_raid_thread(struct mpt_softc *mpt);
 static void mpt_terminate_raid_thread(struct mpt_softc *mpt);
 static void mpt_raid_thread(void *arg);
-static timeout_t mpt_raid_timer;
+static callout_func_t mpt_raid_timer;
 #if 0
 static void mpt_enable_vol(struct mpt_softc *mpt,
 			   struct mpt_raid_volume *mpt_vol, int enable);
@@ -1826,19 +1826,19 @@ mpt_raid_sysctl_attach(struct mpt_softc *mpt)
 	struct sysctl_oid *tree = device_get_sysctl_tree(mpt->dev);
 
 	SYSCTL_ADD_PROC(ctx, SYSCTL_CHILDREN(tree), OID_AUTO,
-			"vol_member_wce", CTLTYPE_STRING | CTLFLAG_RW, mpt, 0,
-			mpt_raid_sysctl_vol_member_wce, "A",
-			"volume member WCE(On,Off,On-During-Rebuild,NC)");
+	    "vol_member_wce", CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+	    mpt, 0, mpt_raid_sysctl_vol_member_wce, "A",
+	    "volume member WCE(On,Off,On-During-Rebuild,NC)");
 
 	SYSCTL_ADD_PROC(ctx, SYSCTL_CHILDREN(tree), OID_AUTO,
-			"vol_queue_depth", CTLTYPE_INT | CTLFLAG_RW, mpt, 0,
-			mpt_raid_sysctl_vol_queue_depth, "I",
-			"default volume queue depth");
+	    "vol_queue_depth", CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+	    mpt, 0, mpt_raid_sysctl_vol_queue_depth, "I",
+	    "default volume queue depth");
 
 	SYSCTL_ADD_PROC(ctx, SYSCTL_CHILDREN(tree), OID_AUTO,
-			"vol_resync_rate", CTLTYPE_INT | CTLFLAG_RW, mpt, 0,
-			mpt_raid_sysctl_vol_resync_rate, "I",
-			"volume resync priority (0 == NC, 1 - 255)");
+	    "vol_resync_rate", CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+	    mpt, 0, mpt_raid_sysctl_vol_resync_rate, "I",
+	    "volume resync priority (0 == NC, 1 - 255)");
 	SYSCTL_ADD_UINT(ctx, SYSCTL_CHILDREN(tree), OID_AUTO,
 			"nonoptimal_volumes", CTLFLAG_RD,
 			&mpt->raid_nonopt_volumes, 0,

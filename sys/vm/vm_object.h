@@ -70,6 +70,7 @@
 #define	_VM_OBJECT_
 
 #include <sys/queue.h>
+#include <sys/_blockcount.h>
 #include <sys/_lock.h>
 #include <sys/_mutex.h>
 #include <sys/_pctrie.h>
@@ -113,8 +114,8 @@ struct vm_object {
 	objtype_t type;			/* type of pager */
 	u_short flags;			/* see below */
 	u_short pg_color;		/* (c) color of first page in obj */
-	volatile u_int paging_in_progress; /* Paging (in or out) so don't collapse or destroy */
-	volatile u_int busy;		/* (a) object is busy, disallow page busy. */
+	blockcount_t paging_in_progress; /* (a) Paging (in or out) so don't collapse or destroy */
+	blockcount_t busy;		/* (a) object is busy, disallow page busy. */
 	int resident_page_count;	/* number of resident pages */
 	struct vm_object *backing_object; /* object that I'm a shadow of */
 	vm_ooffset_t backing_object_offset;/* Offset in backing object */
@@ -185,13 +186,16 @@ struct vm_object {
 #define	OBJ_UNMANAGED	0x0002		/* (c) contains unmanaged pages */
 #define	OBJ_POPULATE	0x0004		/* pager implements populate() */
 #define	OBJ_DEAD	0x0008		/* dead objects (during rundown) */
-#define	OBJ_NOSPLIT	0x0010		/* dont split this object */
+#define	OBJ_ANON	0x0010		/* (c) contains anonymous memory */
 #define	OBJ_UMTXDEAD	0x0020		/* umtx pshared was terminated */
 #define	OBJ_SIZEVNLOCK	0x0040		/* lock vnode to check obj size */
 #define	OBJ_PG_DTOR	0x0080		/* dont reset object, leave that for dtor */
 #define	OBJ_TMPFS_NODE	0x0200		/* object belongs to tmpfs VREG node */
+#define	OBJ_SPLIT	0x0400		/* object is being split */
+#define	OBJ_COLLAPSING	0x0800		/* Parent of collapse. */
 #define	OBJ_COLORED	0x1000		/* pg_color is defined */
 #define	OBJ_ONEMAPPING	0x2000		/* One USE (a single, non-forked) mapping flag */
+#define	OBJ_SHADOWLIST	0x4000		/* Object is on the shadow list. */
 #define	OBJ_TMPFS	0x8000		/* has tmpfs vnode allocated */
 
 /*
@@ -261,6 +265,13 @@ extern struct vm_object kernel_object_store;
 #define	VM_OBJECT_PICKUP(object, state)					\
 	lock_class_rw.lc_lock(&(object)->lock.lock_object, (state))
 
+#define	VM_OBJECT_ASSERT_PAGING(object)					\
+	KASSERT(blockcount_read(&(object)->paging_in_progress) != 0,	\
+	    ("vm_object %p is not paging", object))
+#define	VM_OBJECT_ASSERT_REFERENCE(object)				\
+	KASSERT((object)->reference_count != 0,				\
+	    ("vm_object %p is not referenced", object))
+
 struct vnode;
 
 /*
@@ -312,16 +323,23 @@ static __inline bool
 vm_object_mightbedirty(vm_object_t object)
 {
 
-	return (object->type == OBJT_VNODE &&
-	    object->generation != object->cleangeneration);
+	if (object->type != OBJT_VNODE) {
+		if ((object->flags & OBJ_TMPFS_NODE) == 0)
+			return (false);
+#ifdef KASSERT
+		KASSERT(object->type == OBJT_SWAP,
+		    ("TMPFS_NODE obj %p is not swap", object));
+#endif
+	}
+	return (object->generation != object->cleangeneration);
 }
 
 void vm_object_clear_flag(vm_object_t object, u_short bits);
 void vm_object_pip_add(vm_object_t object, short i);
 void vm_object_pip_wakeup(vm_object_t object);
 void vm_object_pip_wakeupn(vm_object_t object, short i);
-void vm_object_pip_wait(vm_object_t object, char *waitid);
-void vm_object_pip_wait_unlocked(vm_object_t object, char *waitid);
+void vm_object_pip_wait(vm_object_t object, const char *waitid);
+void vm_object_pip_wait_unlocked(vm_object_t object, const char *waitid);
 
 void vm_object_busy(vm_object_t object);
 void vm_object_unbusy(vm_object_t object);
@@ -331,7 +349,7 @@ static inline bool
 vm_object_busied(vm_object_t object)
 {
 
-	return (object->busy != 0);
+	return (blockcount_read(&object->busy) != 0);
 }
 #define	VM_OBJECT_ASSERT_BUSY(object)	MPASS(vm_object_busied((object)))
 
@@ -340,6 +358,8 @@ void umtx_shm_object_terminated(vm_object_t object);
 extern int umtx_shm_vnobj_persistent;
 
 vm_object_t vm_object_allocate (objtype_t, vm_pindex_t);
+vm_object_t vm_object_allocate_anon(vm_pindex_t, vm_object_t, struct ucred *,
+   vm_size_t);
 boolean_t vm_object_coalesce(vm_object_t, vm_ooffset_t, vm_size_t, vm_size_t,
    boolean_t);
 void vm_object_collapse (vm_object_t);
@@ -361,7 +381,8 @@ void vm_object_print(long addr, boolean_t have_addr, long count, char *modif);
 void vm_object_reference (vm_object_t);
 void vm_object_reference_locked(vm_object_t);
 int  vm_object_set_memattr(vm_object_t object, vm_memattr_t memattr);
-void vm_object_shadow (vm_object_t *, vm_ooffset_t *, vm_size_t);
+void vm_object_shadow(vm_object_t *, vm_ooffset_t *, vm_size_t, struct ucred *,
+    bool);
 void vm_object_split(vm_map_entry_t);
 boolean_t vm_object_sync(vm_object_t, vm_ooffset_t, vm_size_t, boolean_t,
     boolean_t);

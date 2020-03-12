@@ -25,11 +25,15 @@
  * $FreeBSD$
  */
 
+#include "opt_kern_tls.h"
+
 #include "en.h"
 
 #include <sys/eventhandler.h>
 #include <sys/sockio.h>
 #include <machine/atomic.h>
+
+#include <net/debugnet.h>
 
 #ifndef ETH_DRIVER_VERSION
 #define	ETH_DRIVER_VERSION	"3.5.2"
@@ -165,6 +169,10 @@ static const struct media mlx5e_mode_table[MLX5E_LINK_SPEEDS_NUMBER][MLX5E_LINK_
 	},
 	[MLX5E_50GBASE_KR2][MLX5E_KR2] = {
 		.subtype = IFM_50G_KR2,
+		.baudrate = IF_Gbps(50ULL),
+	},
+	[MLX5E_50GBASE_KR4][MLX5E_KR4] = {
+		.subtype = IFM_50G_KR4,
 		.baudrate = IF_Gbps(50ULL),
 	},
 };
@@ -315,6 +323,10 @@ static const struct media mlx5e_ext_mode_table[MLX5E_EXT_LINK_SPEEDS_NUMBER][MLX
 		.subtype = IFM_50G_KR2,
 		.baudrate = IF_Gbps(50ULL),
 	},
+	[MLX5E_50GAUI_2_LAUI_2_50GBASE_CR2_KR2][MLX5E_KR4] = {
+		.subtype = IFM_50G_KR4,
+		.baudrate = IF_Gbps(50ULL),
+	},
 	[MLX5E_50GAUI_2_LAUI_2_50GBASE_CR2_KR2][MLX5E_SR2] = {
 		.subtype = IFM_50G_SR2,
 		.baudrate = IF_Gbps(50ULL),
@@ -396,6 +408,8 @@ static const struct media mlx5e_ext_mode_table[MLX5E_EXT_LINK_SPEEDS_NUMBER][MLX
 		.baudrate = IF_Gbps(200ULL),
 	},
 };
+
+DEBUGNET_DEFINE(mlx5_en);
 
 MALLOC_DEFINE(M_MLX5EN, "MLX5EN", "MLX5 Ethernet");
 
@@ -1038,9 +1052,10 @@ mlx5e_update_stats_work(struct work_struct *work)
 {
 	struct mlx5e_priv *priv;
 
-	priv  = container_of(work, struct mlx5e_priv, update_stats_work);
+	priv = container_of(work, struct mlx5e_priv, update_stats_work);
 	PRIV_LOCK(priv);
-	if (test_bit(MLX5E_STATE_OPENED, &priv->state) != 0)
+	if (test_bit(MLX5E_STATE_OPENED, &priv->state) != 0 &&
+	    !test_bit(MLX5_INTERFACE_STATE_TEARDOWN, &priv->mdev->intf_state))
 		mlx5e_update_stats_locked(priv);
 	PRIV_UNLOCK(priv);
 }
@@ -1101,7 +1116,7 @@ static int mlx5e_calibration_duration = 20;
 static int mlx5e_fast_calibration = 1;
 static int mlx5e_normal_calibration = 30;
 
-static SYSCTL_NODE(_hw_mlx5, OID_AUTO, calibr, CTLFLAG_RW, 0,
+static SYSCTL_NODE(_hw_mlx5, OID_AUTO, calibr, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "MLX5 timestamp calibration parameteres");
 
 SYSCTL_INT(_hw_mlx5_calibr, OID_AUTO, duration, CTLFLAG_RWTUN,
@@ -1501,6 +1516,10 @@ mlx5e_free_sq_db(struct mlx5e_sq *sq)
 	int x;
 
 	for (x = 0; x != wq_sz; x++) {
+		if (unlikely(sq->mbuf[x].p_refcount != NULL)) {
+			atomic_add_int(sq->mbuf[x].p_refcount, -1);
+			sq->mbuf[x].p_refcount = NULL;
+		}
 		if (sq->mbuf[x].mbuf != NULL) {
 			bus_dmamap_unload(sq->dma_tag, sq->mbuf[x].dma_map);
 			m_freem(sq->mbuf[x].mbuf);
@@ -2175,6 +2194,7 @@ mlx5e_open_channel(struct mlx5e_priv *priv,
     struct mlx5e_channel_param *cparam,
     struct mlx5e_channel *c)
 {
+	struct epoch_tracker et;
 	int i, err;
 
 	/* zero non-persistant data */
@@ -2202,7 +2222,9 @@ mlx5e_open_channel(struct mlx5e_priv *priv,
 		goto err_close_sqs;
 
 	/* poll receive queue initially */
+	NET_EPOCH_ENTER(et);
 	c->rq.cq.mcq.comp(&c->rq.cq.mcq);
+	NET_EPOCH_EXIT(et);
 
 	return (0);
 
@@ -2999,6 +3021,11 @@ mlx5e_set_dev_port_mtu(struct ifnet *ifp, int sw_mtu)
 	}
 	priv->params_ethtool.hw_mtu = hw_mtu;
 
+	/* compute MSB */
+	while (hw_mtu & (hw_mtu - 1))
+		hw_mtu &= (hw_mtu - 1);
+	priv->params_ethtool.hw_mtu_msb = hw_mtu;
+
 	return (err);
 }
 
@@ -3310,6 +3337,10 @@ mlx5e_ioctl(struct ifnet *ifp, u_long command, caddr_t data)
 		}
 		if (mask & IFCAP_NOMAP)
 			ifp->if_capenable ^= IFCAP_NOMAP;
+		if (mask & IFCAP_TXTLS4)
+			ifp->if_capenable ^= IFCAP_TXTLS4;
+		if (mask & IFCAP_TXTLS6)
+			ifp->if_capenable ^= IFCAP_TXTLS6;
 		if (mask & IFCAP_RXCSUM)
 			ifp->if_capenable ^= IFCAP_RXCSUM;
 		if (mask & IFCAP_RXCSUM_IPV6)
@@ -3595,6 +3626,7 @@ mlx5e_create_mkey(struct mlx5e_priv *priv, u32 pdn,
 
 	mkc = MLX5_ADDR_OF(create_mkey_in, in, memory_key_mkey_entry);
 	MLX5_SET(mkc, mkc, access_mode, MLX5_ACCESS_MODE_PA);
+	MLX5_SET(mkc, mkc, umr_en, 1);	/* used by HW TLS */
 	MLX5_SET(mkc, mkc, lw, 1);
 	MLX5_SET(mkc, mkc, lr, 1);
 
@@ -3729,6 +3761,7 @@ static void
 mlx5e_disable_rx_dma(struct mlx5e_channel *ch)
 {
 	struct mlx5e_rq *rq = &ch->rq;
+	struct epoch_tracker et;
 	int err;
 
 	mtx_lock(&rq->mtx);
@@ -3744,7 +3777,9 @@ mlx5e_disable_rx_dma(struct mlx5e_channel *ch)
 
 	while (!mlx5_wq_ll_is_empty(&rq->wq)) {
 		msleep(1);
+		NET_EPOCH_ENTER(et);
 		rq->cq.mcq.comp(&rq->cq.mcq);
+		NET_EPOCH_EXIT(et);
 	}
 
 	/*
@@ -3762,6 +3797,7 @@ static void
 mlx5e_enable_rx_dma(struct mlx5e_channel *ch)
 {
 	struct mlx5e_rq *rq = &ch->rq;
+	struct epoch_tracker et;
 	int err;
 
 	rq->wq.wqe_ctr = 0;
@@ -3774,7 +3810,9 @@ mlx5e_enable_rx_dma(struct mlx5e_channel *ch)
 
 	rq->enabled = 1;
 
+	NET_EPOCH_ENTER(et);
 	rq->cq.mcq.comp(&rq->cq.mcq);
+	NET_EPOCH_EXIT(et);
 }
 
 void
@@ -3813,8 +3851,8 @@ static void
 mlx5e_add_hw_stats(struct mlx5e_priv *priv)
 {
 	SYSCTL_ADD_PROC(&priv->sysctl_ctx, SYSCTL_CHILDREN(priv->sysctl_hw),
-	    OID_AUTO, "fw_version", CTLTYPE_STRING | CTLFLAG_RD, priv, 0,
-	    sysctl_firmware, "A", "HCA firmware version");
+	    OID_AUTO, "fw_version", CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_MPSAFE,
+	    priv, 0, sysctl_firmware, "A", "HCA firmware version");
 
 	SYSCTL_ADD_STRING(&priv->sysctl_ctx, SYSCTL_CHILDREN(priv->sysctl_hw),
 	    OID_AUTO, "board_id", CTLFLAG_RD, priv->mdev->board_id, 0,
@@ -3990,7 +4028,7 @@ mlx5e_setup_pauseframes(struct mlx5e_priv *priv)
 	PRIV_UNLOCK(priv);
 }
 
-static int
+int
 mlx5e_ul_snd_tag_alloc(struct ifnet *ifp,
     union if_snd_tag_alloc_params *params,
     struct m_snd_tag **ppmt)
@@ -4032,7 +4070,7 @@ mlx5e_ul_snd_tag_alloc(struct ifnet *ifp,
 	}
 }
 
-static int
+int
 mlx5e_ul_snd_tag_query(struct m_snd_tag *pmt, union if_snd_tag_query_params *params)
 {
 	struct mlx5e_channel *pch =
@@ -4043,7 +4081,7 @@ mlx5e_ul_snd_tag_query(struct m_snd_tag *pmt, union if_snd_tag_query_params *par
 	return (0);
 }
 
-static void
+void
 mlx5e_ul_snd_tag_free(struct m_snd_tag *pmt)
 {
 	struct mlx5e_channel *pch =
@@ -4062,9 +4100,17 @@ mlx5e_snd_tag_alloc(struct ifnet *ifp,
 #ifdef RATELIMIT
 	case IF_SND_TAG_TYPE_RATE_LIMIT:
 		return (mlx5e_rl_snd_tag_alloc(ifp, params, ppmt));
+#if defined(KERN_TLS) && defined(IF_SND_TAG_TYPE_TLS_RATE_LIMIT)
+	case IF_SND_TAG_TYPE_TLS_RATE_LIMIT:
+		return (mlx5e_tls_snd_tag_alloc(ifp, params, ppmt));
+#endif
 #endif
 	case IF_SND_TAG_TYPE_UNLIMITED:
 		return (mlx5e_ul_snd_tag_alloc(ifp, params, ppmt));
+#ifdef KERN_TLS
+	case IF_SND_TAG_TYPE_TLS:
+		return (mlx5e_tls_snd_tag_alloc(ifp, params, ppmt));
+#endif
 	default:
 		return (EOPNOTSUPP);
 	}
@@ -4080,8 +4126,15 @@ mlx5e_snd_tag_modify(struct m_snd_tag *pmt, union if_snd_tag_modify_params *para
 #ifdef RATELIMIT
 	case IF_SND_TAG_TYPE_RATE_LIMIT:
 		return (mlx5e_rl_snd_tag_modify(pmt, params));
+#if defined(KERN_TLS) && defined(IF_SND_TAG_TYPE_TLS_RATE_LIMIT)
+	case IF_SND_TAG_TYPE_TLS_RATE_LIMIT:
+		return (mlx5e_tls_snd_tag_modify(pmt, params));
+#endif
 #endif
 	case IF_SND_TAG_TYPE_UNLIMITED:
+#ifdef KERN_TLS
+	case IF_SND_TAG_TYPE_TLS:
+#endif
 	default:
 		return (EOPNOTSUPP);
 	}
@@ -4097,9 +4150,17 @@ mlx5e_snd_tag_query(struct m_snd_tag *pmt, union if_snd_tag_query_params *params
 #ifdef RATELIMIT
 	case IF_SND_TAG_TYPE_RATE_LIMIT:
 		return (mlx5e_rl_snd_tag_query(pmt, params));
+#if defined(KERN_TLS) && defined(IF_SND_TAG_TYPE_TLS_RATE_LIMIT)
+	case IF_SND_TAG_TYPE_TLS_RATE_LIMIT:
+		return (mlx5e_tls_snd_tag_query(pmt, params));
+#endif
 #endif
 	case IF_SND_TAG_TYPE_UNLIMITED:
 		return (mlx5e_ul_snd_tag_query(pmt, params));
+#ifdef KERN_TLS
+	case IF_SND_TAG_TYPE_TLS:
+		return (mlx5e_tls_snd_tag_query(pmt, params));
+#endif
 	default:
 		return (EOPNOTSUPP);
 	}
@@ -4160,10 +4221,20 @@ mlx5e_snd_tag_free(struct m_snd_tag *pmt)
 	case IF_SND_TAG_TYPE_RATE_LIMIT:
 		mlx5e_rl_snd_tag_free(pmt);
 		break;
+#if defined(KERN_TLS) && defined(IF_SND_TAG_TYPE_TLS_RATE_LIMIT)
+	case IF_SND_TAG_TYPE_TLS_RATE_LIMIT:
+		mlx5e_tls_snd_tag_free(pmt);
+		break;
+#endif
 #endif
 	case IF_SND_TAG_TYPE_UNLIMITED:
 		mlx5e_ul_snd_tag_free(pmt);
 		break;
+#ifdef KERN_TLS
+	case IF_SND_TAG_TYPE_TLS:
+		mlx5e_tls_snd_tag_free(pmt);
+		break;
+#endif
 	default:
 		break;
 	}
@@ -4212,7 +4283,8 @@ mlx5e_create_ifp(struct mlx5_core_dev *mdev)
 	if_initname(ifp, "mce", device_get_unit(mdev->pdev->dev.bsddev));
 	ifp->if_mtu = ETHERMTU;
 	ifp->if_init = mlx5e_open;
-	ifp->if_flags = IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST;
+	ifp->if_flags = IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST |
+	    IFF_KNOWSEPOCH;
 	ifp->if_ioctl = mlx5e_ioctl;
 	ifp->if_transmit = mlx5e_xmit;
 	ifp->if_qflush = if_qflush;
@@ -4231,6 +4303,7 @@ mlx5e_create_ifp(struct mlx5_core_dev *mdev)
 	ifp->if_capabilities |= IFCAP_TSO | IFCAP_VLAN_HWTSO;
 	ifp->if_capabilities |= IFCAP_HWSTATS | IFCAP_HWRXTSTMP;
 	ifp->if_capabilities |= IFCAP_NOMAP;
+	ifp->if_capabilities |= IFCAP_TXTLS4 | IFCAP_TXTLS6;
 	ifp->if_capabilities |= IFCAP_TXRTLMT;
 	ifp->if_snd_tag_alloc = mlx5e_snd_tag_alloc;
 	ifp->if_snd_tag_free = mlx5e_snd_tag_free;
@@ -4256,14 +4329,16 @@ mlx5e_create_ifp(struct mlx5_core_dev *mdev)
 	/* ifnet sysctl tree */
 	sysctl_ctx_init(&priv->sysctl_ctx);
 	priv->sysctl_ifnet = SYSCTL_ADD_NODE(&priv->sysctl_ctx, SYSCTL_STATIC_CHILDREN(_dev),
-	    OID_AUTO, ifp->if_dname, CTLFLAG_RD, 0, "MLX5 ethernet - interface name");
+	    OID_AUTO, ifp->if_dname, CTLFLAG_RD | CTLFLAG_MPSAFE, 0,
+	    "MLX5 ethernet - interface name");
 	if (priv->sysctl_ifnet == NULL) {
 		mlx5_core_err(mdev, "SYSCTL_ADD_NODE() failed\n");
 		goto err_free_sysctl;
 	}
 	snprintf(unit, sizeof(unit), "%d", ifp->if_dunit);
 	priv->sysctl_ifnet = SYSCTL_ADD_NODE(&priv->sysctl_ctx, SYSCTL_CHILDREN(priv->sysctl_ifnet),
-	    OID_AUTO, unit, CTLFLAG_RD, 0, "MLX5 ethernet - interface unit");
+	    OID_AUTO, unit, CTLFLAG_RD | CTLFLAG_MPSAFE, 0,
+	    "MLX5 ethernet - interface unit");
 	if (priv->sysctl_ifnet == NULL) {
 		mlx5_core_err(mdev, "SYSCTL_ADD_NODE() failed\n");
 		goto err_free_sysctl;
@@ -4272,7 +4347,8 @@ mlx5e_create_ifp(struct mlx5_core_dev *mdev)
 	/* HW sysctl tree */
 	child = SYSCTL_CHILDREN(device_get_sysctl_tree(mdev->pdev->dev.bsddev));
 	priv->sysctl_hw = SYSCTL_ADD_NODE(&priv->sysctl_ctx, child,
-	    OID_AUTO, "hw", CTLFLAG_RD, 0, "MLX5 ethernet dev hw");
+	    OID_AUTO, "hw", CTLFLAG_RD | CTLFLAG_MPSAFE, 0,
+	    "MLX5 ethernet dev hw");
 	if (priv->sysctl_hw == NULL) {
 		mlx5_core_err(mdev, "SYSCTL_ADD_NODE() failed\n");
 		goto err_free_sysctl;
@@ -4316,13 +4392,18 @@ mlx5e_create_ifp(struct mlx5_core_dev *mdev)
 		random_ether_addr(dev_addr);
 		mlx5_en_err(ifp, "Assigned random MAC address\n");
 	}
-#ifdef RATELIMIT
+
 	err = mlx5e_rl_init(priv);
 	if (err) {
 		mlx5_en_err(ifp, "mlx5e_rl_init failed, %d\n", err);
 		goto err_create_mkey;
 	}
-#endif
+
+	err = mlx5e_tls_init(priv);
+	if (err) {
+		if_printf(ifp, "%s: mlx5e_tls_init failed\n", __func__);
+		goto err_rl_init;
+	}
 
 	/* set default MTU */
 	mlx5e_set_dev_port_mtu(ifp, ifp->if_mtu);
@@ -4379,6 +4460,9 @@ mlx5e_create_ifp(struct mlx5_core_dev *mdev)
 	/* Set autoselect by default */
 	ifmedia_set(&priv->media, IFM_ETHER | IFM_AUTO | IFM_FDX |
 	    IFM_ETH_RXPAUSE | IFM_ETH_TXPAUSE);
+
+	DEBUGNET_SET(ifp, mlx5_en);
+
 	ether_ifattach(ifp, dev_addr);
 
 	/* Register for VLAN events */
@@ -4423,10 +4507,12 @@ mlx5e_create_ifp(struct mlx5_core_dev *mdev)
 
 	return (priv);
 
-#ifdef RATELIMIT
+err_rl_init:
+	mlx5e_rl_cleanup(priv);
+
 err_create_mkey:
 	mlx5_core_destroy_mkey(priv->mdev, &priv->mr);
-#endif
+
 err_dealloc_transport_domain:
 	mlx5_dealloc_transport_domain(mdev, priv->tdn);
 
@@ -4503,9 +4589,9 @@ mlx5e_destroy_ifp(struct mlx5_core_dev *mdev, void *vpriv)
 	ifmedia_removeall(&priv->media);
 	ether_ifdetach(ifp);
 
-#ifdef RATELIMIT
+	mlx5e_tls_cleanup(priv);
 	mlx5e_rl_cleanup(priv);
-#endif
+
 	/* destroy all remaining sysctl nodes */
 	sysctl_ctx_free(&priv->stats.vport.ctx);
 	sysctl_ctx_free(&priv->stats.pport.ctx);
@@ -4523,6 +4609,71 @@ mlx5e_destroy_ifp(struct mlx5_core_dev *mdev, void *vpriv)
 	if_free(ifp);
 	free(priv, M_MLX5EN);
 }
+
+#ifdef DEBUGNET
+static void
+mlx5_en_debugnet_init(struct ifnet *dev, int *nrxr, int *ncl, int *clsize)
+{
+	struct mlx5e_priv *priv = if_getsoftc(dev);
+
+	PRIV_LOCK(priv);
+	*nrxr = priv->params.num_channels;
+	*ncl = DEBUGNET_MAX_IN_FLIGHT;
+	*clsize = MLX5E_MAX_RX_BYTES;
+	PRIV_UNLOCK(priv);
+}
+
+static void
+mlx5_en_debugnet_event(struct ifnet *dev, enum debugnet_ev event)
+{
+}
+
+static int
+mlx5_en_debugnet_transmit(struct ifnet *dev, struct mbuf *m)
+{
+	struct mlx5e_priv *priv = if_getsoftc(dev);
+	struct mlx5e_sq *sq;
+	int err;
+
+	if ((if_getdrvflags(dev) & (IFF_DRV_RUNNING | IFF_DRV_OACTIVE)) !=
+	    IFF_DRV_RUNNING || (priv->media_status_last & IFM_ACTIVE) == 0)
+		return (ENOENT);
+
+	sq = &priv->channel[0].sq[0];
+
+	if (sq->running == 0) {
+		m_freem(m);
+		return (ENOENT);
+	}
+
+	if (mlx5e_sq_xmit(sq, &m) != 0) {
+		m_freem(m);
+		err = ENOBUFS;
+	} else {
+		err = 0;
+	}
+
+	if (likely(sq->doorbell.d64 != 0)) {
+		mlx5e_tx_notify_hw(sq, sq->doorbell.d32, 0);
+		sq->doorbell.d64 = 0;
+	}
+	return (err);
+}
+
+static int
+mlx5_en_debugnet_poll(struct ifnet *dev, int count)
+{
+	struct mlx5e_priv *priv = if_getsoftc(dev);
+
+	if ((if_getdrvflags(dev) & IFF_DRV_RUNNING) == 0 ||
+	    (priv->media_status_last & IFM_ACTIVE) == 0)
+		return (ENOENT);
+
+	mlx5_poll_interrupts(priv->mdev);
+
+	return (0);
+}
+#endif /* DEBUGNET */
 
 static void *
 mlx5e_get_ifp(void *vpriv)

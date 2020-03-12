@@ -4325,6 +4325,15 @@ zfs_check_settable(const char *dsname, nvpair_t *pair, cred_t *cr)
 		}
 		break;
 
+	case ZFS_PROP_SPECIAL_SMALL_BLOCKS:
+		/*
+		 * This property could require the allocation classes
+		 * feature to be active for setting, however we allow
+		 * it so that tests of settable properties succeed.
+		 * The CLI will issue a warning in this case.
+		 */
+		break;
+
 	case ZFS_PROP_SHARESMB:
 		if (zpl_earlier_version(dsname, ZPL_VERSION_FUID))
 			return (SET_ERROR(ENOTSUP));
@@ -5544,8 +5553,7 @@ zfs_ioc_next_obj(zfs_cmd_t *zc)
 	if (error != 0)
 		return (error);
 
-	error = dmu_object_next(os, &zc->zc_obj, B_FALSE,
-	    dsl_dataset_phys(os->os_dsl_dataset)->ds_prev_snap_txg);
+	error = dmu_object_next(os, &zc->zc_obj, B_FALSE, 0);
 
 	dmu_objset_rele(os, FTAG);
 	return (error);
@@ -7287,7 +7295,7 @@ zfs_shutdown(void *arg __unused, int howto __unused)
 	/*
 	 * ZFS fini routines can not properly work in a panic-ed system.
 	 */
-	if (panicstr == NULL)
+	if (!KERNEL_PANICKED())
 		(void)zfs__fini();
 }
 

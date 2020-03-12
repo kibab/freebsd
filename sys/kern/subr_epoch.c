@@ -92,8 +92,10 @@ struct epoch {
 #define MAX_EPOCHS 64
 
 CTASSERT(sizeof(ck_epoch_entry_t) == sizeof(struct epoch_context));
-SYSCTL_NODE(_kern, OID_AUTO, epoch, CTLFLAG_RW, 0, "epoch information");
-SYSCTL_NODE(_kern_epoch, OID_AUTO, stats, CTLFLAG_RW, 0, "epoch stats");
+SYSCTL_NODE(_kern, OID_AUTO, epoch, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "epoch information");
+SYSCTL_NODE(_kern_epoch, OID_AUTO, stats, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "epoch stats");
 
 /* Stats. */
 static counter_u64_t block_count;
@@ -169,6 +171,10 @@ RB_GENERATE_STATIC(stacktree, stackentry, se_node, stackentry_compare);
 static struct mtx epoch_stacks_lock;
 MTX_SYSINIT(epochstacks, &epoch_stacks_lock, "epoch_stacks", MTX_DEF);
 
+static bool epoch_trace_stack_print = true;
+SYSCTL_BOOL(_kern_epoch, OID_AUTO, trace_stack_print, CTLFLAG_RWTUN,
+    &epoch_trace_stack_print, 0, "Print stack traces on epoch reports");
+
 static void epoch_trace_report(const char *fmt, ...) __printflike(1, 2);
 static inline void
 epoch_trace_report(const char *fmt, ...)
@@ -197,7 +203,8 @@ epoch_trace_report(const char *fmt, ...)
 	va_start(ap, fmt);
 	(void)vprintf(fmt, ap);
 	va_end(ap);
-	stack_print_ddb(&se.se_stack);
+	if (epoch_trace_stack_print)
+		stack_print_ddb(&se.se_stack);
 }
 
 static inline void
@@ -209,8 +216,9 @@ epoch_trace_enter(struct thread *td, epoch_t epoch, epoch_tracker_t et,
 	SLIST_FOREACH(iet, &td->td_epochs, et_tlink)
 		if (iet->et_epoch == epoch)
 			epoch_trace_report("Recursively entering epoch %s "
-			    "previously entered at %s:%d\n",
-			    epoch->e_name, iet->et_file, iet->et_line);
+			    "at %s:%d, previously entered at %s:%d\n",
+			    epoch->e_name, file, line,
+			    iet->et_file, iet->et_line);
 	et->et_epoch = epoch;
 	et->et_file = file;
 	et->et_line = line;
@@ -223,9 +231,10 @@ epoch_trace_exit(struct thread *td, epoch_t epoch, epoch_tracker_t et,
 {
 
 	if (SLIST_FIRST(&td->td_epochs) != et) {
-		epoch_trace_report("Exiting epoch %s in a not nested order. "
-		    "Most recently entered %s at %s:%d\n",
+		epoch_trace_report("Exiting epoch %s in a not nested order "
+		    "at %s:%d. Most recently entered %s at %s:%d\n",
 		    epoch->e_name,
+		    file, line,
 		    SLIST_FIRST(&td->td_epochs)->et_epoch->e_name,
 		    SLIST_FIRST(&td->td_epochs)->et_file,
 		    SLIST_FIRST(&td->td_epochs)->et_line);
@@ -276,7 +285,7 @@ epoch_init(void *arg __unused)
 	global_epoch = epoch_alloc("Global", 0);
 	global_epoch_preempt = epoch_alloc("Global preemptible", EPOCH_PREEMPT);
 }
-SYSINIT(epoch, SI_SUB_TASKQ + 1, SI_ORDER_FIRST, epoch_init, NULL);
+SYSINIT(epoch, SI_SUB_EPOCH, SI_ORDER_FIRST, epoch_init, NULL);
 
 #if !defined(EARLY_AP_STARTUP)
 static void
@@ -350,7 +359,7 @@ static epoch_record_t
 epoch_currecord(epoch_t epoch)
 {
 
-	return (zpcpu_get_cpu(epoch->e_pcpu_record, curcpu));
+	return (zpcpu_get(epoch->e_pcpu_record));
 }
 
 #define INIT_CHECK(epoch)					\
@@ -570,15 +579,14 @@ epoch_block_handler_preempt(struct ck_epoch *global __unused,
 	 * so we have nothing to do except context switch away.
 	 */
 	counter_u64_add(switch_count, 1);
-	mi_switch(SW_VOL | SWT_RELINQUISH, NULL);
-
+	mi_switch(SW_VOL | SWT_RELINQUISH);
 	/*
-	 * Release the thread lock while yielding to
-	 * allow other threads to acquire the lock
-	 * pointed to by TDQ_LOCKPTR(td). Else a
-	 * deadlock like situation might happen. (HPS)
+	 * It is important the thread lock is dropped while yielding
+	 * to allow other threads to acquire the lock pointed to by
+	 * TDQ_LOCKPTR(td). Currently mi_switch() will unlock the
+	 * thread lock before returning. Else a deadlock like
+	 * situation might happen.
 	 */
-	thread_unlock(td);
 	thread_lock(td);
 }
 
@@ -604,8 +612,8 @@ epoch_wait_preempt(epoch_t epoch)
 	KASSERT(!in_epoch(epoch), ("epoch_wait_preempt() called in the middle "
 	    "of an epoch section of the same epoch"));
 #endif
-	thread_lock(td);
 	DROP_GIANT();
+	thread_lock(td);
 
 	old_cpu = PCPU_GET(cpuid);
 	old_pinned = td->td_pinned;
@@ -658,7 +666,7 @@ epoch_wait(epoch_t epoch)
 }
 
 void
-epoch_call(epoch_t epoch, epoch_context_t ctx, void (*callback) (epoch_context_t))
+epoch_call(epoch_t epoch, epoch_callback_t callback, epoch_context_t ctx)
 {
 	epoch_record_t er;
 	ck_epoch_entry_t *cb;
@@ -813,7 +821,7 @@ epoch_drain_callbacks(epoch_t epoch)
 	CPU_FOREACH(cpu) {
 		er = zpcpu_get_cpu(epoch->e_pcpu_record, cpu);
 		sched_bind(td, cpu);
-		epoch_call(epoch, &er->er_drain_ctx, &epoch_drain_cb);
+		epoch_call(epoch, &epoch_drain_cb, &er->er_drain_ctx);
 	}
 
 	/* restore CPU binding, if any */

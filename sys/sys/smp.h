@@ -264,6 +264,8 @@ extern	struct mtx smp_ipi_mtx;
 
 int	quiesce_all_cpus(const char *, int);
 int	quiesce_cpus(cpuset_t, const char *, int);
+void	quiesce_all_critical(void);
+void	cpus_fence_seq_cst(void);
 void	smp_no_rendezvous_barrier(void *);
 void	smp_rendezvous(void (*)(void *), 
 		       void (*)(void *),
@@ -274,6 +276,19 @@ void	smp_rendezvous_cpus(cpuset_t,
 		       void (*)(void *),
 		       void (*)(void *),
 		       void *arg);
+
+struct smp_rendezvous_cpus_retry_arg {
+	cpuset_t cpus;
+};
+void	smp_rendezvous_cpus_retry(cpuset_t,
+		       void (*)(void *),
+		       void (*)(void *),
+		       void (*)(void *),
+		       void (*)(void *, int),
+		       struct smp_rendezvous_cpus_retry_arg *);
+
+void	smp_rendezvous_cpus_done(struct smp_rendezvous_cpus_retry_arg *);
+
 #endif /* !LOCORE */
 #endif /* _KERNEL */
 #endif /* _SYS_SMP_H_ */

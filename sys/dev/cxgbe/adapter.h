@@ -35,6 +35,7 @@
 
 #include <sys/kernel.h>
 #include <sys/bus.h>
+#include <sys/counter.h>
 #include <sys/rman.h>
 #include <sys/types.h>
 #include <sys/lock.h>
@@ -53,6 +54,7 @@
 #include <net/if.h>
 #include <net/if_var.h>
 #include <net/if_media.h>
+#include <net/pfil.h>
 #include <netinet/in.h>
 #include <netinet/tcp_lro.h>
 
@@ -158,6 +160,7 @@ enum {
 	ADAP_ERR	= (1 << 5),
 	BUF_PACKING_OK	= (1 << 6),
 	IS_VF		= (1 << 7),
+	KERN_TLS_OK	= (1 << 8),
 
 	CXGBE_BUSY	= (1 << 9),
 
@@ -189,6 +192,7 @@ struct vi_info {
 	struct port_info *pi;
 
 	struct ifnet *ifp;
+	struct pfil_head *pfil;
 
 	unsigned long flags;
 	int if_flags;
@@ -304,34 +308,27 @@ struct port_info {
  	struct port_stats stats;
 	u_int tnl_cong_drops;
 	u_int tx_parse_error;
-	u_long	tx_tls_records;
-	u_long	tx_tls_octets;
-	u_long	rx_tls_records;
-	u_long	rx_tls_octets;
+	u_long	tx_toe_tls_records;
+	u_long	tx_toe_tls_octets;
+	u_long	rx_toe_tls_records;
+	u_long	rx_toe_tls_octets;
 
 	struct callout tick;
 };
 
 #define	IS_MAIN_VI(vi)		((vi) == &((vi)->pi->vi[0]))
 
-/* Where the cluster came from, how it has been carved up. */
-struct cluster_layout {
-	int8_t zidx;
-	int8_t hwidx;
-	uint16_t region1;	/* mbufs laid out within this region */
-				/* region2 is the DMA region */
-	uint16_t region3;	/* cluster_metadata within this region */
-};
-
 struct cluster_metadata {
+	uma_zone_t zone;
+	caddr_t cl;
 	u_int refcount;
-	struct fl_sdesc *sd;	/* For debug only.  Could easily be stale */
 };
 
 struct fl_sdesc {
 	caddr_t cl;
 	uint16_t nmbuf;	/* # of driver originated mbufs with ref on cluster */
-	struct cluster_layout cll;
+	int16_t moff;	/* offset of metadata from cl */
+	uint8_t zidx;
 };
 
 struct tx_desc {
@@ -380,7 +377,7 @@ enum {
 	CPL_COOKIE_TOM,
 	CPL_COOKIE_HASHFILTER,
 	CPL_COOKIE_ETHOFLD,
-	CPL_COOKIE_AVAILABLE3,
+	CPL_COOKIE_KERN_TLS,
 
 	NUM_CPL_COOKIES = 8	/* Limited by M_COOKIE.  Do not increase. */
 };
@@ -463,18 +460,15 @@ struct sge_eq {
 	char lockname[16];
 };
 
-struct sw_zone_info {
+struct rx_buf_info {
 	uma_zone_t zone;	/* zone that this cluster comes from */
-	int size;		/* size of cluster: 2K, 4K, 9K, 16K, etc. */
-	int type;		/* EXT_xxx type of the cluster */
-	int8_t head_hwidx;
-	int8_t tail_hwidx;
-};
-
-struct hw_buf_info {
-	int8_t zidx;		/* backpointer to zone; -ve means unused */
-	int8_t next;		/* next hwidx for this zone; -1 means no more */
-	int size;
+	uint16_t size1;		/* same as size of cluster: 2K/4K/9K/16K.
+				 * hwsize[hwidx1] = size1.  No spare. */
+	uint16_t size2;		/* hwsize[hwidx2] = size2.
+				 * spare in cluster = size1 - size2. */
+	int8_t hwidx1;		/* SGE bufsize idx for size1 */
+	int8_t hwidx2;		/* SGE bufsize idx for size2 */
+	uint8_t type;		/* EXT_xxx type of the cluster */
 };
 
 enum {
@@ -516,7 +510,8 @@ struct sge_fl {
 	struct mtx fl_lock;
 	__be64 *desc;		/* KVA of descriptor ring, ptr to addresses */
 	struct fl_sdesc *sdesc;	/* KVA of software descriptor ring */
-	struct cluster_layout cll_def;	/* default refill zone, layout */
+	uint16_t zidx;		/* refill zone idx */
+	uint16_t safe_zidx;
 	uint16_t lowat;		/* # of buffers <= this means fl needs help */
 	int flags;
 	uint16_t buf_boundary;
@@ -534,8 +529,6 @@ struct sge_fl {
 	u_int rx_offset;	/* offset in fl buf (when buffer packing) */
 	volatile uint32_t *udb;
 
-	uint64_t mbuf_allocated;/* # of mbuf allocated from zone_mbuf */
-	uint64_t mbuf_inlined;	/* # of mbuf created within clusters */
 	uint64_t cl_allocated;	/* # of clusters allocated */
 	uint64_t cl_recycled;	/* # of clusters recycled */
 	uint64_t cl_fast_recycled; /* # of clusters recycled (fast) */
@@ -552,7 +545,6 @@ struct sge_fl {
 	bus_dmamap_t desc_map;
 	char lockname[16];
 	bus_addr_t ba;		/* bus address of descriptor ring */
-	struct cluster_layout cll_alt;	/* alternate refill zone, layout */
 };
 
 struct mp_ring;
@@ -583,7 +575,23 @@ struct sge_txq {
 	uint64_t txpkts1_pkts;	/* # of frames in type1 coalesced tx WRs */
 	uint64_t raw_wrs;	/* # of raw work requests (alloc_wr_mbuf) */
 
+	uint64_t kern_tls_records;
+	uint64_t kern_tls_short;
+	uint64_t kern_tls_partial;
+	uint64_t kern_tls_full;
+	uint64_t kern_tls_octets;
+	uint64_t kern_tls_waste;
+	uint64_t kern_tls_options;
+	uint64_t kern_tls_header;
+	uint64_t kern_tls_fin;
+	uint64_t kern_tls_fin_short;
+	uint64_t kern_tls_cbc;
+	uint64_t kern_tls_gcm;
+
 	/* stats for not-that-common events */
+
+	/* Optional scratch space for constructing work requests. */
+	uint8_t ss[SGE_MAX_WR_LEN] __aligned(16);
 } __aligned(CACHE_LINE_SIZE);
 
 /* rxq: SGE ingress queue + SGE free list + miscellaneous items */
@@ -724,6 +732,7 @@ struct sge_nm_txq {
 	u_int udb_qid;
 	u_int cntxt_id;
 	__be32 cpl_ctrl0;	/* for convenience */
+	__be32 op_pkd;		/* ditto */
 	u_int nid;		/* netmap ring # for this queue */
 
 	/* infrequently used items after this */
@@ -760,10 +769,8 @@ struct sge {
 	struct sge_iq **iqmap;	/* iq->cntxt_id to iq mapping */
 	struct sge_eq **eqmap;	/* eq->cntxt_id to eq mapping */
 
-	int8_t safe_hwidx1;	/* may not have room for metadata */
-	int8_t safe_hwidx2;	/* with room for metadata and maybe more */
-	struct sw_zone_info sw_zone_info[SW_ZONE_SIZES];
-	struct hw_buf_info hw_buf_info[SGE_FLBUF_SIZES];
+	int8_t safe_zidx;
+	struct rx_buf_info rx_buf_info[SW_ZONE_SIZES];
 };
 
 struct devnames {
@@ -840,6 +847,7 @@ struct adapter {
 	struct smt_data *smt;	/* Source MAC Table */
 	struct tid_info tids;
 	vmem_t *key_map;
+	struct tls_tunables tlst;
 
 	uint8_t doorbells;
 	int offload_map;	/* ports with IFCAP_TOE enabled */
@@ -897,6 +905,9 @@ struct adapter {
 	int last_op_flags;
 
 	int swintr;
+	int sensor_resets;
+
+	struct callout ktls_tick;
 };
 
 #define ADAPTER_LOCK(sc)		mtx_lock(&(sc)->sc_lock)
@@ -1168,6 +1179,18 @@ int cxgbe_media_change(struct ifnet *);
 void cxgbe_media_status(struct ifnet *, struct ifmediareq *);
 bool t4_os_dump_cimla(struct adapter *, int, bool);
 void t4_os_dump_devlog(struct adapter *);
+
+#ifdef KERN_TLS
+/* t4_kern_tls.c */
+int cxgbe_tls_tag_alloc(struct ifnet *, union if_snd_tag_alloc_params *,
+    struct m_snd_tag **);
+void cxgbe_tls_tag_free(struct m_snd_tag *);
+void t6_ktls_modload(void);
+void t6_ktls_modunload(void);
+int t6_ktls_try(struct ifnet *, struct socket *, struct ktls_session *);
+int t6_ktls_parse_pkt(struct mbuf *, int *, int *);
+int t6_ktls_write_wr(struct sge_txq *, void *, struct mbuf *, u_int, u_int);
+#endif
 
 /* t4_keyctx.c */
 struct auth_hash;

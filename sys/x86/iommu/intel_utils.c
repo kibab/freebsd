@@ -298,7 +298,7 @@ dmar_pgfree(vm_object_t obj, vm_pindex_t idx, int flags)
 
 	if ((flags & DMAR_PGF_OBJL) == 0)
 		VM_OBJECT_WLOCK(obj);
-	m = vm_page_lookup(obj, idx);
+	m = vm_page_grab(obj, idx, VM_ALLOC_NOCREAT);
 	if (m != NULL) {
 		vm_page_free(m);
 		atomic_subtract_int(&dmar_tbl_pagecnt, 1);
@@ -654,7 +654,8 @@ dmar_timeout_sysctl(SYSCTL_HANDLER_ARGS)
 	return (error);
 }
 
-static SYSCTL_NODE(_hw, OID_AUTO, dmar, CTLFLAG_RD, NULL, "");
+static SYSCTL_NODE(_hw, OID_AUTO, dmar, CTLFLAG_RD | CTLFLAG_MPSAFE, NULL,
+    "");
 SYSCTL_INT(_hw_dmar, OID_AUTO, tbl_pagecnt, CTLFLAG_RD,
     &dmar_tbl_pagecnt, 0,
     "Count of pages used for DMAR pagetables");

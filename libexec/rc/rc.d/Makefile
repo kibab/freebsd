@@ -77,6 +77,7 @@ CONFS=	DAEMON \
 	nsswitch \
 	ntpdate \
 	${_opensm} \
+	os-release \
 	pf \
 	pflog \
 	pfsync \
@@ -138,12 +139,6 @@ ACPIPACKAGE=	acpi
 
 .if ${MK_ACPI} != "no" || ${MK_APM} != "no"
 CONFS+=		powerd
-.endif
-
-.if ${MK_AMD} != "no"
-CONFGROUPS+=	AMD
-AMD+=		amd
-AMDPACKAGE=	amd
 .endif
 
 .if ${MK_APM} != "no"

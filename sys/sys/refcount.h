@@ -39,14 +39,8 @@
 #define	KASSERT(exp, msg)	/* */
 #endif
 
-#define	REFCOUNT_WAITER			(1U << 31) /* Refcount has waiter. */
-#define	REFCOUNT_SATURATION_VALUE	(3U << 29)
-
-#define	REFCOUNT_SATURATED(val)		(((val) & (1U << 30)) != 0)
-#define	REFCOUNT_COUNT(x)		((x) & ~REFCOUNT_WAITER)
-
-bool refcount_release_last(volatile u_int *count, u_int n, u_int old);
-void refcount_sleep(volatile u_int *count, const char *wmesg, int prio);
+#define	REFCOUNT_SATURATED(val)		(((val) & (1U << 31)) != 0)
+#define	REFCOUNT_SATURATION_VALUE	(3U << 30)
 
 /*
  * Attempt to handle reference count overflow and underflow.  Force the counter
@@ -72,7 +66,7 @@ refcount_init(volatile u_int *count, u_int value)
 	*count = value;
 }
 
-static __inline void
+static __inline u_int
 refcount_acquire(volatile u_int *count)
 {
 	u_int old;
@@ -80,9 +74,11 @@ refcount_acquire(volatile u_int *count)
 	old = atomic_fetchadd_int(count, 1);
 	if (__predict_false(REFCOUNT_SATURATED(old)))
 		_refcount_update_saturated(count);
+
+	return (old);
 }
 
-static __inline void
+static __inline u_int
 refcount_acquiren(volatile u_int *count, u_int n)
 {
 	u_int old;
@@ -92,6 +88,8 @@ refcount_acquiren(volatile u_int *count, u_int n)
 	old = atomic_fetchadd_int(count, n);
 	if (__predict_false(REFCOUNT_SATURATED(old)))
 		_refcount_update_saturated(count);
+
+	return (old);
 }
 
 static __inline __result_use_check bool
@@ -108,6 +106,33 @@ refcount_acquire_checked(volatile u_int *count)
 	}
 }
 
+/*
+ * This functions returns non-zero if the refcount was
+ * incremented. Else zero is returned.
+ */
+static __inline __result_use_check bool
+refcount_acquire_if_gt(volatile u_int *count, u_int n)
+{
+	u_int old;
+
+	old = *count;
+	for (;;) {
+		if (old <= n)
+			return (false);
+		if (__predict_false(REFCOUNT_SATURATED(old)))
+			return (true);
+		if (atomic_fcmpset_int(count, &old, old + 1))
+			return (true);
+	}
+}
+
+static __inline __result_use_check bool
+refcount_acquire_if_not_zero(volatile u_int *count)
+{
+
+	return (refcount_acquire_if_gt(count, 0));
+}
+
 static __inline bool
 refcount_releasen(volatile u_int *count, u_int n)
 {
@@ -118,10 +143,21 @@ refcount_releasen(volatile u_int *count, u_int n)
 
 	atomic_thread_fence_rel();
 	old = atomic_fetchadd_int(count, -n);
-	if (__predict_false(n >= REFCOUNT_COUNT(old) ||
-	    REFCOUNT_SATURATED(old)))
-		return (refcount_release_last(count, n, old));
-	return (false);
+	if (__predict_false(old < n || REFCOUNT_SATURATED(old))) {
+		_refcount_update_saturated(count);
+		return (false);
+	}
+	if (old > n)
+		return (false);
+
+	/*
+	 * Last reference.  Signal the user to call the destructor.
+	 *
+	 * Ensure that the destructor sees all updates. This synchronizes with
+	 * release fences from all routines which drop the count.
+	 */
+	atomic_thread_fence_acq();
+	return (true);
 }
 
 static __inline bool
@@ -129,50 +165,6 @@ refcount_release(volatile u_int *count)
 {
 
 	return (refcount_releasen(count, 1));
-}
-
-static __inline void
-refcount_wait(volatile u_int *count, const char *wmesg, int prio)
-{
-
-	while (*count != 0)
-		refcount_sleep(count, wmesg, prio);
-}
-
-/*
- * This functions returns non-zero if the refcount was
- * incremented. Else zero is returned.
- */
-static __inline __result_use_check bool
-refcount_acquire_if_not_zero(volatile u_int *count)
-{
-	u_int old;
-
-	old = *count;
-	for (;;) {
-		if (REFCOUNT_COUNT(old) == 0)
-			return (false);
-		if (__predict_false(REFCOUNT_SATURATED(old)))
-			return (true);
-		if (atomic_fcmpset_int(count, &old, old + 1))
-			return (true);
-	}
-}
-
-static __inline __result_use_check bool
-refcount_release_if_not_last(volatile u_int *count)
-{
-	u_int old;
-
-	old = *count;
-	for (;;) {
-		if (REFCOUNT_COUNT(old) == 1)
-			return (false);
-		if (__predict_false(REFCOUNT_SATURATED(old)))
-			return (true);
-		if (atomic_fcmpset_int(count, &old, old - 1))
-			return (true);
-	}
 }
 
 static __inline __result_use_check bool
@@ -184,13 +176,23 @@ refcount_release_if_gt(volatile u_int *count, u_int n)
 	    ("refcount_release_if_gt: Use refcount_release for final ref"));
 	old = *count;
 	for (;;) {
-		if (REFCOUNT_COUNT(old) <= n)
+		if (old <= n)
 			return (false);
 		if (__predict_false(REFCOUNT_SATURATED(old)))
 			return (true);
-		if (atomic_fcmpset_int(count, &old, old - 1))
+		/*
+		 * Paired with acquire fence in refcount_releasen().
+		 */
+		if (atomic_fcmpset_rel_int(count, &old, old - 1))
 			return (true);
 	}
 }
 
-#endif	/* ! __SYS_REFCOUNT_H__ */
+static __inline __result_use_check bool
+refcount_release_if_not_last(volatile u_int *count)
+{
+
+	return (refcount_release_if_gt(count, 1));
+}
+
+#endif /* !__SYS_REFCOUNT_H__ */

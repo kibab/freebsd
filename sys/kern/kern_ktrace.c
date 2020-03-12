@@ -131,7 +131,8 @@ static int data_lengths[] = {
 
 static STAILQ_HEAD(, ktr_request) ktr_free;
 
-static SYSCTL_NODE(_kern, OID_AUTO, ktrace, CTLFLAG_RD, 0, "KTRACE options");
+static SYSCTL_NODE(_kern, OID_AUTO, ktrace, CTLFLAG_RD | CTLFLAG_MPSAFE, 0,
+    "KTRACE options");
 
 static u_int ktr_requestpool = KTRACE_REQUEST_POOL;
 TUNABLE_INT("kern.ktrace.request_pool", &ktr_requestpool);
@@ -233,8 +234,9 @@ sysctl_kern_ktrace_request_pool(SYSCTL_HANDLER_ARGS)
 		return (ENOSPC);
 	return (0);
 }
-SYSCTL_PROC(_kern_ktrace, OID_AUTO, request_pool, CTLTYPE_UINT|CTLFLAG_RW,
-    &ktr_requestpool, 0, sysctl_kern_ktrace_request_pool, "IU",
+SYSCTL_PROC(_kern_ktrace, OID_AUTO, request_pool,
+    CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_NEEDGIANT, &ktr_requestpool, 0,
+    sysctl_kern_ktrace_request_pool, "IU",
     "Pool buffer size for ktrace(1)");
 
 static u_int
@@ -779,6 +781,14 @@ ktrstruct(const char *name, const void *data, size_t datalen)
 }
 
 void
+ktrstruct_error(const char *name, const void *data, size_t datalen, int error)
+{
+
+	if (error == 0)
+		ktrstruct(name, data, datalen);
+}
+
+void
 ktrstructarray(const char *name, enum uio_seg seg, const void *data,
     int num_items, size_t struct_size)
 {
@@ -941,7 +951,7 @@ sys_ktrace(struct thread *td, struct ktrace_args *uap)
 		}
 		NDFREE(&nd, NDF_ONLY_PNBUF);
 		vp = nd.ni_vp;
-		VOP_UNLOCK(vp, 0);
+		VOP_UNLOCK(vp);
 		if (vp->v_type != VREG) {
 			(void) vn_close(vp, FREAD|FWRITE, td->td_ucred, td);
 			ktrace_exit(td);
@@ -1242,7 +1252,7 @@ ktr_writerequest(struct thread *td, struct ktr_request *req)
 	if (error == 0)
 #endif
 		error = VOP_WRITE(vp, &auio, IO_UNIT | IO_APPEND, cred);
-	VOP_UNLOCK(vp, 0);
+	VOP_UNLOCK(vp);
 	vn_finished_write(mp);
 	crfree(cred);
 	if (!error) {

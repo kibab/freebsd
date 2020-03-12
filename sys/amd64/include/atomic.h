@@ -57,6 +57,20 @@
 #define	wmb()	__asm __volatile("sfence;" : : : "memory")
 #define	rmb()	__asm __volatile("lfence;" : : : "memory")
 
+#ifdef _KERNEL
+/*
+ * OFFSETOF_MONITORBUF == __pcpu_offset(pc_monitorbuf).
+ *
+ * The open-coded number is used instead of the symbolic expression to
+ * avoid a dependency on sys/pcpu.h in machine/atomic.h consumers.
+ * An assertion in amd64/vm_machdep.c ensures that the value is correct.
+ */
+#define	OFFSETOF_MONITORBUF	0x100
+#endif
+
+#if defined(KCSAN) && !defined(KCSAN_RUNTIME)
+#include <sys/_cscan_atomic.h>
+#else
 #include <sys/atomic_common.h>
 
 /*
@@ -187,9 +201,8 @@ atomic_cmpset_##TYPE(volatile u_##TYPE *dst, u_##TYPE expect, u_##TYPE src) \
 	__asm __volatile(				\
 	"	" MPLOCKED "		"		\
 	"	cmpxchg %3,%1 ;	"			\
-	"	sete	%0 ;		"		\
 	"# atomic_cmpset_" #TYPE "	"		\
-	: "=q" (res),			/* 0 */		\
+	: "=@cce" (res),		/* 0 */		\
 	  "+m" (*dst),			/* 1 */		\
 	  "+a" (expect)			/* 2 */		\
 	: "r" (src)			/* 3 */		\
@@ -205,9 +218,8 @@ atomic_fcmpset_##TYPE(volatile u_##TYPE *dst, u_##TYPE *expect, u_##TYPE src) \
 	__asm __volatile(				\
 	"	" MPLOCKED "		"		\
 	"	cmpxchg %3,%1 ;		"		\
-	"	sete	%0 ;		"		\
 	"# atomic_fcmpset_" #TYPE "	"		\
-	: "=q" (res),			/* 0 */		\
+	: "=@cce" (res),		/* 0 */		\
 	  "+m" (*dst),			/* 1 */		\
 	  "+a" (*expect)		/* 2 */		\
 	: "r" (src)			/* 3 */		\
@@ -264,9 +276,8 @@ atomic_testandset_int(volatile u_int *p, u_int v)
 	__asm __volatile(
 	"	" MPLOCKED "		"
 	"	btsl	%2,%1 ;		"
-	"	setc	%0 ;		"
 	"# atomic_testandset_int"
-	: "=q" (res),			/* 0 */
+	: "=@ccc" (res),		/* 0 */
 	  "+m" (*p)			/* 1 */
 	: "Ir" (v & 0x1f)		/* 2 */
 	: "cc");
@@ -281,9 +292,8 @@ atomic_testandset_long(volatile u_long *p, u_int v)
 	__asm __volatile(
 	"	" MPLOCKED "		"
 	"	btsq	%2,%1 ;		"
-	"	setc	%0 ;		"
 	"# atomic_testandset_long"
-	: "=q" (res),			/* 0 */
+	: "=@ccc" (res),		/* 0 */
 	  "+m" (*p)			/* 1 */
 	: "Jr" ((u_long)(v & 0x3f))	/* 2 */
 	: "cc");
@@ -298,9 +308,8 @@ atomic_testandclear_int(volatile u_int *p, u_int v)
 	__asm __volatile(
 	"	" MPLOCKED "		"
 	"	btrl	%2,%1 ;		"
-	"	setc	%0 ;		"
 	"# atomic_testandclear_int"
-	: "=q" (res),			/* 0 */
+	: "=@ccc" (res),		/* 0 */
 	  "+m" (*p)			/* 1 */
 	: "Ir" (v & 0x1f)		/* 2 */
 	: "cc");
@@ -315,9 +324,8 @@ atomic_testandclear_long(volatile u_long *p, u_int v)
 	__asm __volatile(
 	"	" MPLOCKED "		"
 	"	btrq	%2,%1 ;		"
-	"	setc	%0 ;		"
 	"# atomic_testandclear_long"
-	: "=q" (res),			/* 0 */
+	: "=@ccc" (res),		/* 0 */
 	  "+m" (*p)			/* 1 */
 	: "Jr" ((u_long)(v & 0x3f))	/* 2 */
 	: "cc");
@@ -344,15 +352,6 @@ atomic_testandclear_long(volatile u_long *p, u_int v)
  */
 
 #if defined(_KERNEL)
-
-/*
- * OFFSETOF_MONITORBUF == __pcpu_offset(pc_monitorbuf).
- *
- * The open-coded number is used instead of the symbolic expression to
- * avoid a dependency on sys/pcpu.h in machine/atomic.h consumers.
- * An assertion in amd64/vm_machdep.c ensures that the value is correct.
- */
-#define	OFFSETOF_MONITORBUF	0x100
 
 #if defined(SMP) || defined(KLD_MODULE)
 static __inline void
@@ -678,5 +677,7 @@ u_long	atomic_swap_long(volatile u_long *p, u_long v);
 #define	atomic_readandclear_ptr	atomic_readandclear_long
 
 #endif /* !WANT_FUNCTIONS */
+
+#endif /* KCSAN && !KCSAN_RUNTIME */
 
 #endif /* !_MACHINE_ATOMIC_H_ */

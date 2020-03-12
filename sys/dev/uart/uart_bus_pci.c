@@ -1,9 +1,8 @@
 /*-
  * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
  *
- * Copyright (c) 2006 Marcel Moolenaar
- * Copyright (c) 2001 M. Warner Losh
- * All rights reserved.
+ * Copyright (c) 2006 Marcel Moolenaar All rights reserved.
+ * Copyright (c) 2001 M. Warner Losh <imp@FreeBSD.org>
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -134,6 +133,7 @@ static const struct pci_id pci_ns8250_ids[] = {
 { 0x8086, 0x0f0c, 0xffff, 0, "Intel ValleyView LPIO1 HSUART#2", 0x10,
 	24 * DEFAULT_RCLK, 2 },
 { 0x8086, 0x108f, 0xffff, 0, "Intel AMT - SOL", 0x10 },
+{ 0x8086, 0x19d8, 0xffff, 0, "Intel Denverton UART", 0x10 },
 { 0x8086, 0x1c3d, 0xffff, 0, "Intel AMT - KT Controller", 0x10 },
 { 0x8086, 0x1d3d, 0xffff, 0, "Intel C600/X79 Series Chipset KT Controller", 0x10 },
 { 0x8086, 0x1e3d, 0xffff, 0, "Intel Panther Point KT Controller", 0x10 },

@@ -219,10 +219,8 @@ struct mount {
 #define	mnt_endzero	mnt_gjprovider
 	char		*mnt_gjprovider;	/* gjournal provider name */
 	struct mtx	mnt_listmtx;
-	struct vnodelst	mnt_activevnodelist;	/* (l) list of active vnodes */
-	int		mnt_activevnodelistsize;/* (l) # of active vnodes */
-	struct vnodelst	mnt_tmpfreevnodelist;	/* (l) list of free vnodes */
-	int		mnt_tmpfreevnodelistsize;/* (l) # of free vnodes */
+	struct vnodelst	mnt_lazyvnodelist;	/* (l) list of lazy vnodes */
+	int		mnt_lazyvnodelistsize;	/* (l) # of lazy vnodes */
 	struct lock	mnt_explock;		/* vfs_export walkers lock */
 	TAILQ_ENTRY(mount) mnt_upper_link;	/* (m) we in the all uppers */
 	TAILQ_HEAD(, mount) mnt_uppers;		/* (m) upper mounts over us*/
@@ -254,18 +252,22 @@ void          __mnt_vnode_markerfree_all(struct vnode **mvp, struct mount *mp);
 	} while (0)
 
 /*
- * Definitions for MNT_VNODE_FOREACH_ACTIVE.
+ * Definitions for MNT_VNODE_FOREACH_LAZY.
  */
-struct vnode *__mnt_vnode_next_active(struct vnode **mvp, struct mount *mp);
-struct vnode *__mnt_vnode_first_active(struct vnode **mvp, struct mount *mp);
-void          __mnt_vnode_markerfree_active(struct vnode **mvp, struct mount *);
+typedef int mnt_lazy_cb_t(struct vnode *, void *);
+struct vnode *__mnt_vnode_next_lazy(struct vnode **mvp, struct mount *mp,
+    mnt_lazy_cb_t *cb, void *cbarg);
+struct vnode *__mnt_vnode_first_lazy(struct vnode **mvp, struct mount *mp,
+    mnt_lazy_cb_t *cb, void *cbarg);
+void          __mnt_vnode_markerfree_lazy(struct vnode **mvp, struct mount *mp);
 
-#define MNT_VNODE_FOREACH_ACTIVE(vp, mp, mvp) 				\
-	for (vp = __mnt_vnode_first_active(&(mvp), (mp)); 		\
-		(vp) != NULL; vp = __mnt_vnode_next_active(&(mvp), (mp)))
+#define MNT_VNODE_FOREACH_LAZY(vp, mp, mvp, cb, cbarg)			\
+	for (vp = __mnt_vnode_first_lazy(&(mvp), (mp), (cb), (cbarg));	\
+		(vp) != NULL; 						\
+		vp = __mnt_vnode_next_lazy(&(mvp), (mp), (cb), (cbarg)))
 
-#define MNT_VNODE_FOREACH_ACTIVE_ABORT(mp, mvp)				\
-	__mnt_vnode_markerfree_active(&(mvp), (mp))
+#define MNT_VNODE_FOREACH_LAZY_ABORT(mp, mvp)				\
+	__mnt_vnode_markerfree_lazy(&(mvp), (mp))
 
 #define	MNT_ILOCK(mp)	mtx_lock(&(mp)->mnt_mtx)
 #define	MNT_ITRYLOCK(mp) mtx_trylock(&(mp)->mnt_mtx)
@@ -396,7 +398,7 @@ void          __mnt_vnode_markerfree_active(struct vnode **mvp, struct mount *);
 #define MNTK_UNMOUNTF	0x00000001	/* forced unmount in progress */
 #define MNTK_ASYNC	0x00000002	/* filtered async flag */
 #define MNTK_SOFTDEP	0x00000004	/* async disabled by softdep */
-#define MNTK_NOMSYNC	0x00000008	/* don't do vfs_msync */
+#define MNTK_NOMSYNC	0x00000008	/* don't do msync */
 #define	MNTK_DRAINING	0x00000010	/* lock draining is happening */
 #define	MNTK_REFEXPIRE	0x00000020	/* refcount expiring is happening */
 #define MNTK_EXTENDED_SHARED	0x00000040 /* Allow shared locking for more ops */
@@ -412,6 +414,7 @@ void          __mnt_vnode_markerfree_active(struct vnode **mvp, struct mount *);
 #define	MNTK_USES_BCACHE	0x00004000 /* FS uses the buffer cache. */
 #define	MNTK_TEXT_REFS		0x00008000 /* Keep use ref for text */
 #define	MNTK_VMSETSIZE_BUG	0x00010000
+#define	MNTK_UNIONFS	0x00020000	/* A hack for F_ISUNIONSTACK */
 #define MNTK_NOASYNC	0x00800000	/* disable async */
 #define MNTK_UNMOUNT	0x01000000	/* unmount in progress */
 #define	MNTK_MWAIT	0x02000000	/* waiting for unmount to finish */
@@ -903,7 +906,7 @@ int	vfs_setopts(struct vfsoptlist *opts, const char *name,
 	    const char *value);
 int	vfs_setpublicfs			    /* set publicly exported fs */
 	    (struct mount *, struct netexport *, struct export_args *);
-void	vfs_msync(struct mount *, int);
+void	vfs_periodic(struct mount *, int);
 int	vfs_busy(struct mount *, int);
 int	vfs_export			 /* process mount export info */
 	    (struct mount *, struct export_args *);
@@ -937,6 +940,8 @@ extern	struct sx vfsconf_sx;
 #define	vfsconf_unlock()	sx_xunlock(&vfsconf_sx)
 #define	vfsconf_slock()		sx_slock(&vfsconf_sx)
 #define	vfsconf_sunlock()	sx_sunlock(&vfsconf_sx)
+struct vnode *mntfs_allocvp(struct mount *, struct vnode *);
+void   mntfs_freevp(struct vnode *);
 
 /*
  * Declarations for these vfs default operations are located in
@@ -980,13 +985,8 @@ enum mount_counter { MNT_COUNT_REF, MNT_COUNT_LOCKREF, MNT_COUNT_WRITEOPCOUNT };
 int	vfs_mount_fetch_counter(struct mount *, enum mount_counter);
 
 /*
- * We mark ourselves as entering the section and post a sequentially consistent
- * fence, meaning the store is completed before we get into the section and
- * mnt_vfs_ops is only read afterwards.
- *
- * Any thread transitioning the ops counter 0->1 does things in the opposite
- * order - first bumps the count, posts a sequentially consistent fence and
- * observes all CPUs not executing within the section.
+ * Code transitioning mnt_vfs_ops to > 0 issues IPIs until it observes
+ * all CPUs not executing code enclosed by mnt_thread_in_ops_pcpu.
  *
  * This provides an invariant that by the time the last CPU is observed not
  * executing, everyone else entering will see the counter > 0 and exit.
@@ -998,15 +998,15 @@ int	vfs_mount_fetch_counter(struct mount *, enum mount_counter);
  */
 #define vfs_op_thread_entered(mp) ({				\
 	MPASS(curthread->td_critnest > 0);			\
-	*(int *)zpcpu_get(mp->mnt_thread_in_ops_pcpu) == 1;	\
+	*zpcpu_get(mp->mnt_thread_in_ops_pcpu) == 1;		\
 })
 
 #define vfs_op_thread_enter(mp) ({				\
 	bool _retval = true;					\
 	critical_enter();					\
 	MPASS(!vfs_op_thread_entered(mp));			\
-	*(int *)zpcpu_get(mp->mnt_thread_in_ops_pcpu) = 1;	\
-	atomic_thread_fence_seq_cst();				\
+	zpcpu_set_protected(mp->mnt_thread_in_ops_pcpu, 1);	\
+	__compiler_membar();					\
 	if (__predict_false(mp->mnt_vfs_ops > 0)) {		\
 		vfs_op_thread_exit(mp);				\
 		_retval = false;				\
@@ -1016,19 +1016,19 @@ int	vfs_mount_fetch_counter(struct mount *, enum mount_counter);
 
 #define vfs_op_thread_exit(mp) do {				\
 	MPASS(vfs_op_thread_entered(mp));			\
-	atomic_thread_fence_rel();				\
-	*(int *)zpcpu_get(mp->mnt_thread_in_ops_pcpu) = 0;	\
+	__compiler_membar();					\
+	zpcpu_set_protected(mp->mnt_thread_in_ops_pcpu, 0);	\
 	critical_exit();					\
 } while (0)
 
 #define vfs_mp_count_add_pcpu(mp, count, val) do {		\
 	MPASS(vfs_op_thread_entered(mp));			\
-	(*(int *)zpcpu_get(mp->mnt_##count##_pcpu)) += val;	\
+	zpcpu_add_protected(mp->mnt_##count##_pcpu, val);	\
 } while (0)
 
 #define vfs_mp_count_sub_pcpu(mp, count, val) do {		\
 	MPASS(vfs_op_thread_entered(mp));			\
-	(*(int *)zpcpu_get(mp->mnt_##count##_pcpu)) -= val;	\
+	zpcpu_sub_protected(mp->mnt_##count##_pcpu, val);	\
 } while (0)
 
 #else /* !_KERNEL */

@@ -1,6 +1,6 @@
 /*-
  * Copyright (c) 1999 Kazutaka YOKOTA <yokota@zodiac.mech.utsunomiya-u.ac.jp>
- * Copyright (c) 1992-1998 Søren Schmidt
+ * Copyright (c) 1992-1998 SÃ¸ren Schmidt
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -36,8 +36,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/module.h>
 #include <sys/consio.h>
 
-#if defined(__arm__) || defined(__mips__) || \
-	defined(__powerpc__) || defined(__sparc64__)
+#if defined(__arm__) || defined(__mips__) || defined(__powerpc__)
 #include <machine/sc_machdep.h>
 #else
 #include <machine/pc/display.h>

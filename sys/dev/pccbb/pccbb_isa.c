@@ -1,8 +1,7 @@
 /*-
  * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
  *
- * Copyright (c) 2002-2004 M. Warner Losh.
- * All rights reserved.
+ * Copyright (c) 2002-2004 M. Warner Losh <imp@FreeBSD.org>
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -73,7 +72,8 @@ __FBSDID("$FreeBSD$");
  *****************************************************************************/
 
 /* sysctl vars */
-static SYSCTL_NODE(_hw, OID_AUTO, pcic, CTLFLAG_RD, 0, "PCIC parameters");
+static SYSCTL_NODE(_hw, OID_AUTO, pcic, CTLFLAG_RD | CTLFLAG_MPSAFE, 0,
+    "PCIC parameters");
 
 static int isa_intr_mask = EXCA_INT_MASK_ALLOWED;
 SYSCTL_INT(_hw_pcic, OID_AUTO, intr_mask, CTLFLAG_RDTUN, &isa_intr_mask, 0,

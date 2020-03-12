@@ -33,6 +33,9 @@ static const char rcsid[] =
   "$FreeBSD$";
 #endif /* not lint */
 
+#ifdef HAVE_LIBUTIL_H
+#include <libutil.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -47,9 +50,8 @@ checkfilesys(const char *fname)
 {
 	int dosfs;
 	struct bootblock boot;
-	struct fatEntry *fat = NULL;
+	struct fat_descriptor *fat = NULL;
 	int finish_dosdirsection=0;
-	u_int i;
 	int mod = 0;
 	int ret = 8;
 
@@ -88,80 +90,77 @@ checkfilesys(const char *fname)
 	}
 
 	if (!preen)  {
-		if (boot.ValidFat < 0)
-			printf("** Phase 1 - Read and Compare FATs\n");
-		else
-			printf("** Phase 1 - Read FAT\n");
+		printf("** Phase 1 - Read FAT and checking connectivity\n");
 	}
 
-	mod |= readfat(dosfs, &boot, boot.ValidFat >= 0 ? boot.ValidFat : 0, &fat);
+	mod |= readfat(dosfs, &boot, &fat);
 	if (mod & FSFATAL) {
 		close(dosfs);
 		return 8;
 	}
 
-	if (boot.ValidFat < 0)
-		for (i = 1; i < boot.bpbFATs; i++) {
-			struct fatEntry *currentFat;
-
-			mod |= readfat(dosfs, &boot, i, &currentFat);
-
-			if (mod & FSFATAL)
-				goto out;
-
-			mod |= comparefat(&boot, fat, currentFat, i);
-			free(currentFat);
-			if (mod & FSFATAL)
-				goto out;
-		}
-
 	if (!preen)
-		printf("** Phase 2 - Check Cluster Chains\n");
+		printf("** Phase 2 - Checking Directories\n");
 
-	mod |= checkfat(&boot, fat);
-	if (mod & FSFATAL)
-		goto out;
-	/* delay writing FATs */
-
-	if (!preen)
-		printf("** Phase 3 - Checking Directories\n");
-
-	mod |= resetDosDirSection(&boot, fat);
+	mod |= resetDosDirSection(fat);
 	finish_dosdirsection = 1;
 	if (mod & FSFATAL)
 		goto out;
 	/* delay writing FATs */
 
-	mod |= handleDirTree(dosfs, &boot, fat);
+	mod |= handleDirTree(fat);
 	if (mod & FSFATAL)
 		goto out;
 
 	if (!preen)
-		printf("** Phase 4 - Checking for Lost Files\n");
+		printf("** Phase 3 - Checking for Lost Files\n");
 
-	mod |= checklost(dosfs, &boot, fat);
+	mod |= checklost(fat);
 	if (mod & FSFATAL)
 		goto out;
 
 	/* now write the FATs */
-	if (mod & (FSFATMOD|FSFIXFAT)) {
+	if (mod & FSFATMOD) {
 		if (ask(1, "Update FATs")) {
-			mod |= writefat(dosfs, &boot, fat, mod & FSFIXFAT);
+			mod |= writefat(fat);
 			if (mod & FSFATAL)
 				goto out;
 		} else
 			mod |= FSERROR;
 	}
 
+#ifdef HAVE_LIBUTIL_H
+	char freestr[7], badstr[7];
+
+	int64_t freebytes = boot.NumFree * boot.ClusterSize;
+	humanize_number(freestr, sizeof(freestr), freebytes, "",
+	    HN_AUTOSCALE, HN_DECIMAL | HN_IEC_PREFIXES);
+	if (boot.NumBad) {
+		int64_t badbytes = boot.NumBad * boot.ClusterSize;
+
+		humanize_number(badstr, sizeof(badstr), badbytes, "",
+		    HN_AUTOSCALE, HN_B | HN_DECIMAL | HN_IEC_PREFIXES);
+
+		pwarn("%d files, %sB free (%d clusters), %sB bad (%d clusters)\n",
+		      boot.NumFiles,
+		      freestr, boot.NumFree,
+		      badstr, boot.NumBad);
+	} else {
+		pwarn("%d files, %sB free (%d clusters)\n",
+		      boot.NumFiles,
+		      freestr, boot.NumFree);
+	}
+#else
 	if (boot.NumBad)
-		pwarn("%d files, %d free (%d clusters), %d bad (%d clusters)\n",
+		pwarn("%d files, %d KiB free (%d clusters), %d KiB bad (%d clusters)\n",
 		      boot.NumFiles,
 		      boot.NumFree * boot.ClusterSize / 1024, boot.NumFree,
 		      boot.NumBad * boot.ClusterSize / 1024, boot.NumBad);
 	else
-		pwarn("%d files, %d free (%d clusters)\n",
+		pwarn("%d files, %d KiB free (%d clusters)\n",
 		      boot.NumFiles,
 		      boot.NumFree * boot.ClusterSize / 1024, boot.NumFree);
+#endif
 
 	if (mod && (mod & FSERROR) == 0) {
 		if (mod & FSDIRTY) {
@@ -170,7 +169,7 @@ checkfilesys(const char *fname)
 
 			if (mod & FSDIRTY) {
 				pwarn("MARKING FILE SYSTEM CLEAN\n");
-				mod |= writefat(dosfs, &boot, fat, 1);
+				mod |= writefat(fat);
 			} else {
 				pwarn("\n***** FILE SYSTEM IS LEFT MARKED AS DIRTY *****\n");
 				mod |= FSERROR; /* file system not clean */

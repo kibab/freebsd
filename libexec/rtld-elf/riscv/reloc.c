@@ -212,6 +212,15 @@ reloc_iresolve(Obj_Entry *obj __unused,
 }
 
 int
+reloc_iresolve_nonplt(Obj_Entry *obj __unused,
+    struct Struct_RtldLockState *lockstate __unused)
+{
+
+	/* XXX not implemented */
+	return (0);
+}
+
+int
 reloc_gnu_ifunc(Obj_Entry *obj __unused, int flags __unused,
    struct Struct_RtldLockState *lockstate __unused)
 {
@@ -354,7 +363,7 @@ reloc_non_plt(Obj_Entry *obj, Obj_Entry *obj_rtld, int flags,
 			}
 
 			*where = (def->st_value + rela->r_addend +
-			    defobj->tlsoffset - TLS_TP_OFFSET);
+			    defobj->tlsoffset - TLS_TP_OFFSET - TLS_TCB_SIZE);
 			break;
 		case R_RISCV_RELATIVE:
 			*where = (Elf_Addr)(obj->relocbase + rela->r_addend);

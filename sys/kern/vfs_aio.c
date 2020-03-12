@@ -107,7 +107,7 @@ SYSCTL_DECL(_p1003_1b);
 static MALLOC_DEFINE(M_LIO, "lio", "listio aio control block list");
 static MALLOC_DEFINE(M_AIOS, "aios", "aio_suspend aio control block list");
 
-static SYSCTL_NODE(_vfs, OID_AUTO, aio, CTLFLAG_RW, 0,
+static SYSCTL_NODE(_vfs, OID_AUTO, aio, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "Async IO management");
 
 static int enable_aio_unsafe = 0;
@@ -292,7 +292,7 @@ struct kaioinfo {
  * Different ABIs provide their own operations.
  */
 struct aiocb_ops {
-	int	(*copyin)(struct aiocb *ujob, struct aiocb *kjob);
+	int	(*aio_copyin)(struct aiocb *ujob, struct aiocb *kjob);
 	long	(*fetch_status)(struct aiocb *ujob);
 	long	(*fetch_error)(struct aiocb *ujob);
 	int	(*store_status)(struct aiocb *ujob, long status);
@@ -733,7 +733,7 @@ aio_fsync_vnode(struct thread *td, struct vnode *vp)
 	}
 	error = VOP_FSYNC(vp, MNT_WAIT, td);
 
-	VOP_UNLOCK(vp, 0);
+	VOP_UNLOCK(vp);
 	vn_finished_write(mp);
 drop:
 	return (error);
@@ -1420,7 +1420,7 @@ aiocb_store_aiocb(struct aiocb **ujobp, struct aiocb *ujob)
 }
 
 static struct aiocb_ops aiocb_ops = {
-	.copyin = aiocb_copyin,
+	.aio_copyin = aiocb_copyin,
 	.fetch_status = aiocb_fetch_status,
 	.fetch_error = aiocb_fetch_error,
 	.store_status = aiocb_store_status,
@@ -1431,7 +1431,7 @@ static struct aiocb_ops aiocb_ops = {
 
 #ifdef COMPAT_FREEBSD6
 static struct aiocb_ops aiocb_ops_osigevent = {
-	.copyin = aiocb_copyin_old_sigevent,
+	.aio_copyin = aiocb_copyin_old_sigevent,
 	.fetch_status = aiocb_fetch_status,
 	.fetch_error = aiocb_fetch_error,
 	.store_status = aiocb_store_status,
@@ -1478,7 +1478,7 @@ aio_aqueue(struct thread *td, struct aiocb *ujob, struct aioliojob *lj,
 	job = uma_zalloc(aiocb_zone, M_WAITOK | M_ZERO);
 	knlist_init_mtx(&job->klist, AIO_MTX(ki));
 
-	error = ops->copyin(ujob, &job->uaiocb);
+	error = ops->aio_copyin(ujob, &job->uaiocb);
 	if (error) {
 		ops->store_error(ujob, error);
 		uma_zfree(aiocb_zone, job);
@@ -2743,7 +2743,7 @@ aiocb32_store_aiocb(struct aiocb **ujobp, struct aiocb *ujob)
 }
 
 static struct aiocb_ops aiocb32_ops = {
-	.copyin = aiocb32_copyin,
+	.aio_copyin = aiocb32_copyin,
 	.fetch_status = aiocb32_fetch_status,
 	.fetch_error = aiocb32_fetch_error,
 	.store_status = aiocb32_store_status,
@@ -2754,7 +2754,7 @@ static struct aiocb_ops aiocb32_ops = {
 
 #ifdef COMPAT_FREEBSD6
 static struct aiocb_ops aiocb32_ops_osigevent = {
-	.copyin = aiocb32_copyin_old_sigevent,
+	.aio_copyin = aiocb32_copyin_old_sigevent,
 	.fetch_status = aiocb32_fetch_status,
 	.fetch_error = aiocb32_fetch_error,
 	.store_status = aiocb32_store_status,

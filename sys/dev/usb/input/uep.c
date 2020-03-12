@@ -57,7 +57,6 @@
 #else
 #include <sys/ioccom.h>
 #include <sys/fcntl.h>
-#include <sys/tty.h>
 #endif
 
 #define USB_DEBUG_VAR uep_debug
@@ -66,7 +65,8 @@
 #ifdef USB_DEBUG
 static int uep_debug = 0;
 
-static SYSCTL_NODE(_hw_usb, OID_AUTO, uep, CTLFLAG_RW, 0, "USB uep");
+static SYSCTL_NODE(_hw_usb, OID_AUTO, uep, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "USB uep");
 SYSCTL_INT(_hw_usb_uep, OID_AUTO, debug, CTLFLAG_RWTUN,
     &uep_debug, 0, "Debug level");
 #endif

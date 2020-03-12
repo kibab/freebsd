@@ -260,6 +260,7 @@ typedef struct splitflags {
 
 	/* after splitting, import the pool */
 	int import : 1;
+	int name_flags;
 } splitflags_t;
 
 /*
@@ -428,8 +429,15 @@ struct zfs_cmd;
 
 extern const char *zfs_history_event_names[];
 
+typedef enum {
+	VDEV_NAME_PATH		= 1 << 0,
+	VDEV_NAME_GUID		= 1 << 1,
+	VDEV_NAME_FOLLOW_LINKS	= 1 << 2,
+	VDEV_NAME_TYPE_ID	= 1 << 3,
+} vdev_name_t;
+
 extern char *zpool_vdev_name(libzfs_handle_t *, zpool_handle_t *, nvlist_t *,
-    boolean_t verbose);
+    int name_flags);
 extern int zpool_upgrade(zpool_handle_t *, uint64_t);
 extern int zpool_get_history(zpool_handle_t *, nvlist_t **);
 extern int zpool_history_unpack(char *, uint64_t, uint64_t *,
@@ -761,6 +769,7 @@ extern ulong_t get_system_hostid(void);
 extern boolean_t is_mounted(libzfs_handle_t *, const char *special, char **);
 extern boolean_t zfs_is_mounted(zfs_handle_t *, char **);
 extern int zfs_mount(zfs_handle_t *, const char *, int);
+extern int zfs_mount_at(zfs_handle_t *, const char *, int, const char *);
 extern int zfs_unmount(zfs_handle_t *, const char *, int);
 extern int zfs_unmountall(zfs_handle_t *, int);
 

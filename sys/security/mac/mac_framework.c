@@ -103,7 +103,7 @@ SDT_PROBE_DEFINE1(mac, , policy, unregister,
 /*
  * Root sysctl node for all MAC and MAC policy controls.
  */
-SYSCTL_NODE(_security, OID_AUTO, mac, CTLFLAG_RW, 0,
+SYSCTL_NODE(_security, OID_AUTO, mac, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "TrustedBSD MAC policy controls");
 
 /*
@@ -116,6 +116,23 @@ MODULE_VERSION(kernel_mac_support, MAC_VERSION);
 static unsigned int	mac_version = MAC_VERSION;
 SYSCTL_UINT(_security_mac, OID_AUTO, version, CTLFLAG_RD, &mac_version, 0,
     "");
+
+/*
+ * Flags for inlined checks.
+ */
+#define FPFLAG(f)	\
+bool __read_frequently mac_##f##_fp_flag
+
+FPFLAG(priv_check);
+FPFLAG(priv_grant);
+FPFLAG(vnode_check_lookup);
+FPFLAG(vnode_check_open);
+FPFLAG(vnode_check_stat);
+FPFLAG(vnode_check_read);
+FPFLAG(vnode_check_write);
+FPFLAG(vnode_check_mmap);
+
+#undef FPFLAG
 
 /*
  * Labels consist of a indexed set of "slots", which are allocated policies
@@ -176,6 +193,7 @@ MALLOC_DEFINE(M_MACTEMP, "mactemp", "MAC temporary label storage");
 #ifndef MAC_STATIC
 static struct rmlock mac_policy_rm;	/* Non-sleeping entry points. */
 static struct sx mac_policy_sx;		/* Sleeping entry points. */
+static struct rmslock mac_policy_rms;
 #endif
 
 struct mac_policy_list_head mac_policy_list;
@@ -209,7 +227,7 @@ mac_policy_slock_sleep(void)
 	if (!mac_late)
 		return;
 
-	sx_slock(&mac_policy_sx);
+	rms_rlock(&mac_policy_rms);
 #endif
 }
 
@@ -233,7 +251,7 @@ mac_policy_sunlock_sleep(void)
 	if (!mac_late)
 		return;
 
-	sx_sunlock(&mac_policy_sx);
+	rms_runlock(&mac_policy_rms);
 #endif
 }
 
@@ -249,6 +267,7 @@ mac_policy_xlock(void)
 		return;
 
 	sx_xlock(&mac_policy_sx);
+	rms_wlock(&mac_policy_rms);
 	rm_wlock(&mac_policy_rm);
 #endif
 }
@@ -262,6 +281,7 @@ mac_policy_xunlock(void)
 		return;
 
 	rm_wunlock(&mac_policy_rm);
+	rms_wunlock(&mac_policy_rms);
 	sx_xunlock(&mac_policy_sx);
 #endif
 }
@@ -294,6 +314,7 @@ mac_init(void)
 	rm_init_flags(&mac_policy_rm, "mac_policy_rm", RM_NOWITNESS |
 	    RM_RECURSE);
 	sx_init_flags(&mac_policy_sx, "mac_policy_sx", SX_NOWITNESS);
+	rms_init(&mac_policy_rms, "mac_policy_rms");
 #endif
 }
 
@@ -372,6 +393,96 @@ mac_policy_update(void)
 	}
 }
 
+/*
+ * There are frequently used code paths which check for rarely installed
+ * policies. Gross hack below enables doing it in a cheap manner.
+ */
+
+#define FPO(f)	(offsetof(struct mac_policy_ops, mpo_##f) / sizeof(uintptr_t))
+
+struct mac_policy_fastpath_elem {
+	int	count;
+	bool	*flag;
+	size_t	offset;
+};
+
+struct mac_policy_fastpath_elem mac_policy_fastpath_array[] = {
+	{ .offset = FPO(priv_check), .flag = &mac_priv_check_fp_flag },
+	{ .offset = FPO(priv_grant), .flag = &mac_priv_grant_fp_flag },
+	{ .offset = FPO(vnode_check_lookup),
+		.flag = &mac_vnode_check_lookup_fp_flag },
+	{ .offset = FPO(vnode_check_open),
+		.flag = &mac_vnode_check_open_fp_flag },
+	{ .offset = FPO(vnode_check_stat),
+		.flag = &mac_vnode_check_stat_fp_flag },
+	{ .offset = FPO(vnode_check_read),
+		.flag = &mac_vnode_check_read_fp_flag },
+	{ .offset = FPO(vnode_check_write),
+		.flag = &mac_vnode_check_write_fp_flag },
+	{ .offset = FPO(vnode_check_mmap),
+		.flag = &mac_vnode_check_mmap_fp_flag },
+};
+
+static void
+mac_policy_fastpath_enable(struct mac_policy_fastpath_elem *mpfe)
+{
+
+	MPASS(mpfe->count >= 0);
+	mpfe->count++;
+	if (mpfe->count == 1) {
+		MPASS(*mpfe->flag == false);
+		*mpfe->flag = true;
+	}
+}
+
+static void
+mac_policy_fastpath_disable(struct mac_policy_fastpath_elem *mpfe)
+{
+
+	MPASS(mpfe->count >= 1);
+	mpfe->count--;
+	if (mpfe->count == 0) {
+		MPASS(*mpfe->flag == true);
+		*mpfe->flag = false;
+	}
+}
+
+static void
+mac_policy_fastpath_register(struct mac_policy_conf *mpc)
+{
+	struct mac_policy_fastpath_elem *mpfe;
+	uintptr_t **ops;
+	int i;
+
+	mac_policy_xlock_assert();
+
+	ops = (uintptr_t **)mpc->mpc_ops;
+	for (i = 0; i < nitems(mac_policy_fastpath_array); i++) {
+		mpfe = &mac_policy_fastpath_array[i];
+		if (ops[mpfe->offset] != NULL)
+			mac_policy_fastpath_enable(mpfe);
+	}
+}
+
+static void
+mac_policy_fastpath_unregister(struct mac_policy_conf *mpc)
+{
+	struct mac_policy_fastpath_elem *mpfe;
+	uintptr_t **ops;
+	int i;
+
+	mac_policy_xlock_assert();
+
+	ops = (uintptr_t **)mpc->mpc_ops;
+	for (i = 0; i < nitems(mac_policy_fastpath_array); i++) {
+		mpfe = &mac_policy_fastpath_array[i];
+		if (ops[mpfe->offset] != NULL)
+			mac_policy_fastpath_disable(mpfe);
+	}
+}
+
+#undef FPO
+
 static int
 mac_policy_register(struct mac_policy_conf *mpc)
 {
@@ -442,6 +553,9 @@ mac_policy_register(struct mac_policy_conf *mpc)
 	 */
 	if (mpc->mpc_ops->mpo_init != NULL)
 		(*(mpc->mpc_ops->mpo_init))(mpc);
+
+	mac_policy_fastpath_register(mpc);
+
 	mac_policy_update();
 
 	SDT_PROBE1(mac, , policy, register, mpc);
@@ -483,6 +597,9 @@ mac_policy_unregister(struct mac_policy_conf *mpc)
 		mac_policy_xunlock();
 		return (EBUSY);
 	}
+
+	mac_policy_fastpath_unregister(mpc);
+
 	if (mpc->mpc_ops->mpo_destroy != NULL)
 		(*(mpc->mpc_ops->mpo_destroy))(mpc);
 

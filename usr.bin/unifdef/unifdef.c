@@ -176,8 +176,8 @@ macro_cmp(struct macro *a, struct macro *b)
 	return (strcmp(a->name, b->name));
 }
 
-static RB_HEAD(macrohd, macro) macro_tree = RB_INITIALIZER(&macro_tree);
-RB_GENERATE_STATIC(macrohd, macro, entry, macro_cmp);
+static RB_HEAD(MACROMAP, macro) macro_tree = RB_INITIALIZER(&macro_tree);
+RB_GENERATE_STATIC(MACROMAP, macro, entry, macro_cmp);
 
 /*
  * Globals.
@@ -1460,6 +1460,7 @@ static struct macro *
 findsym(const char **strp)
 {
 	const char *str;
+	char *strkey;
 	struct macro key, *res;
 
 	str = *strp;
@@ -1478,10 +1479,22 @@ findsym(const char **strp)
 		return (NULL);
 	}
 
-	key.name = str;
-	res = RB_FIND(macrohd, &macro_tree, &key);
+	/*
+	 * 'str' just points into the current mid-parse input and is not
+	 * nul-terminated.  We know the length of the symbol, *strp - str, but
+	 * need to provide a nul-terminated lookup key for RB_FIND's comparison
+	 * function.  Create one here.
+	 */
+	strkey = malloc(*strp - str + 1);
+	memcpy(strkey, str, *strp - str);
+	strkey[*strp - str] = 0;
+
+	key.name = strkey;
+	res = RB_FIND(MACROMAP, &macro_tree, &key);
 	if (res != NULL)
 		debugsym("findsym", res);
+
+	free(strkey);
 	return (res);
 }
 
@@ -1497,7 +1510,7 @@ indirectsym(void)
 
 	do {
 		changed = 0;
-		RB_FOREACH(sym, macrohd, &macro_tree) {
+		RB_FOREACH(sym, MACROMAP, &macro_tree) {
 			if (sym->value == NULL)
 				continue;
 			cp = sym->value;
@@ -1551,7 +1564,7 @@ addsym2(bool ignorethis, const char *symname, const char *val)
 		sym->ignore = ignorethis;
 		sym->name = symname;
 		sym->value = val;
-		r = RB_INSERT(macrohd, &macro_tree, sym);
+		r = RB_INSERT(MACROMAP, &macro_tree, sym);
 		assert(r == NULL);
 	}
 	debugsym("addsym", sym);

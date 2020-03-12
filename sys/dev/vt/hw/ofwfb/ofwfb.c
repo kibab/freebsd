@@ -42,9 +42,6 @@ __FBSDID("$FreeBSD$");
 #include <vm/pmap.h>
 
 #include <machine/bus.h>
-#ifdef __sparc64__
-#include <machine/bus_private.h>
-#endif
 #include <machine/cpu.h>
 
 #include <dev/ofw/openfirm.h>
@@ -90,9 +87,15 @@ VT_DRIVER_DECLARE(vt_ofwfb, vt_ofwfb_driver);
 static int
 ofwfb_probe(struct vt_device *vd)
 {
+	int disabled;
 	phandle_t chosen, node;
 	ihandle_t stdout;
 	char buf[64];
+
+	disabled = 0;
+	TUNABLE_INT_FETCH("hw.ofwfb.disable", &disabled);
+	if (disabled)
+		return (CN_DEAD);
 
 	chosen = OF_finddevice("/chosen");
 	if (chosen == -1)
@@ -360,11 +363,6 @@ ofwfb_init(struct vt_device *vd)
 	uint32_t depth, height, width, stride;
 	uint32_t fb_phys;
 	int i, len;
-#ifdef __sparc64__
-	static struct bus_space_tag ofwfb_memt[1];
-	bus_addr_t phys;
-	int space;
-#endif
 
 	/* Initialize softc */
 	vd->vd_softc = sc = &ofwfb_conssoftc;
@@ -439,11 +437,6 @@ ofwfb_init(struct vt_device *vd)
 		sc->sc_memt = &bs_be_tag;
 		bus_space_map(sc->sc_memt, fb_phys, sc->fb.fb_size,
 		    BUS_SPACE_MAP_PREFETCHABLE, &sc->fb.fb_vbase);
-	#elif defined(__sparc64__)
-		OF_decode_addr(node, 0, &space, &phys);
-		sc->sc_memt = &ofwfb_memt[0];
-		sc->fb.fb_vbase =
-		    sparc64_fake_bustag(space, fb_phys, sc->sc_memt);
 	#elif defined(__arm__)
 		sc->sc_memt = fdtbus_bs_tag;
 		bus_space_map(sc->sc_memt, sc->fb.fb_pbase, sc->fb.fb_size,

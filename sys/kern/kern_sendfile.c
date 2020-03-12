@@ -89,6 +89,7 @@ struct sf_io {
 	int		npages;
 	struct socket	*so;
 	struct mbuf	*m;
+	vm_object_t	obj;
 #ifdef KERN_TLS
 	struct ktls_session *tls;
 #endif
@@ -125,8 +126,10 @@ sfstat_sysctl(SYSCTL_HANDLER_ARGS)
 		COUNTER_ARRAY_ZERO(sfstat, sizeof(s) / sizeof(uint64_t));
 	return (SYSCTL_OUT(req, &s, sizeof(s)));
 }
-SYSCTL_PROC(_kern_ipc, OID_AUTO, sfstat, CTLTYPE_OPAQUE | CTLFLAG_RW,
-    NULL, 0, sfstat_sysctl, "I", "sendfile statistics");
+SYSCTL_PROC(_kern_ipc, OID_AUTO, sfstat,
+    CTLTYPE_OPAQUE | CTLFLAG_RW | CTLFLAG_NEEDGIANT, NULL, 0,
+    sfstat_sysctl, "I",
+    "sendfile statistics");
 
 static void
 sendfile_free_mext(struct mbuf *m)
@@ -257,11 +260,11 @@ static void
 sendfile_iodone(void *arg, vm_page_t *pg, int count, int error)
 {
 	struct sf_io *sfio = arg;
-	struct socket *so = sfio->so;
+	struct socket *so;
 
 	for (int i = 0; i < count; i++)
 		if (pg[i] != bogus_page)
-			vm_page_xunbusy(pg[i]);
+			vm_page_xunbusy_unchecked(pg[i]);
 
 	if (error)
 		sfio->error = error;
@@ -269,12 +272,17 @@ sendfile_iodone(void *arg, vm_page_t *pg, int count, int error)
 	if (!refcount_release(&sfio->nios))
 		return;
 
-	if (__predict_false(sfio->error && sfio->m == NULL)) {
+	vm_object_pip_wakeup(sfio->obj);
+
+	if (sfio->m == NULL) {
 		/*
-		 * I/O operation failed, but pru_send hadn't been executed -
-		 * nothing had been sent to the socket.  The syscall has
-		 * returned error to the user.
+		 * Either I/O operation failed, or we failed to allocate
+		 * buffers, or we bailed out on first busy page, or we
+		 * succeeded filling the request without any I/Os. Anyway,
+		 * pru_send hadn't been executed - nothing had been sent
+		 * to the socket yet.
 		 */
+		MPASS((curthread->td_pflags & TDP_KTHREAD) == 0);
 		free(sfio, M_TEMP);
 		return;
 	}
@@ -288,6 +296,7 @@ sendfile_iodone(void *arg, vm_page_t *pg, int count, int error)
 		KASSERT(sfio->tls == NULL,
 		    ("non-ext_pgs mbuf with TLS session"));
 #endif
+	so = sfio->so;
 	CURVNET_SET(so->so_vnet);
 	if (__predict_false(sfio->error)) {
 		/*
@@ -349,9 +358,7 @@ sendfile_swapin(vm_object_t obj, struct sf_io *sfio, int *nios, off_t off,
 	 * First grab all the pages and wire them.  Note that we grab
 	 * only required pages.  Readahead pages are dealt with later.
 	 */
-	VM_OBJECT_WLOCK(obj);
-
-	grabbed = vm_page_grab_pages(obj, OFF_TO_IDX(off),
+	grabbed = vm_page_grab_pages_unlocked(obj, OFF_TO_IDX(off),
 	    VM_ALLOC_NORMAL | VM_ALLOC_WIRED | flags, pa, npages);
 	if (grabbed < npages) {
 		for (int i = grabbed; i < npages; i++)
@@ -382,15 +389,18 @@ sendfile_swapin(vm_object_t obj, struct sf_io *sfio, int *nios, off_t off,
 		 * stored in 'a', about how many pages we can pagein after
 		 * this page in a single I/O.
 		 */
+		VM_OBJECT_RLOCK(obj);
 		if (!vm_pager_has_page(obj, OFF_TO_IDX(vmoff(i, off)), NULL,
 		    &a)) {
+			VM_OBJECT_RUNLOCK(obj);
 			pmap_zero_page(pa[i]);
-			pa[i]->valid = VM_PAGE_BITS_ALL;
+			vm_page_valid(pa[i]);
 			MPASS(pa[i]->dirty == 0);
 			vm_page_xunbusy(pa[i]);
 			i++;
 			continue;
 		}
+		VM_OBJECT_RUNLOCK(obj);
 
 		/*
 		 * We want to pagein as many pages as possible, limited only
@@ -435,7 +445,7 @@ sendfile_swapin(vm_object_t obj, struct sf_io *sfio, int *nios, off_t off,
 			for (j = 0; j < npages; j++) {
 				if (j > i && j < i + count - 1 &&
 				    pa[j] == bogus_page)
-					pa[j] = vm_page_lookup(obj,
+					pa[j] = vm_page_relookup(obj,
 					    OFF_TO_IDX(vmoff(j, off)));
 				else if (j >= i)
 					vm_page_xunbusy(pa[j]);
@@ -444,7 +454,7 @@ sendfile_swapin(vm_object_t obj, struct sf_io *sfio, int *nios, off_t off,
 				    __func__, pa, j));
 				vm_page_unwire(pa[j], PQ_INACTIVE);
 			}
-			VM_OBJECT_WUNLOCK(obj);
+			refcount_release(&sfio->nios);
 			return (EIO);
 		}
 
@@ -457,9 +467,9 @@ sendfile_swapin(vm_object_t obj, struct sf_io *sfio, int *nios, off_t off,
 		 * Restore the valid page pointers.  They are already
 		 * unbusied, but still wired.
 		 */
-		for (j = i; j < i + count; j++)
+		for (j = i + 1; j < i + count - 1; j++)
 			if (pa[j] == bogus_page) {
-				pa[j] = vm_page_lookup(obj,
+				pa[j] = vm_page_relookup(obj,
 				    OFF_TO_IDX(vmoff(j, off)));
 				KASSERT(pa[j], ("%s: page %p[%d] disappeared",
 				    __func__, pa, j));
@@ -468,8 +478,6 @@ sendfile_swapin(vm_object_t obj, struct sf_io *sfio, int *nios, off_t off,
 		i += count;
 		(*nios)++;
 	}
-
-	VM_OBJECT_WUNLOCK(obj);
 
 	if (*nios == 0 && npages != 0)
 		SFSTAT_INC(sf_noiocnt);
@@ -544,7 +552,7 @@ sendfile_getobj(struct thread *td, struct file *fp, vm_object_t *obj_res,
 
 out:
 	if (vp != NULL)
-		VOP_UNLOCK(vp, 0);
+		VOP_UNLOCK(vp);
 	return (error);
 }
 
@@ -658,7 +666,7 @@ vn_sendfile(struct file *fp, int sockfd, struct uio *hdr_uio,
 	for (off = offset; rem > 0; ) {
 		struct sf_io *sfio;
 		vm_page_t *pa;
-		struct mbuf *mtail;
+		struct mbuf *m0, *mtail;
 		int nios, space, npages, rhpages;
 
 		mtail = NULL;
@@ -764,7 +772,7 @@ retry_space:
 				goto done;
 			error = VOP_GETATTR(vp, &va, td->td_ucred);
 			if (error != 0 || off >= va.va_size) {
-				VOP_UNLOCK(vp, 0);
+				VOP_UNLOCK(vp);
 				goto done;
 			}
 			if (va.va_size != obj_size) {
@@ -814,9 +822,9 @@ retry_space:
 		sfio = malloc(sizeof(struct sf_io) +
 		    npages * sizeof(vm_page_t), M_TEMP, M_WAITOK);
 		refcount_init(&sfio->nios, 1);
-		sfio->so = so;
+		sfio->obj = obj;
 		sfio->error = 0;
-
+		sfio->m = NULL;
 #ifdef KERN_TLS
 		/*
 		 * This doesn't use ktls_hold() because sfio->m will
@@ -825,13 +833,12 @@ retry_space:
 		 */
 		sfio->tls = tls;
 #endif
-
+		vm_object_pip_add(obj, 1);
 		error = sendfile_swapin(obj, sfio, &nios, off, space, npages,
 		    rhpages, flags);
 		if (error != 0) {
 			if (vp != NULL)
-				VOP_UNLOCK(vp, 0);
-			sfio->m = NULL;
+				VOP_UNLOCK(vp);
 			sendfile_iodone(sfio, NULL, 0, error);
 			goto done;
 		}
@@ -869,8 +876,6 @@ retry_space:
 		}
 
 		for (int i = 0; i < npages; i++) {
-			struct mbuf *m0;
-
 			/*
 			 * If a page wasn't grabbed successfully, then
 			 * trim the array. Can happen only with SF_NODISKIO.
@@ -915,8 +920,6 @@ retry_space:
 						mtx_unlock(&sfs->mtx);
 					}
 					ext_pgs = m0->m_ext.ext_pgs;
-					if (i == 0)
-						sfio->m = m0;
 					ext_pgs_idx = 0;
 
 					/* Append to mbuf chain. */
@@ -999,9 +1002,6 @@ retry_space:
 			    (vmoff(i, off) & PAGE_MASK);
 			m0->m_len = xfsize(i, npages, off, space);
 
-			if (i == 0)
-				sfio->m = m0;
-
 			/* Append to mbuf chain. */
 			if (mtail != NULL)
 				mtail->m_next = m0;
@@ -1011,24 +1011,28 @@ retry_space:
 		}
 
 		if (vp != NULL)
-			VOP_UNLOCK(vp, 0);
+			VOP_UNLOCK(vp);
 
 		/* Keep track of bytes processed. */
 		off += space;
 		rem -= space;
 
-		/* Prepend header, if any. */
+		/*
+		 * Prepend header, if any.  Save pointer to first mbuf
+		 * with a page.
+		 */
 		if (hdrlen) {
 prepend_header:
-			mhtail->m_next = m;
+			m0 = mhtail->m_next = m;
 			m = mh;
 			mh = NULL;
-		}
+		} else
+			m0 = m;
 
 		if (m == NULL) {
 			KASSERT(softerr, ("%s: m NULL, no error", __func__));
 			error = softerr;
-			free(sfio, M_TEMP);
+			sendfile_iodone(sfio, NULL, 0, 0);
 			goto done;
 		}
 
@@ -1039,21 +1043,19 @@ prepend_header:
 
 		CURVNET_SET(so->so_vnet);
 #ifdef KERN_TLS
-		if (tls != NULL) {
-			error = ktls_frame(m, tls, &tls_enq_cnt,
-			    TLS_RLTYPE_APP);
-			if (error != 0)
-				goto done;
-		}
+		if (tls != NULL)
+			ktls_frame(m, tls, &tls_enq_cnt, TLS_RLTYPE_APP);
 #endif
 		if (nios == 0) {
 			/*
 			 * If sendfile_swapin() didn't initiate any I/Os,
-			 * which happens if all data is cached in VM, then
-			 * we can send data right now without the
-			 * PRUS_NOTREADY flag.
+			 * which happens if all data is cached in VM, or if
+			 * the header consumed all socket buffer space and
+			 * sfio is NULL, then we can send data right now
+			 * without the PRUS_NOTREADY flag.
 			 */
-			free(sfio, M_TEMP);
+			if (sfio != NULL)
+				sendfile_iodone(sfio, NULL, 0, 0);
 #ifdef KERN_TLS
 			if (tls != NULL && tls->mode == TCP_TLS_MODE_SW) {
 				error = (*so->so_proto->pr_usrreqs->pru_send)
@@ -1065,6 +1067,8 @@ prepend_header:
 				error = (*so->so_proto->pr_usrreqs->pru_send)
 				    (so, 0, m, NULL, NULL, td);
 		} else {
+			sfio->so = so;
+			sfio->m = m0;
 			sfio->npages = npages;
 			soref(so);
 			error = (*so->so_proto->pr_usrreqs->pru_send)

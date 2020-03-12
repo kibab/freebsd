@@ -70,5 +70,9 @@
 
 void	mmc_print_ident(struct mmc_params *ident_data);
 void    mmccam_start_discovery(struct cam_sim *sim);
+struct ccb_pathinq;
+struct cam_sim;
+void	mmc_path_inq(struct ccb_pathinq *cpi, const char *hba,
+    const struct cam_sim *sim, size_t maxio);
 
 #endif

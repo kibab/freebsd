@@ -37,9 +37,35 @@
 
 struct uio;
 
+/*
+ * In the loadable random world, there are set of dangling pointers left in the
+ * core kernel:
+ *   * read_random, read_random_uio, is_random_seeded are function pointers,
+ *     rather than functions.
+ *   * p_random_alg_context is a true pointer in loadable random kernels.
+ *
+ * These are initialized at SI_SUB_RANDOM:SI_ORDER_SECOND during boot.  The
+ * read-type pointers are initialized by random_alg_context_init() in
+ * randomdev.c and p_random_alg_context in the algorithm, e.g., fortuna.c's
+ * random_fortuna_init_alg().  The nice thing about function pointers is they
+ * have a similar calling convention to ordinary functions.
+ *
+ * (In !loadable, the read_random, etc, routines are just plain functions;
+ * p_random_alg_context is a macro for the public visibility
+ * &random_alg_context.)
+ */
+#if defined(RANDOM_LOADABLE)
+extern void (*_read_random)(void *, u_int);
+extern int (*_read_random_uio)(struct uio *, bool);
+extern bool (*_is_random_seeded)(void);
+#define	read_random(a, b)	(*_read_random)(a, b)
+#define	read_random_uio(a, b)	(*_read_random_uio)(a, b)
+#define	is_random_seeded()	(*_is_random_seeded)()
+#else
 void read_random(void *, u_int);
 int read_random_uio(struct uio *, bool);
 bool is_random_seeded(void);
+#endif
 
 /*
  * Note: if you add or remove members of random_entropy_source, remember to
@@ -76,12 +102,12 @@ enum random_entropy_source {
 	RANDOM_PURE_CCP,
 	RANDOM_PURE_DARN,
 	RANDOM_PURE_TPM,
+	RANDOM_PURE_VMGENID,
 	ENTROPYSOURCE
 };
 _Static_assert(ENTROPYSOURCE <= 32,
     "hardcoded assumption that values fit in a typical word-sized bitset");
 
-#define RANDOM_LEGACY_BOOT_ENTROPY_MODULE	"/boot/entropy"
 #define RANDOM_CACHED_BOOT_ENTROPY_MODULE	"boot_entropy_cache"
 
 extern u_int hc_source_mask;
@@ -133,6 +159,7 @@ void random_harvest_deregister_source(enum random_entropy_source);
 
 #define GRND_NONBLOCK	0x1
 #define GRND_RANDOM	0x2
+#define GRND_INSECURE	0x4
 
 __BEGIN_DECLS
 ssize_t getrandom(void *buf, size_t buflen, unsigned int flags);

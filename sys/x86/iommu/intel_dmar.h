@@ -47,7 +47,8 @@ struct dmar_qi_genseq {
 struct dmar_map_entry {
 	dmar_gaddr_t start;
 	dmar_gaddr_t end;
-	dmar_gaddr_t free_after;	/* Free space after the entry */
+	dmar_gaddr_t first;		/* Least start in subtree */
+	dmar_gaddr_t last;		/* Greatest end in subtree */
 	dmar_gaddr_t free_down;		/* Max free space below the
 					   current R/B tree node */
 	u_int flags;
@@ -391,6 +392,7 @@ bool dmar_is_buswide_ctx(struct dmar_unit *unit, u_int busno);
 
 #define	DMAR_GM_CANWAIT	0x0001
 #define	DMAR_GM_CANSPLIT 0x0002
+#define	DMAR_GM_RMRR	0x0004
 
 #define	DMAR_PGF_WAITOK	0x0001
 #define	DMAR_PGF_ZERO	0x0002

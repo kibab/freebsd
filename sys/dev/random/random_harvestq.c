@@ -34,7 +34,9 @@ __FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/systm.h>
+#include <sys/ck.h>
 #include <sys/conf.h>
+#include <sys/epoch.h>
 #include <sys/eventhandler.h>
 #include <sys/hash.h>
 #include <sys/kernel.h>
@@ -48,11 +50,6 @@ __FBSDID("$FreeBSD$");
 #include <sys/sbuf.h>
 #include <sys/sysctl.h>
 #include <sys/unistd.h>
-
-#if defined(RANDOM_LOADABLE)
-#include <sys/lock.h>
-#include <sys/sx.h>
-#endif
 
 #include <machine/atomic.h>
 #include <machine/cpu.h>
@@ -80,8 +77,13 @@ static void random_sources_feed(void);
 
 static u_int read_rate;
 
-/* List for the dynamic sysctls */
-static struct sysctl_ctx_list random_clist;
+/*
+ * Random must initialize much earlier than epoch, but we can initialize the
+ * epoch code before SMP starts.  Prior to SMP, we can safely bypass
+ * concurrency primitives.
+ */
+static __read_mostly bool epoch_inited;
+static __read_mostly epoch_t rs_epoch;
 
 /*
  * How many events to queue up. We create this many items in
@@ -100,6 +102,17 @@ volatile int random_kthread_control;
  * entropy types to harvest.
  */
 __read_frequently u_int hc_source_mask;
+
+struct random_sources {
+	CK_LIST_ENTRY(random_sources)	 rrs_entries;
+	struct random_source		*rrs_source;
+};
+
+static CK_LIST_HEAD(sources_head, random_sources) source_list =
+    CK_LIST_HEAD_INITIALIZER(source_list);
+
+SYSCTL_NODE(_kern_random, OID_AUTO, harvest, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "Entropy Device Parameters");
 
 /*
  * Put all the harvest queue context stuff in one place.
@@ -155,14 +168,7 @@ static struct kproc_desc random_proc_kp = {
 static __inline void
 random_harvestq_fast_process_event(struct harvest_event *event)
 {
-#if defined(RANDOM_LOADABLE)
-	RANDOM_CONFIG_S_LOCK();
-	if (p_random_alg_context)
-#endif
 	p_random_alg_context->ra_event_processor(event);
-#if defined(RANDOM_LOADABLE)
-	RANDOM_CONFIG_S_UNLOCK();
-#endif
 	explicit_bzero(event, sizeof(*event));
 }
 
@@ -206,6 +212,14 @@ random_kthread(void)
 SYSINIT(random_device_h_proc, SI_SUB_KICK_SCHEDULER, SI_ORDER_ANY, kproc_start,
     &random_proc_kp);
 
+static void
+rs_epoch_init(void *dummy __unused)
+{
+	rs_epoch = epoch_alloc("Random Sources", EPOCH_PREEMPT);
+	epoch_inited = true;
+}
+SYSINIT(rs_epoch_init, SI_SUB_EPOCH, SI_ORDER_ANY, rs_epoch_init, NULL);
+
 /*
  * Run through all fast sources reading entropy for the given
  * number of rounds, which should be a multiple of the number
@@ -215,24 +229,25 @@ static void
 random_sources_feed(void)
 {
 	uint32_t entropy[HARVESTSIZE];
+	struct epoch_tracker et;
 	struct random_sources *rrs;
 	u_int i, n, local_read_rate;
+	bool rse_warm;
+
+	rse_warm = epoch_inited;
 
 	/*
 	 * Step over all of live entropy sources, and feed their output
 	 * to the system-wide RNG.
 	 */
-#if defined(RANDOM_LOADABLE)
-	RANDOM_CONFIG_S_LOCK();
-	if (p_random_alg_context) {
-	/* It's an indenting error. Yeah, Yeah. */
-#endif
 	local_read_rate = atomic_readandclear_32(&read_rate);
 	/* Perform at least one read per round */
 	local_read_rate = MAX(local_read_rate, 1);
 	/* But not exceeding RANDOM_KEYSIZE_WORDS */
 	local_read_rate = MIN(local_read_rate, RANDOM_KEYSIZE_WORDS);
-	LIST_FOREACH(rrs, &source_list, rrs_entries) {
+	if (rse_warm)
+		epoch_enter_preempt(rs_epoch, &et);
+	CK_LIST_FOREACH(rrs, &source_list, rrs_entries) {
 		for (i = 0; i < p_random_alg_context->ra_poolcount*local_read_rate; i++) {
 			n = rrs->rrs_source->rs_read(entropy, sizeof(entropy));
 			KASSERT((n <= sizeof(entropy)), ("%s: rs_read returned too much data (%u > %zu)", __func__, n, sizeof(entropy)));
@@ -252,11 +267,9 @@ random_sources_feed(void)
 			random_harvest_direct(entropy, n, rrs->rrs_source->rs_source);
 		}
 	}
+	if (rse_warm)
+		epoch_exit_preempt(rs_epoch, &et);
 	explicit_bzero(entropy, sizeof(entropy));
-#if defined(RANDOM_LOADABLE)
-	}
-	RANDOM_CONFIG_S_UNLOCK();
-#endif
 }
 
 void
@@ -292,6 +305,10 @@ random_check_uint_harvestmask(SYSCTL_HANDLER_ARGS)
 	    (orig_value & user_immutable_mask);
 	return (0);
 }
+SYSCTL_PROC(_kern_random_harvest, OID_AUTO, mask,
+    CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_NEEDGIANT, NULL, 0,
+    random_check_uint_harvestmask, "IU",
+    "Entropy harvesting mask");
 
 /* ARGSUSED */
 static int
@@ -310,6 +327,10 @@ random_print_harvestmask(SYSCTL_HANDLER_ARGS)
 	}
 	return (error);
 }
+SYSCTL_PROC(_kern_random_harvest, OID_AUTO, mask_bin,
+    CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_MPSAFE, NULL, 0,
+    random_print_harvestmask, "A",
+    "Entropy harvesting mask (printable)");
 
 static const char *random_source_descr[ENTROPYSOURCE] = {
 	[RANDOM_CACHED] = "CACHED",
@@ -336,6 +357,7 @@ static const char *random_source_descr[ENTROPYSOURCE] = {
 	[RANDOM_PURE_CCP] = "PURE_CCP",
 	[RANDOM_PURE_DARN] = "PURE_DARN",
 	[RANDOM_PURE_TPM] = "PURE_TPM",
+	[RANDOM_PURE_VMGENID] = "VMGENID",
 	/* "ENTROPYSOURCE" */
 };
 
@@ -367,6 +389,10 @@ random_print_harvestmask_symbolic(SYSCTL_HANDLER_ARGS)
 	}
 	return (error);
 }
+SYSCTL_PROC(_kern_random_harvest, OID_AUTO, mask_symbolic,
+    CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_MPSAFE, NULL, 0,
+    random_print_harvestmask_symbolic, "A",
+    "Entropy harvesting mask (symbolic)");
 
 /* ARGSUSED */
 static void
@@ -376,30 +402,62 @@ random_harvestq_init(void *unused __unused)
 	    (((1 << (RANDOM_ENVIRONMENTAL_END + 1)) - 1) &
 	    ~_RANDOM_HARVEST_ETHER_OFF & ~_RANDOM_HARVEST_UMA_OFF);
 
-	struct sysctl_oid *random_sys_o;
-
-	random_sys_o = SYSCTL_ADD_NODE(&random_clist,
-	    SYSCTL_STATIC_CHILDREN(_kern_random),
-	    OID_AUTO, "harvest", CTLFLAG_RW, 0,
-	    "Entropy Device Parameters");
 	hc_source_mask = almost_everything_mask;
-	SYSCTL_ADD_PROC(&random_clist,
-	    SYSCTL_CHILDREN(random_sys_o),
-	    OID_AUTO, "mask", CTLTYPE_UINT | CTLFLAG_RW,
-	    NULL, 0, random_check_uint_harvestmask, "IU",
-	    "Entropy harvesting mask");
-	SYSCTL_ADD_PROC(&random_clist,
-	    SYSCTL_CHILDREN(random_sys_o),
-	    OID_AUTO, "mask_bin", CTLTYPE_STRING | CTLFLAG_RD,
-	    NULL, 0, random_print_harvestmask, "A", "Entropy harvesting mask (printable)");
-	SYSCTL_ADD_PROC(&random_clist,
-	    SYSCTL_CHILDREN(random_sys_o),
-	    OID_AUTO, "mask_symbolic", CTLTYPE_STRING | CTLFLAG_RD,
-	    NULL, 0, random_print_harvestmask_symbolic, "A", "Entropy harvesting mask (symbolic)");
 	RANDOM_HARVEST_INIT_LOCK();
 	harvest_context.hc_entropy_ring.in = harvest_context.hc_entropy_ring.out = 0;
 }
-SYSINIT(random_device_h_init, SI_SUB_RANDOM, SI_ORDER_SECOND, random_harvestq_init, NULL);
+SYSINIT(random_device_h_init, SI_SUB_RANDOM, SI_ORDER_THIRD, random_harvestq_init, NULL);
+
+/*
+ * Subroutine to slice up a contiguous chunk of 'entropy' and feed it into the
+ * underlying algorithm.  Returns number of bytes actually fed into underlying
+ * algorithm.
+ */
+static size_t
+random_early_prime(char *entropy, size_t len)
+{
+	struct harvest_event event;
+	size_t i;
+
+	len = rounddown(len, sizeof(event.he_entropy));
+	if (len == 0)
+		return (0);
+
+	for (i = 0; i < len; i += sizeof(event.he_entropy)) {
+		event.he_somecounter = (uint32_t)get_cyclecount();
+		event.he_size = sizeof(event.he_entropy);
+		event.he_source = RANDOM_CACHED;
+		event.he_destination =
+		    harvest_context.hc_destination[RANDOM_CACHED]++;
+		memcpy(event.he_entropy, entropy + i, sizeof(event.he_entropy));
+		random_harvestq_fast_process_event(&event);
+	}
+	explicit_bzero(entropy, len);
+	return (len);
+}
+
+/*
+ * Subroutine to search for known loader-loaded files in memory and feed them
+ * into the underlying algorithm early in boot.  Returns the number of bytes
+ * loaded (zero if none were loaded).
+ */
+static size_t
+random_prime_loader_file(const char *type)
+{
+	uint8_t *keyfile, *data;
+	size_t size;
+
+	keyfile = preload_search_by_type(type);
+	if (keyfile == NULL)
+		return (0);
+
+	data = preload_fetch_addr(keyfile);
+	size = preload_fetch_size(keyfile);
+	if (data == NULL)
+		return (0);
+
+	return (random_early_prime(data, size));
+}
 
 /*
  * This is used to prime the RNG by grabbing any early random stuff
@@ -410,41 +468,19 @@ SYSINIT(random_device_h_init, SI_SUB_RANDOM, SI_ORDER_SECOND, random_harvestq_in
 static void
 random_harvestq_prime(void *unused __unused)
 {
-	struct harvest_event event;
-	size_t count, size, i;
-	uint8_t *keyfile, *data;
+	size_t size;
 
 	/*
 	 * Get entropy that may have been preloaded by loader(8)
 	 * and use it to pre-charge the entropy harvest queue.
 	 */
-	keyfile = preload_search_by_type(RANDOM_CACHED_BOOT_ENTROPY_MODULE);
-#ifndef NO_BACKWARD_COMPATIBILITY
-	if (keyfile == NULL)
-	    keyfile = preload_search_by_type(RANDOM_LEGACY_BOOT_ENTROPY_MODULE);
-#endif
-	if (keyfile != NULL) {
-		data = preload_fetch_addr(keyfile);
-		size = preload_fetch_size(keyfile);
-		/* Trim the size. If the admin has a file with a funny size, we lose some. Tough. */
-		size -= (size % sizeof(event.he_entropy));
-		if (data != NULL && size != 0) {
-			for (i = 0; i < size; i += sizeof(event.he_entropy)) {
-				count = sizeof(event.he_entropy);
-				event.he_somecounter = (uint32_t)get_cyclecount();
-				event.he_size = count;
-				event.he_source = RANDOM_CACHED;
-				event.he_destination =
-				    harvest_context.hc_destination[RANDOM_CACHED]++;
-				memcpy(event.he_entropy, data + i, sizeof(event.he_entropy));
-				random_harvestq_fast_process_event(&event);
-			}
-			explicit_bzero(data, size);
-			if (bootverbose)
-				printf("random: read %zu bytes from preloaded cache\n", size);
-		} else
-			if (bootverbose)
-				printf("random: no preloaded entropy cache\n");
+	size = random_prime_loader_file(RANDOM_CACHED_BOOT_ENTROPY_MODULE);
+	if (bootverbose) {
+		if (size > 0)
+			printf("random: read %zu bytes from preloaded cache\n",
+			    size);
+		else
+			printf("random: no preloaded entropy cache\n");
 	}
 }
 SYSINIT(random_device_prime, SI_SUB_RANDOM, SI_ORDER_MIDDLE, random_harvestq_prime, NULL);
@@ -458,9 +494,8 @@ random_harvestq_deinit(void *unused __unused)
 	random_kthread_control = 0;
 	while (random_kthread_control >= 0)
 		tsleep(&harvest_context.hc_kthread_proc, 0, "harvqterm", hz/5);
-	sysctl_ctx_free(&random_clist);
 }
-SYSUNINIT(random_device_h_init, SI_SUB_RANDOM, SI_ORDER_SECOND, random_harvestq_deinit, NULL);
+SYSUNINIT(random_device_h_init, SI_SUB_RANDOM, SI_ORDER_THIRD, random_harvestq_deinit, NULL);
 
 /*-
  * Entropy harvesting queue routine.
@@ -569,7 +604,10 @@ random_source_register(struct random_source *rsource)
 	random_harvest_register_source(rsource->rs_source);
 
 	printf("random: registering fast source %s\n", rsource->rs_ident);
-	LIST_INSERT_HEAD(&source_list, rrs, rrs_entries);
+
+	RANDOM_HARVEST_LOCK();
+	CK_LIST_INSERT_HEAD(&source_list, rrs, rrs_entries);
+	RANDOM_HARVEST_UNLOCK();
 }
 
 void
@@ -581,29 +619,40 @@ random_source_deregister(struct random_source *rsource)
 
 	random_harvest_deregister_source(rsource->rs_source);
 
-	LIST_FOREACH(rrs, &source_list, rrs_entries)
+	RANDOM_HARVEST_LOCK();
+	CK_LIST_FOREACH(rrs, &source_list, rrs_entries)
 		if (rrs->rrs_source == rsource) {
-			LIST_REMOVE(rrs, rrs_entries);
+			CK_LIST_REMOVE(rrs, rrs_entries);
 			break;
 		}
-	if (rrs != NULL)
-		free(rrs, M_ENTROPY);
+	RANDOM_HARVEST_UNLOCK();
+
+	if (rrs != NULL && epoch_inited)
+		epoch_wait_preempt(rs_epoch);
+	free(rrs, M_ENTROPY);
 }
 
 static int
 random_source_handler(SYSCTL_HANDLER_ARGS)
 {
+	struct epoch_tracker et;
 	struct random_sources *rrs;
 	struct sbuf sbuf;
 	int error, count;
 
+	error = sysctl_wire_old_buffer(req, 0);
+	if (error != 0)
+		return (error);
+
 	sbuf_new_for_sysctl(&sbuf, NULL, 64, req);
 	count = 0;
-	LIST_FOREACH(rrs, &source_list, rrs_entries) {
+	epoch_enter_preempt(rs_epoch, &et);
+	CK_LIST_FOREACH(rrs, &source_list, rrs_entries) {
 		sbuf_cat(&sbuf, (count++ ? ",'" : "'"));
 		sbuf_cat(&sbuf, rrs->rrs_source->rs_ident);
 		sbuf_cat(&sbuf, "'");
 	}
+	epoch_exit_preempt(rs_epoch, &et);
 	error = sbuf_finish(&sbuf);
 	sbuf_delete(&sbuf);
 	return (error);

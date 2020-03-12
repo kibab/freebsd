@@ -221,7 +221,10 @@ kernel_va_to_slbv(vm_offset_t va)
 
 		if (mem_valid(DMAP_TO_PHYS(va), 0) == 0)
 			slbv |= SLBV_L;
-	}
+	} else if (moea64_large_page_size != 0 &&
+	    va >= (vm_offset_t)vm_page_array &&
+	    va <= (uintptr_t)(&vm_page_array[vm_page_array_size]))
+		slbv |= SLBV_L;
 		
 	return (slbv);
 }
@@ -520,12 +523,12 @@ slb_uma_real_alloc(uma_zone_t zone, vm_size_t bytes, int domain,
 static void
 slb_zone_init(void *dummy)
 {
-
 	slbt_zone = uma_zcreate("SLB tree node", sizeof(struct slbtnode),
-	    NULL, NULL, NULL, NULL, UMA_ALIGN_PTR, UMA_ZONE_VM);
+	    NULL, NULL, NULL, NULL, UMA_ALIGN_PTR,
+	    UMA_ZONE_CONTIG | UMA_ZONE_VM);
 	slb_cache_zone = uma_zcreate("SLB cache",
 	    (n_slbs + 1)*sizeof(struct slb *), NULL, NULL, NULL, NULL,
-	    UMA_ALIGN_PTR, UMA_ZONE_VM);
+	    UMA_ALIGN_PTR, UMA_ZONE_CONTIG | UMA_ZONE_VM);
 
 	if (platform_real_maxaddr() != VM_MAX_ADDRESS) {
 		uma_zone_set_allocf(slb_cache_zone, slb_uma_real_alloc);

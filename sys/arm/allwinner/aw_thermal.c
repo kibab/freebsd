@@ -1,6 +1,5 @@
 /*-
  * Copyright (c) 2016 Jared McNeill <jmcneill@invisible.ca>
- * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -677,7 +676,7 @@ aw_thermal_attach(device_t dev)
 		SYSCTL_ADD_PROC(device_get_sysctl_ctx(dev),
 		    SYSCTL_CHILDREN(device_get_sysctl_tree(dev)),
 		    OID_AUTO, sc->conf->sensors[i].name,
-		    CTLTYPE_INT | CTLFLAG_RD,
+		    CTLTYPE_INT | CTLFLAG_RD | CTLFLAG_NEEDGIANT,
 		    sc, i, aw_thermal_sysctl, "IK0",
 		    sc->conf->sensors[i].desc);
 
