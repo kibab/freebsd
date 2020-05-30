@@ -2048,8 +2048,6 @@ again:
 	if (vm_object_reserv(object) &&
 	    (m = vm_reserv_alloc_page(object, pindex, domain, req, mpred)) !=
 	    NULL) {
-		domain = vm_phys_domain(m);
-		vmd = VM_DOMAIN(domain);
 		goto found;
 	}
 #endif
@@ -2248,8 +2246,6 @@ again:
 	if (vm_object_reserv(object) &&
 	    (m_ret = vm_reserv_alloc_contig(object, pindex, domain, req,
 	    mpred, npages, low, high, alignment, boundary)) != NULL) {
-		domain = vm_phys_domain(m_ret);
-		vmd = VM_DOMAIN(domain);
 		goto found;
 	}
 #endif
@@ -4169,7 +4165,16 @@ vm_page_release_locked(vm_page_t m, int flags)
 		if ((flags & VPR_TRYFREE) != 0 &&
 		    (m->object->ref_count == 0 || !pmap_page_is_mapped(m)) &&
 		    m->dirty == 0 && vm_page_tryxbusy(m)) {
-			vm_page_free(m);
+			/*
+			 * An unlocked lookup may have wired the page before the
+			 * busy lock was acquired, in which case the page must
+			 * not be freed.
+			 */
+			if (__predict_true(!vm_page_wired(m))) {
+				vm_page_free(m);
+				return;
+			}
+			vm_page_xunbusy(m);
 		} else {
 			vm_page_release_toq(m, PQ_INACTIVE, flags != 0);
 		}
@@ -4442,7 +4447,7 @@ vm_page_acquire_unlocked(vm_object_t object, vm_pindex_t pindex,
 		 * without barriers.  Switch to radix to verify.
 		 */
 		if (prev == NULL || (m = TAILQ_NEXT(prev, listq)) == NULL ||
-		    m->pindex != pindex ||
+		    QMD_IS_TRASHED(m) || m->pindex != pindex ||
 		    atomic_load_ptr(&m->object) != object) {
 			prev = NULL;
 			/*
@@ -5453,7 +5458,7 @@ DB_SHOW_COMMAND(pginfo, vm_page_print_pginfo)
 	else
 		m = (vm_page_t)addr;
 	db_printf(
-    "page %p obj %p pidx 0x%jx phys 0x%jx q %d ref %u\n"
+    "page %p obj %p pidx 0x%jx phys 0x%jx q %d ref 0x%x\n"
     "  af 0x%x of 0x%x f 0x%x act %d busy %x valid 0x%x dirty 0x%x\n",
 	    m, m->object, (uintmax_t)m->pindex, (uintmax_t)m->phys_addr,
 	    m->a.queue, m->ref_count, m->a.flags, m->oflags,

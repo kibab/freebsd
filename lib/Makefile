@@ -48,7 +48,7 @@ SUBDIR=	${SUBDIR_BOOTSTRAP} \
 	libdwarf \
 	libedit \
 	libelftc \
-	libevent \
+	libevent1 \
 	libexecinfo \
 	libexpat \
 	libfetch \
@@ -61,6 +61,7 @@ SUBDIR=	${SUBDIR_BOOTSTRAP} \
 	libjail \
 	libkiconv \
 	libkvm \
+	liblua \
 	liblzma \
 	libmemstat \
 	libmd \
@@ -204,6 +205,8 @@ SUBDIR.${MK_RADIUS_SUPPORT}+=	libradius
 SUBDIR.${MK_SENDMAIL}+=	libmilter libsm libsmdb libsmutil
 SUBDIR.${MK_TELNET}+=	libtelnet
 SUBDIR.${MK_TESTS_SUPPORT}+=	atf
+SUBDIR.${MK_TESTS_SUPPORT}.${MK_CXX}+=	kyua
+SUBDIR.${MK_TESTS_SUPPORT}.${MK_CXX}+=	liblutok
 SUBDIR.${MK_TESTS}+=	tests
 SUBDIR.${MK_UNBOUND}+=	libunbound
 SUBDIR.${MK_USB}+=	libusbhid libusb

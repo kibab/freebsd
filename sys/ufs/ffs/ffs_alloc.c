@@ -222,6 +222,10 @@ nospace:
 		softdep_request_cleanup(fs, ITOV(ip), cred, FLUSH_BLOCKS_WAIT);
 		goto retry;
 	}
+	if (ffs_fsfail_cleanup_locked(ump, 0)) {
+		UFS_UNLOCK(ump);
+		return (ENXIO);
+	}
 	if (reclaimed > 0 &&
 	    ppsratecheck(&ump->um_last_fullmsg, &ump->um_secs_fullmsg, 1)) {
 		UFS_UNLOCK(ump);
@@ -447,6 +451,12 @@ nospace:
 		softdep_request_cleanup(fs, vp, cred, FLUSH_BLOCKS_WAIT);
 		goto retry;
 	}
+	if (bp)
+		brelse(bp);
+	if (ffs_fsfail_cleanup_locked(ump, 0)) {
+		UFS_UNLOCK(ump);
+		return (ENXIO);
+	}
 	if (reclaimed > 0 &&
 	    ppsratecheck(&ump->um_last_fullmsg, &ump->um_secs_fullmsg, 1)) {
 		UFS_UNLOCK(ump);
@@ -456,8 +466,6 @@ nospace:
 	} else {
 		UFS_UNLOCK(ump);
 	}
-	if (bp)
-		brelse(bp);
 	return (ENOSPC);
 }
 
@@ -1102,7 +1110,7 @@ ffs_valloc(pvp, mode, cred, vpp)
 	struct ufsmount *ump;
 	ino_t ino, ipref;
 	u_int cg;
-	int error, error1, reclaimed;
+	int error, reclaimed;
 
 	*vpp = NULL;
 	pip = VTOI(pvp);
@@ -1137,28 +1145,21 @@ retry:
 					(allocfcn_t *)ffs_nodealloccg);
 	if (ino == 0)
 		goto noinodes;
-
 	/*
 	 * Get rid of the cached old vnode, force allocation of a new vnode
-	 * for this inode.
+	 * for this inode. If this fails, release the allocated ino and
+	 * return the error.
 	 */
-	error = ffs_vgetf(pvp->v_mount, ino, LK_EXCLUSIVE, vpp, FFSV_REPLACE);
-	if (error) {
-		error1 = ffs_vgetf(pvp->v_mount, ino, LK_EXCLUSIVE, vpp,
-		    FFSV_FORCEINSMQ | FFSV_REPLACE);
+	if ((error = ffs_vgetf(pvp->v_mount, ino, LK_EXCLUSIVE, vpp,
+	    FFSV_FORCEINSMQ | FFSV_REPLACE)) != 0) {
 		ffs_vfree(pvp, ino, mode);
-		if (error1 == 0) {
-			ip = VTOI(*vpp);
-			if (ip->i_mode)
-				goto dup_alloc;
-			UFS_INODE_SET_FLAG(ip, IN_MODIFIED);
-			vput(*vpp);
-		}
 		return (error);
 	}
+	/*
+	 * We got an inode, so check mode and panic if it is already allocated.
+	 */
 	ip = VTOI(*vpp);
 	if (ip->i_mode) {
-dup_alloc:
 		printf("mode = 0%o, inum = %ju, fs = %s\n",
 		    ip->i_mode, (uintmax_t)ip->i_number, fs->fs_fsmnt);
 		panic("ffs_valloc: dup alloc");
@@ -1196,6 +1197,10 @@ noinodes:
 		reclaimed = 1;
 		softdep_request_cleanup(fs, pvp, cred, FLUSH_INODES_WAIT);
 		goto retry;
+	}
+	if (ffs_fsfail_cleanup_locked(ump, 0)) {
+		UFS_UNLOCK(ump);
+		return (ENXIO);
 	}
 	if (ppsratecheck(&ump->um_last_fullmsg, &ump->um_secs_fullmsg, 1)) {
 		UFS_UNLOCK(ump);
@@ -2230,6 +2235,7 @@ ffs_blkfree_cg(ump, fs, devvp, bno, size, inum, dephd)
 	struct mount *mp;
 	struct cg *cgp;
 	struct buf *bp;
+	daddr_t dbn;
 	ufs1_daddr_t fragno, cgbno;
 	int i, blk, frags, bbase, error;
 	u_int cg;
@@ -2262,8 +2268,23 @@ ffs_blkfree_cg(ump, fs, devvp, bno, size, inum, dephd)
 		ffs_fserr(fs, inum, "bad block");
 		return;
 	}
-	if ((error = ffs_getcg(fs, devvp, cg, 0, &bp, &cgp)) != 0)
+	if ((error = ffs_getcg(fs, devvp, cg, GB_CVTENXIO, &bp, &cgp)) != 0) {
+		if (!ffs_fsfail_cleanup(ump, error) ||
+		    !MOUNTEDSOFTDEP(UFSTOVFS(ump)) || devvp->v_type != VCHR)
+			return;
+		if (devvp->v_type == VREG)
+			dbn = fragstoblks(fs, cgtod(fs, cg));
+		else
+			dbn = fsbtodb(fs, cgtod(fs, cg));
+		error = getblkx(devvp, dbn, dbn, fs->fs_cgsize, 0, 0, 0, &bp);
+		KASSERT(error == 0, ("getblkx failed"));
+		softdep_setup_blkfree(UFSTOVFS(ump), bp, bno,
+		    numfrags(fs, size), dephd);
+		bp->b_flags |= B_RELBUF | B_NOCACHE;
+		bp->b_flags &= ~B_CACHE;
+		bawrite(bp);
 		return;
+	}
 	cgbno = dtogd(fs, bno);
 	blksfree = cg_blksfree(cgp);
 	UFS_LOCK(ump);
@@ -2783,6 +2804,7 @@ ffs_freefile(ump, fs, devvp, ino, mode, wkhd)
 {
 	struct cg *cgp;
 	struct buf *bp;
+	daddr_t dbn;
 	int error;
 	u_int cg;
 	u_int8_t *inosused;
@@ -2804,8 +2826,22 @@ ffs_freefile(ump, fs, devvp, ino, mode, wkhd)
 	if (ino >= fs->fs_ipg * fs->fs_ncg)
 		panic("ffs_freefile: range: dev = %s, ino = %ju, fs = %s",
 		    devtoname(dev), (uintmax_t)ino, fs->fs_fsmnt);
-	if ((error = ffs_getcg(fs, devvp, cg, 0, &bp, &cgp)) != 0)
+	if ((error = ffs_getcg(fs, devvp, cg, GB_CVTENXIO, &bp, &cgp)) != 0) {
+		if (!ffs_fsfail_cleanup(ump, error) ||
+		    !MOUNTEDSOFTDEP(UFSTOVFS(ump)) || devvp->v_type != VCHR)
+			return (error);
+		if (devvp->v_type == VREG)
+			dbn = fragstoblks(fs, cgtod(fs, cg));
+		else
+			dbn = fsbtodb(fs, cgtod(fs, cg));
+		error = getblkx(devvp, dbn, dbn, fs->fs_cgsize, 0, 0, 0, &bp);
+		KASSERT(error == 0, ("getblkx failed"));
+		softdep_setup_inofree(UFSTOVFS(ump), bp, ino, wkhd);
+		bp->b_flags |= B_RELBUF | B_NOCACHE;
+		bp->b_flags &= ~B_CACHE;
+		bawrite(bp);
 		return (error);
+	}
 	inosused = cg_inosused(cgp);
 	cgino = ino % fs->fs_ipg;
 	if (isclr(inosused, cgino)) {
@@ -3065,7 +3101,7 @@ ffs_fserr(fs, inum, cp)
  *	the count to zero will cause the inode to be freed.
  * adjblkcnt(inode, amt) - adjust the number of blocks used by the
  *	inode by the specified amount.
- * adjsize(inode, size) - set the size of the inode to the
+ * setsize(inode, size) - set the size of the inode to the
  *	specified size.
  * adjndir, adjbfree, adjifree, adjffree, adjnumclusters(amt) -
  *	adjust the superblock summary.
@@ -3086,18 +3122,6 @@ ffs_fserr(fs, inum, cp)
  *	in the current directory is oldvalue then change it to newvalue.
  * unlink(nameptr, oldvalue) - Verify that the inode number associated
  *	with nameptr in the current directory is oldvalue then unlink it.
- *
- * The following functions may only be used on a quiescent filesystem
- * by the soft updates journal. They are not safe to be run on an active
- * filesystem.
- *
- * setinode(inode, dip) - the specified disk inode is replaced with the
- *	contents pointed to by dip.
- * setbufoutput(fd, flags) - output associated with the specified file
- *	descriptor (which must reference the character device supporting
- *	the filesystem) switches from using physio to running through the
- *	buffer cache when flags is set to 1. The descriptor reverts to
- *	physio for output when flags is set to zero.
  */
 
 static int sysctl_ffs_fsck(SYSCTL_HANDLER_ARGS);
@@ -3163,22 +3187,11 @@ static SYSCTL_NODE(_vfs_ffs, FFS_UNLINK, unlink,
     CTLFLAG_WR | CTLFLAG_NEEDGIANT, sysctl_ffs_fsck,
     "Unlink a Duplicate Name");
 
-static SYSCTL_NODE(_vfs_ffs, FFS_SET_INODE, setinode,
-    CTLFLAG_WR | CTLFLAG_NEEDGIANT, sysctl_ffs_fsck,
-    "Update an On-Disk Inode");
-
-static SYSCTL_NODE(_vfs_ffs, FFS_SET_BUFOUTPUT, setbufoutput,
-    CTLFLAG_WR | CTLFLAG_NEEDGIANT, sysctl_ffs_fsck,
-    "Set Buffered Writing for Descriptor");
-
 #ifdef DIAGNOSTIC
 static int fsckcmds = 0;
 SYSCTL_INT(_debug, OID_AUTO, ffs_fsckcmds, CTLFLAG_RW, &fsckcmds, 0,
 	"print out fsck_ffs-based filesystem update commands");
 #endif /* DIAGNOSTIC */
-
-static int buffered_write(struct file *, struct uio *, struct ucred *,
-	int, struct thread *);
 
 static int
 sysctl_ffs_fsck(SYSCTL_HANDLER_ARGS)
@@ -3194,10 +3207,9 @@ sysctl_ffs_fsck(SYSCTL_HANDLER_ARGS)
 	ufs2_daddr_t blkno;
 	long blkcnt, blksize;
 	u_long key;
-	struct file *fp, *vfp;
+	struct file *fp;
 	cap_rights_t rights;
 	int filetype, error;
-	static struct fileops *origops, bufferedops;
 
 	if (req->newlen > sizeof cmd)
 		return (EBADRPC);
@@ -3490,76 +3502,6 @@ sysctl_ffs_fsck(SYSCTL_HANDLER_ARGS)
 		    0, (ino_t)cmd.size);
 		break;
 
-	case FFS_SET_INODE:
-		if (ump->um_fsckpid != td->td_proc->p_pid) {
-			error = EPERM;
-			break;
-		}
-#ifdef DIAGNOSTIC
-		if (fsckcmds) {
-			printf("%s: update inode %jd\n",
-			    mp->mnt_stat.f_mntonname, (intmax_t)cmd.value);
-		}
-#endif /* DIAGNOSTIC */
-		if ((error = ffs_vget(mp, (ino_t)cmd.value, LK_EXCLUSIVE, &vp)))
-			break;
-		AUDIT_ARG_VNODE1(vp);
-		ip = VTOI(vp);
-		if (I_IS_UFS1(ip))
-			error = copyin((void *)(intptr_t)cmd.size, ip->i_din1,
-			    sizeof(struct ufs1_dinode));
-		else
-			error = copyin((void *)(intptr_t)cmd.size, ip->i_din2,
-			    sizeof(struct ufs2_dinode));
-		if (error) {
-			vput(vp);
-			break;
-		}
-		UFS_INODE_SET_FLAG(ip, IN_CHANGE | IN_MODIFIED);
-		error = ffs_update(vp, 1);
-		vput(vp);
-		break;
-
-	case FFS_SET_BUFOUTPUT:
-		if (ump->um_fsckpid != td->td_proc->p_pid) {
-			error = EPERM;
-			break;
-		}
-		if (ITOUMP(VTOI(vp)) != ump) {
-			error = EINVAL;
-			break;
-		}
-#ifdef DIAGNOSTIC
-		if (fsckcmds) {
-			printf("%s: %s buffered output for descriptor %jd\n",
-			    mp->mnt_stat.f_mntonname,
-			    cmd.size == 1 ? "enable" : "disable",
-			    (intmax_t)cmd.value);
-		}
-#endif /* DIAGNOSTIC */
-		if ((error = getvnode(td, cmd.value,
-		    cap_rights_init(&rights, CAP_FSCK), &vfp)) != 0)
-			break;
-		if (vfp->f_vnode->v_type != VCHR) {
-			fdrop(vfp, td);
-			error = EINVAL;
-			break;
-		}
-		if (origops == NULL) {
-			origops = vfp->f_ops;
-			bcopy((void *)origops, (void *)&bufferedops,
-			    sizeof(bufferedops));
-			bufferedops.fo_write = buffered_write;
-		}
-		if (cmd.size == 1)
-			atomic_store_rel_ptr((volatile uintptr_t *)&vfp->f_ops,
-			    (uintptr_t)&bufferedops);
-		else
-			atomic_store_rel_ptr((volatile uintptr_t *)&vfp->f_ops,
-			    (uintptr_t)origops);
-		fdrop(vfp, td);
-		break;
-
 	default:
 #ifdef DIAGNOSTIC
 		if (fsckcmds) {
@@ -3573,94 +3515,5 @@ sysctl_ffs_fsck(SYSCTL_HANDLER_ARGS)
 	}
 	fdrop(fp, td);
 	vn_finished_write(mp);
-	return (error);
-}
-
-/*
- * Function to switch a descriptor to use the buffer cache to stage
- * its I/O. This is needed so that writes to the filesystem device
- * will give snapshots a chance to copy modified blocks for which it
- * needs to retain copies.
- */
-static int
-buffered_write(fp, uio, active_cred, flags, td)
-	struct file *fp;
-	struct uio *uio;
-	struct ucred *active_cred;
-	int flags;
-	struct thread *td;
-{
-	struct pwd *pwd;
-	struct vnode *devvp, *vp;
-	struct inode *ip;
-	struct buf *bp;
-	struct fs *fs;
-	struct ufsmount *ump;
-	struct filedesc *fdp;
-	int error;
-	daddr_t lbn;
-
-	/*
-	 * The devvp is associated with the /dev filesystem. To discover
-	 * the filesystem with which the device is associated, we depend
-	 * on the application setting the current directory to a location
-	 * within the filesystem being written. Yes, this is an ugly hack.
-	 */
-	devvp = fp->f_vnode;
-	if (!vn_isdisk(devvp, NULL))
-		return (EINVAL);
-	fdp = td->td_proc->p_fd;
-	FILEDESC_SLOCK(fdp);
-	pwd = FILEDESC_LOCKED_LOAD_PWD(fdp);
-	vp = pwd->pwd_cdir;
-	vref(vp);
-	FILEDESC_SUNLOCK(fdp);
-	vn_lock(vp, LK_SHARED | LK_RETRY);
-	/*
-	 * Check that the current directory vnode indeed belongs to
-	 * UFS before trying to dereference UFS-specific v_data fields.
-	 */
-	if (vp->v_op != &ffs_vnodeops1 && vp->v_op != &ffs_vnodeops2) {
-		vput(vp);
-		return (EINVAL);
-	}
-	ip = VTOI(vp);
-	ump = ip->i_ump;
-	if (ump->um_odevvp != devvp) {
-		vput(vp);
-		return (EINVAL);
-	}
-	devvp = ump->um_devvp;
-	fs = ITOFS(ip);
-	vput(vp);
-	foffset_lock_uio(fp, uio, flags);
-	vn_lock(devvp, LK_EXCLUSIVE | LK_RETRY);
-#ifdef DIAGNOSTIC
-	if (fsckcmds) {
-		printf("%s: buffered write for block %jd\n",
-		    fs->fs_fsmnt, (intmax_t)btodb(uio->uio_offset));
-	}
-#endif /* DIAGNOSTIC */
-	/*
-	 * All I/O must be contained within a filesystem block, start on
-	 * a fragment boundary, and be a multiple of fragments in length.
-	 */
-	if (uio->uio_resid > fs->fs_bsize - (uio->uio_offset % fs->fs_bsize) ||
-	    fragoff(fs, uio->uio_offset) != 0 ||
-	    fragoff(fs, uio->uio_resid) != 0) {
-		error = EINVAL;
-		goto out;
-	}
-	lbn = numfrags(fs, uio->uio_offset);
-	bp = getblk(devvp, lbn, uio->uio_resid, 0, 0, 0);
-	bp->b_flags |= B_RELBUF;
-	if ((error = uiomove((char *)bp->b_data, uio->uio_resid, uio)) != 0) {
-		brelse(bp);
-		goto out;
-	}
-	error = bwrite(bp);
-out:
-	VOP_UNLOCK(devvp);
-	foffset_unlock_uio(fp, uio, flags | FOF_NEXTOFF);
 	return (error);
 }

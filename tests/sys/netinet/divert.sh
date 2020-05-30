@@ -31,7 +31,7 @@
 . $(atf_get_srcdir)/../common/vnet.subr
 
 load_divert_module() {
-	kldstat -q -n ipdivert
+	kldstat -q -m ipdivert
 	if [ $? -ne  0 ]; then
 		atf_skip "ipdivert module is not loaded"
 	fi
@@ -46,6 +46,11 @@ ipdivert_ip_output_remote_success_head() {
 }
 
 ipdivert_ip_output_remote_success_body() {
+
+	if [ "$(atf_config_get ci false)" = "true" ] && \
+		[ "$(uname -p)" = "i386" ]; then
+		atf_skip "https://bugs.freebsd.org/245764"
+	fi
 
 	ids=65530
 	id=`printf "%x" ${ids}`
@@ -96,6 +101,11 @@ ipdivert_ip_input_local_success_head() {
 }
 
 ipdivert_ip_input_local_success_body() {
+
+	if [ "$(atf_config_get ci false)" = "true" ] && \
+		[ "$(uname -p)" = "i386" ]; then
+		atf_skip "https://bugs.freebsd.org/245764"
+	fi
 
 	ids=65529
 	id=`printf "%x" ${ids}`

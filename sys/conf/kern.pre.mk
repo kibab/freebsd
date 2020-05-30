@@ -86,18 +86,18 @@ CFLAGS_PARAM_LARGE_FUNCTION_GROWTH?=1000
 .if ${MACHINE_CPUARCH} == "mips"
 CFLAGS_ARCH_PARAMS?=--param max-inline-insns-single=1000 -DMACHINE_ARCH='"${MACHINE_ARCH}"'
 .endif
-CFLAGS.gcc+= -fno-common -fms-extensions -finline-limit=${INLINE_LIMIT}
+CFLAGS.gcc+= -fms-extensions -finline-limit=${INLINE_LIMIT}
 CFLAGS.gcc+= --param inline-unit-growth=${CFLAGS_PARAM_INLINE_UNIT_GROWTH}
 CFLAGS.gcc+= --param large-function-growth=${CFLAGS_PARAM_LARGE_FUNCTION_GROWTH}
 CFLAGS.gcc+= -fms-extensions
 .if defined(CFLAGS_ARCH_PARAMS)
 CFLAGS.gcc+=${CFLAGS_ARCH_PARAMS}
 .endif
-.if ${COMPILER_TYPE} == "gcc" && ${COMPILER_VERSION} < 50000
-WERROR?=	-Wno-error
-.else
 WERROR?=	-Werror
-.endif
+# The following should be removed no earlier than LLVM11 being imported into the
+# tree, to ensure we don't regress the build.  LLVM11 and GCC10 will switch the
+# default over to -fno-common, making this redundant.
+CFLAGS+=	-fno-common
 
 # XXX LOCORE means "don't declare C stuff" not "for locore.s".
 ASM_CFLAGS= -x assembler-with-cpp -DLOCORE ${CFLAGS} ${ASM_CFLAGS.${.IMPSRC:T}} 
@@ -157,9 +157,9 @@ LDFLAGS+=	--build-id=sha1
 .endif
 
 .if (${MACHINE_CPUARCH} == "aarch64" || ${MACHINE_CPUARCH} == "amd64" || \
-    ${MACHINE_CPUARCH} == "i386") && \
+    ${MACHINE_CPUARCH} == "i386" || ${MACHINE} == "powerpc") && \
     defined(LINKER_FEATURES) && ${LINKER_FEATURES:Mifunc} == ""
-.error amd64/arm64/i386 kernel requires linker ifunc support
+.error amd64/arm64/i386/ppc* kernel requires linker ifunc support
 .endif
 .if ${MACHINE_CPUARCH} == "amd64"
 LDFLAGS+=	-z max-page-size=2097152

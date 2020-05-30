@@ -71,7 +71,6 @@ __FBSDID("$FreeBSD$");
 #include <cam/scsi/scsi_message.h>
 #include <cam/scsi/scsi_pass.h>
 
-#include <machine/md_var.h>	/* geometry translation */
 #include <machine/stdarg.h>	/* for xpt_print below */
 
 #include "opt_cam.h"
@@ -355,7 +354,7 @@ device_is_queued(struct cam_ed *device)
 }
 
 static void
-xpt_periph_init()
+xpt_periph_init(void)
 {
 	make_dev(&xpt_cdevsw, 0, UID_ROOT, GID_OPERATOR, 0600, "xpt0");
 }
@@ -4670,7 +4669,7 @@ xpt_done_direct(union ccb *done_ccb)
 }
 
 union ccb *
-xpt_alloc_ccb()
+xpt_alloc_ccb(void)
 {
 	union ccb *new_ccb;
 
@@ -4679,7 +4678,7 @@ xpt_alloc_ccb()
 }
 
 union ccb *
-xpt_alloc_ccb_nowait()
+xpt_alloc_ccb_nowait(void)
 {
 	union ccb *new_ccb;
 
@@ -5435,7 +5434,8 @@ xpt_done_process(struct ccb_hdr *ccb_h)
 
 		if (sim)
 			devq = sim->devq;
-		KASSERT(devq, ("Periph disappeared with request pending."));
+		KASSERT(devq, ("Periph disappeared with CCB %p %s request pending.",
+			ccb_h, xpt_action_name(ccb_h->func_code)));
 
 		mtx_lock(&devq->send_mtx);
 		devq->send_active--;

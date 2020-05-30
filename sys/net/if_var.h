@@ -44,7 +44,7 @@
  * received from its medium.
  *
  * Output occurs when the routine if_output is called, with three parameters:
- *	(*ifp->if_output)(ifp, m, dst, rt)
+ *	(*ifp->if_output)(ifp, m, dst, ro)
  * Here m is the mbuf chain to be sent and dst is the destination address.
  * The output routine encapsulates the supplied datagram if necessary,
  * and then transmits it on its medium.
@@ -61,6 +61,7 @@
  */
 
 struct	rtentry;		/* ifa_rtrequest */
+struct	nhop_object;		/* ifa_rtrequest */
 struct	rt_addrinfo;		/* ifa_rtrequest */
 struct	socket;
 struct	carp_if;
@@ -551,7 +552,8 @@ struct ifaddr {
 	struct	carp_softc *ifa_carp;	/* pointer to CARP data */
 	CK_STAILQ_ENTRY(ifaddr) ifa_link;	/* queue macro glue */
 	void	(*ifa_rtrequest)	/* check or clean routes (+ or -)'d */
-		(int, struct rtentry *, struct rt_addrinfo *);
+		(int, struct rtentry *, struct nhop_object *,
+		 struct rt_addrinfo *);
 	u_short	ifa_flags;		/* mostly rt_flags for cloning */
 #define	IFA_ROUTE	RTF_UP		/* route installed */
 #define	IFA_RTSELF	RTF_HOST	/* loopback route to self installed */
@@ -684,8 +686,8 @@ int		ifa_ifwithaddr_check(const struct sockaddr *);
 struct	ifaddr *ifa_ifwithbroadaddr(const struct sockaddr *, int);
 struct	ifaddr *ifa_ifwithdstaddr(const struct sockaddr *, int);
 struct	ifaddr *ifa_ifwithnet(const struct sockaddr *, int, int);
-struct	ifaddr *ifa_ifwithroute(int, const struct sockaddr *, struct sockaddr *,
-    u_int);
+struct	ifaddr *ifa_ifwithroute(int, const struct sockaddr *,
+    const struct sockaddr *, u_int);
 struct	ifaddr *ifaof_ifpforaddr(const struct sockaddr *, struct ifnet *);
 int	ifa_preferred(struct ifaddr *, struct ifaddr *);
 

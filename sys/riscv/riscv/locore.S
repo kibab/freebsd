@@ -59,13 +59,6 @@ _start:
 	lla	gp, __global_pointer$
 .option pop
 
-	/* Get the physical address kernel loaded to */
-	lla	t0, virt_map
-	ld	t1, 0(t0)
-	sub	t1, t1, t0
-	li	t2, KERNBASE
-	sub	s9, t2, t1	/* s9 = physmem base */
-
 	/*
 	 * a0 = hart id
 	 * a1 = dtbp
@@ -87,6 +80,9 @@ _start:
 	 * Page tables
 	 */
 1:
+	/* Get the kernel's load address */
+	jal	get_physmem
+
 	/* Add L1 entry for kernel */
 	lla	s1, pagetable_l1
 	lla	s2, pagetable_l2	/* Link to next level PN */
@@ -217,13 +213,23 @@ va:
 	la	t0, initstack
 	sd	t0, RISCV_BOOTPARAMS_KERN_STACK(sp)
 
-	li	t0, (VM_MAX_KERNEL_ADDRESS - 2 * L2_SIZE)
+	li	t0, (VM_EARLY_DTB_ADDRESS)
 	sd	t0, RISCV_BOOTPARAMS_DTBP_VIRT(sp)
-	sd	a1, RISCV_BOOTPARAMS_DTBP_PHYS(sp)
 
 	mv	a0, sp
 	call	_C_LABEL(initriscv)	/* Off we go */
 	call	_C_LABEL(mi_startup)
+
+/*
+ * Get the physical address the kernel is loaded to. Returned in s9.
+ */
+get_physmem:
+	lla	t0, virt_map	/* physical address of virt_map */
+	ld	t1, 0(t0)	/* virtual address of virt_map */
+	sub	t1, t1, t0	/* calculate phys->virt delta */
+	li	t2, KERNBASE
+	sub	s9, t2, t1	/* s9 = physmem base */
+	ret
 
 	.align  4
 initstack:
@@ -301,14 +307,11 @@ ENTRY(mpentry)
 	beqz	t1, 1b
 
 	/* Setup stack pointer */
-	lla	t0, secondary_stacks
-	li	t1, (PAGE_SIZE * KSTACK_PAGES)
-	mulw	t2, t1, a0
-	add	t0, t0, t2
-	add	t0, t0, t1
-	sub	t0, t0, s9
-	li	t1, KERNBASE
-	add	sp, t0, t1
+	lla	t0, bootstack
+	ld	sp, 0(t0)
+
+	/* Get the kernel's load address */
+	jal get_physmem
 
 	/* Setup supervisor trap vector */
 	lla	t0, mpva

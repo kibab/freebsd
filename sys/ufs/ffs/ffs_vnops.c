@@ -239,6 +239,8 @@ retry:
 		}
 		BO_UNLOCK(bo);
 	}
+	if (ffs_fsfail_cleanup(VFSTOUFS(vp->v_mount), 0))
+		return (ENXIO);
 	return (0);
 }
 
@@ -247,6 +249,7 @@ ffs_syncvnode(struct vnode *vp, int waitfor, int flags)
 {
 	struct inode *ip;
 	struct bufobj *bo;
+	struct ufsmount *ump;
 	struct buf *bp, *nbp;
 	ufs_lbn_t lbn;
 	int error, passes;
@@ -255,14 +258,18 @@ ffs_syncvnode(struct vnode *vp, int waitfor, int flags)
 	ip = VTOI(vp);
 	ip->i_flag &= ~IN_NEEDSYNC;
 	bo = &vp->v_bufobj;
+	ump = VFSTOUFS(vp->v_mount);
 
 	/*
 	 * When doing MNT_WAIT we must first flush all dependencies
 	 * on the inode.
 	 */
 	if (DOINGSOFTDEP(vp) && waitfor == MNT_WAIT &&
-	    (error = softdep_sync_metadata(vp)) != 0)
+	    (error = softdep_sync_metadata(vp)) != 0) {
+		if (ffs_fsfail_cleanup(ump, error))
+			error = 0;
 		return (error);
+	}
 
 	/*
 	 * Flush all dirty buffers associated with a vnode.
@@ -332,7 +339,10 @@ loop:
 		}
 		if (wait) {
 			bremfree(bp);
-			if ((error = bwrite(bp)) != 0)
+			error = bwrite(bp);
+			if (ffs_fsfail_cleanup(ump, error))
+				error = 0;
+			if (error != 0)
 				return (error);
 		} else if ((bp->b_flags & B_CLUSTEROK)) {
 			(void) vfs_bio_awrite(bp);
@@ -901,8 +911,11 @@ ffs_write(ap)
 			uio->uio_offset -= resid - uio->uio_resid;
 			uio->uio_resid = resid;
 		}
-	} else if (resid > uio->uio_resid && (ioflag & IO_SYNC))
+	} else if (resid > uio->uio_resid && (ioflag & IO_SYNC)) {
 		error = ffs_update(vp, 1);
+		if (ffs_fsfail_cleanup(VFSTOUFS(vp->v_mount), error))
+			error = ENXIO;
+	}
 	return (error);
 }
 
@@ -1780,18 +1793,25 @@ ffs_getpages_async(struct vop_getpages_async_args *ap)
 {
 	struct vnode *vp;
 	struct ufsmount *um;
+	bool do_iodone;
 	int error;
 
 	vp = ap->a_vp;
 	um = VFSTOUFS(vp->v_mount);
+	do_iodone = true;
 
-	if (um->um_devvp->v_bufobj.bo_bsize <= PAGE_SIZE)
-		return (vnode_pager_generic_getpages(vp, ap->a_m, ap->a_count,
-		    ap->a_rbehind, ap->a_rahead, ap->a_iodone, ap->a_arg));
-
-	error = vfs_bio_getpages(vp, ap->a_m, ap->a_count, ap->a_rbehind,
-	    ap->a_rahead, ffs_gbp_getblkno, ffs_gbp_getblksz);
-	ap->a_iodone(ap->a_arg, ap->a_m, ap->a_count, error);
+	if (um->um_devvp->v_bufobj.bo_bsize <= PAGE_SIZE) {
+		error = vnode_pager_generic_getpages(vp, ap->a_m, ap->a_count,
+		    ap->a_rbehind, ap->a_rahead, ap->a_iodone, ap->a_arg);
+		if (error == 0)
+			do_iodone = false;
+	} else {
+		error = vfs_bio_getpages(vp, ap->a_m, ap->a_count,
+		    ap->a_rbehind, ap->a_rahead, ffs_gbp_getblkno,
+		    ffs_gbp_getblksz);
+	}
+	if (do_iodone && ap->a_iodone != NULL)
+		ap->a_iodone(ap->a_arg, ap->a_m, ap->a_count, error);
 
 	return (error);
 }

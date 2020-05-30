@@ -323,12 +323,12 @@ pmap_pku_mask_bit(pmap_t pmap)
 #endif
 
 #undef pa_index
+#ifdef NUMA
 #define	pa_index(pa)	({					\
 	KASSERT((pa) <= vm_phys_segs[vm_phys_nsegs - 1].end,	\
 	    ("address %lx beyond the last segment", (pa)));	\
 	(pa) >> PDRSHIFT;					\
 })
-#ifdef NUMA
 #define	pa_to_pmdp(pa)	(&pv_table[pa_index(pa)])
 #define	pa_to_pvh(pa)	(&(pa_to_pmdp(pa)->pv_page))
 #define	PHYS_TO_PV_LIST_LOCK(pa)	({			\
@@ -340,6 +340,7 @@ pmap_pku_mask_bit(pmap_t pmap)
 	_lock;							\
 })
 #else
+#define	pa_index(pa)	((pa) >> PDRSHIFT)
 #define	pa_to_pvh(pa)	(&pv_table[pa_index(pa)])
 
 #define	NPV_LIST_LOCKS	MAXCPU
@@ -1316,6 +1317,8 @@ pmap_pdpe_to_pde(pdp_entry_t *pdpe, vm_offset_t va)
 {
 	pd_entry_t *pde;
 
+	KASSERT((*pdpe & PG_PS) == 0,
+	    ("%s: pdpe %#lx is a leaf", __func__, *pdpe));
 	pde = (pd_entry_t *)PHYS_TO_DMAP(*pdpe & PG_FRAME);
 	return (&pde[pmap_pde_index(va)]);
 }
@@ -1340,6 +1343,8 @@ pmap_pde_to_pte(pd_entry_t *pde, vm_offset_t va)
 {
 	pt_entry_t *pte;
 
+	KASSERT((*pde & PG_PS) == 0,
+	    ("%s: pde %#lx is a leaf", __func__, *pde));
 	pte = (pt_entry_t *)PHYS_TO_DMAP(*pde & PG_FRAME);
 	return (&pte[pmap_pte_index(va)]);
 }
@@ -1695,7 +1700,7 @@ pmap_bootstrap(vm_paddr_t *firstaddr)
 	 * are required for promotion of the corresponding kernel virtual
 	 * addresses to superpage mappings.
 	 */
-	vm_phys_add_seg(KPTphys, KPTphys + ptoa(nkpt));
+	vm_phys_early_add_seg(KPTphys, KPTphys + ptoa(nkpt));
 
 	/*
 	 * Account for the virtual addresses mapped by create_pagetables().

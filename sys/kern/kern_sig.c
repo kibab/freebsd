@@ -67,7 +67,6 @@ __FBSDID("$FreeBSD$");
 #include <sys/procdesc.h>
 #include <sys/ptrace.h>
 #include <sys/posix4.h>
-#include <sys/pioctl.h>
 #include <sys/racct.h>
 #include <sys/resourcevar.h>
 #include <sys/sdt.h>
@@ -2256,14 +2255,6 @@ tdsendsignal(struct proc *p, struct thread *td, int sig, ksiginfo_t *ksi)
 	    !((prop & SIGPROP_CONT) && (p->p_flag & P_STOPPED_SIG)))
 		return (ret);
 
-	/* SIGKILL: Remove procfs STOPEVENTs. */
-	if (sig == SIGKILL) {
-		/* from procfs_ioctl.c: PIOCBIC */
-		p->p_stops = 0;
-		/* from procfs_ioctl.c: PIOCCONT */
-		p->p_step = 0;
-		wakeup(&p->p_step);
-	}
 	wakeup_swapper = 0;
 
 	/*
@@ -2853,15 +2844,13 @@ issignal(struct thread *td)
 	struct sigqueue *queue;
 	sigset_t sigpending;
 	ksiginfo_t ksi;
-	int prop, sig, traced;
+	int prop, sig;
 
 	p = td->td_proc;
 	ps = p->p_sigacts;
 	mtx_assert(&ps->ps_mtx, MA_OWNED);
 	PROC_LOCK_ASSERT(p, MA_OWNED);
 	for (;;) {
-		traced = (p->p_flag & P_TRACED) || (p->p_stops & S_SIG);
-
 		sigpending = td->td_sigqueue.sq_signals;
 		SIGSETOR(sigpending, p->p_sigqueue.sq_signals);
 		SIGSETNAND(sigpending, td->td_sigmask);
@@ -2904,17 +2893,12 @@ issignal(struct thread *td)
 			sig = sig_ffs(&sigpending);
 		}
 
-		if (p->p_stops & S_SIG) {
-			mtx_unlock(&ps->ps_mtx);
-			stopevent(p, S_SIG, sig);
-			mtx_lock(&ps->ps_mtx);
-		}
-
 		/*
 		 * We should see pending but ignored signals
 		 * only if P_TRACED was on when they were posted.
 		 */
-		if (SIGISMEMBER(ps->ps_sigignore, sig) && (traced == 0)) {
+		if (SIGISMEMBER(ps->ps_sigignore, sig) &&
+		    (p->p_flag & P_TRACED) == 0) {
 			sigqueue_delete(&td->td_sigqueue, sig);
 			sigqueue_delete(&p->p_sigqueue, sig);
 			continue;
@@ -3114,11 +3098,6 @@ postsig(int sig)
 		ktrpsig(sig, action, td->td_pflags & TDP_OLDMASK ?
 		    &td->td_oldsigmask : &td->td_sigmask, ksi.ksi_code);
 #endif
-	if ((p->p_stops & S_SIG) != 0) {
-		mtx_unlock(&ps->ps_mtx);
-		stopevent(p, S_SIG, sig);
-		mtx_lock(&ps->ps_mtx);
-	}
 
 	if (action == SIG_DFL) {
 		/*
@@ -3475,8 +3454,9 @@ corefile_open_last(struct thread *td, char *name, int indexpos,
 		    (lasttime.tv_sec == vattr.va_mtime.tv_sec &&
 		    lasttime.tv_nsec >= vattr.va_mtime.tv_nsec)) {
 			if (oldvp != NULL)
-				vnode_close_locked(td, oldvp);
+				vn_close(oldvp, FWRITE, td->td_ucred, td);
 			oldvp = vp;
+			VOP_UNLOCK(oldvp);
 			lasttime = vattr.va_mtime;
 		} else {
 			vnode_close_locked(td, vp);
@@ -3487,12 +3467,18 @@ corefile_open_last(struct thread *td, char *name, int indexpos,
 		if (nextvp == NULL) {
 			if ((td->td_proc->p_flag & P_SUGID) != 0) {
 				error = EFAULT;
-				vnode_close_locked(td, oldvp);
+				vn_close(oldvp, FWRITE, td->td_ucred, td);
 			} else {
 				nextvp = oldvp;
+				error = vn_lock(nextvp, LK_EXCLUSIVE);
+				if (error != 0) {
+					vn_close(nextvp, FWRITE, td->td_ucred,
+					    td);
+					nextvp = NULL;
+				}
 			}
 		} else {
-			vnode_close_locked(td, oldvp);
+			vn_close(oldvp, FWRITE, td->td_ucred, td);
 		}
 	}
 	if (error != 0) {
@@ -3665,7 +3651,6 @@ coredump(struct thread *td)
 
 	PROC_LOCK_ASSERT(p, MA_OWNED);
 	MPASS((p->p_flag & P_HADTHREADS) == 0 || p->p_singlethread == td);
-	_STOPEVENT(p, S_CORE, 0);
 
 	if (!do_coredump || (!sugid_coredump && (p->p_flag & P_SUGID) != 0) ||
 	    (p->p_flag2 & P2_NOTRACE) != 0) {
@@ -3998,6 +3983,22 @@ sigfastblock_fetch_sig(struct thread *td, bool sendsig, uint32_t *valp)
 	return (true);
 }
 
+static void
+sigfastblock_resched(struct thread *td, bool resched)
+{
+	struct proc *p;
+
+	if (resched) {
+		p = td->td_proc;
+		PROC_LOCK(p);
+		reschedule_signals(p, td->td_sigmask, 0);
+		PROC_UNLOCK(p);
+	}
+	thread_lock(td);
+	td->td_flags |= TDF_ASTPENDING | TDF_NEEDSIGCHK;
+	thread_unlock(td);
+}
+
 int
 sys_sigfastblock(struct thread *td, struct sigfastblock_args *uap)
 {
@@ -4068,11 +4069,8 @@ sys_sigfastblock(struct thread *td, struct sigfastblock_args *uap)
 		 * signals to current thread.  But notify others about
 		 * fake unblock.
 		 */
-		if (error == 0 && p->p_numthreads != 1) {
-			PROC_LOCK(p);
-			reschedule_signals(p, td->td_sigmask, 0);
-			PROC_UNLOCK(p);
-		}
+		sigfastblock_resched(td, error == 0 && p->p_numthreads != 1);
+
 		break;
 
 	case SIGFASTBLOCK_UNSETPTR:
@@ -4101,7 +4099,6 @@ sys_sigfastblock(struct thread *td, struct sigfastblock_args *uap)
 void
 sigfastblock_clear(struct thread *td)
 {
-	struct proc *p;
 	bool resched;
 
 	if ((td->td_pflags & TDP_SIGFASTBLOCK) == 0)
@@ -4110,12 +4107,7 @@ sigfastblock_clear(struct thread *td)
 	resched = (td->td_pflags & TDP_SIGFASTPENDING) != 0 ||
 	    SIGPENDING(td);
 	td->td_pflags &= ~(TDP_SIGFASTBLOCK | TDP_SIGFASTPENDING);
-	if (resched) {
-		p = td->td_proc;
-		PROC_LOCK(p);
-		reschedule_signals(p, td->td_sigmask, 0);
-		PROC_UNLOCK(p);
-	}
+	sigfastblock_resched(td, resched);
 }
 
 void

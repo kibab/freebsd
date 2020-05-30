@@ -48,6 +48,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/taskqueue.h>
 #include <sys/fcntl.h>
 #include <sys/jail.h>
+#include <sys/linker.h>
 #include <sys/lock.h>
 #include <sys/mutex.h>
 #include <sys/racct.h>
@@ -61,6 +62,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/socket.h>
 #include <sys/syscallsubr.h>
 #include <sys/sysctl.h>
+#include <sys/uuid.h>
 #include <sys/vnode.h>
 
 #include <net/if.h>
@@ -75,6 +77,7 @@ __FBSDID("$FreeBSD$");
 #include <security/mac/mac_framework.h>
 
 #define	DEFAULT_HOSTUUID	"00000000-0000-0000-0000-000000000000"
+#define	PRISON0_HOSTUUID_MODULE	"hostuuid"
 
 MALLOC_DEFINE(M_PRISON, "prison", "Prison structures");
 static MALLOC_DEFINE(M_PRISON_RACCT, "prison_racct", "Prison racct structures");
@@ -218,10 +221,38 @@ static unsigned jail_max_af_ips = 255;
 void
 prison0_init(void)
 {
+	uint8_t *file, *data;
+	size_t size;
 
 	prison0.pr_cpuset = cpuset_ref(thread0.td_cpuset);
 	prison0.pr_osreldate = osreldate;
 	strlcpy(prison0.pr_osrelease, osrelease, sizeof(prison0.pr_osrelease));
+
+	/* If we have a preloaded hostuuid, use it. */
+	file = preload_search_by_type(PRISON0_HOSTUUID_MODULE);
+	if (file != NULL) {
+		data = preload_fetch_addr(file);
+		size = preload_fetch_size(file);
+		if (data != NULL) {
+			/*
+			 * The preloaded data may include trailing whitespace, almost
+			 * certainly a newline; skip over any whitespace or
+			 * non-printable characters to be safe.
+			 */
+			while (size > 0 && data[size - 1] <= 0x20) {
+				data[size--] = '\0';
+			}
+			if (validate_uuid(data, size, NULL, 0) == 0) {
+				(void)strlcpy(prison0.pr_hostuuid, data,
+				    size + 1);
+			} else if (bootverbose) {
+				printf("hostuuid: preload data malformed: '%s'",
+				    data);
+			}
+		}
+	}
+	if (bootverbose)
+		printf("hostuuid: using %s\n", prison0.pr_hostuuid);
 }
 
 /*
@@ -865,8 +896,12 @@ kern_jail_set(struct thread *td, struct uio *optuio, int flags)
 			    "osrelease cannot be changed after creation");
 			goto done_errmsg;
 		}
-		if (len == 0 || len >= OSRELEASELEN) {
+		if (len == 0 || osrelstr[len - 1] != '\0') {
 			error = EINVAL;
+			goto done_free;
+		}
+		if (len >= OSRELEASELEN) {
+			error = ENAMETOOLONG;
 			vfs_opterror(opts,
 			    "osrelease string must be 1-%d bytes long",
 			    OSRELEASELEN - 1);
@@ -1241,9 +1276,11 @@ kern_jail_set(struct thread *td, struct uio *optuio, int flags)
 
 		pr->pr_osreldate = osreldt ? osreldt : ppr->pr_osreldate;
 		if (osrelstr == NULL)
-		    strcpy(pr->pr_osrelease, ppr->pr_osrelease);
+			strlcpy(pr->pr_osrelease, ppr->pr_osrelease,
+			    sizeof(pr->pr_osrelease));
 		else
-		    strcpy(pr->pr_osrelease, osrelstr);
+			strlcpy(pr->pr_osrelease, osrelstr,
+			    sizeof(pr->pr_osrelease));
 
 		LIST_INIT(&pr->pr_children);
 		mtx_init(&pr->pr_mtx, "jail mutex", NULL, MTX_DEF | MTX_DUPOK);
@@ -2880,6 +2917,15 @@ getcredhostid(struct ucred *cred, unsigned long *hostid)
 
 	mtx_lock(&cred->cr_prison->pr_mtx);
 	*hostid = cred->cr_prison->pr_hostid;
+	mtx_unlock(&cred->cr_prison->pr_mtx);
+}
+
+void
+getjailname(struct ucred *cred, char *name, size_t len)
+{
+
+	mtx_lock(&cred->cr_prison->pr_mtx);
+	strlcpy(name, cred->cr_prison->pr_name, len);
 	mtx_unlock(&cred->cr_prison->pr_mtx);
 }
 

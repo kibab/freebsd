@@ -1,6 +1,7 @@
 /*-
  * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
  *
+ * Copyright (C) 2020 Justin Hibbits
  * Copyright (C) 2007-2009 Semihalf, Rafal Jaworowski <raj@semihalf.com>
  * Copyright (C) 2006 Semihalf, Marian Balakowicz <m8@semihalf.com>
  * All rights reserved.
@@ -96,8 +97,6 @@ __FBSDID("$FreeBSD$");
 
 #include <ddb/ddb.h>
 
-#include "mmu_if.h"
-
 #define	PRI0ptrX	"08x"
 
 /* Reserved KVA space and mutex for mmu_booke_zero_page. */
@@ -108,6 +107,9 @@ static struct mtx zero_page_mutex;
 static vm_offset_t copy_page_src_va;
 static vm_offset_t copy_page_dst_va;
 static struct mtx copy_page_mutex;
+
+static vm_offset_t kernel_ptbl_root;
+static unsigned int kernel_ptbls;	/* Number of KVA ptbls. */
 
 /**************************************************************************/
 /* PMAP */
@@ -128,16 +130,15 @@ static struct ptbl_buf *ptbl_buf_alloc(void);
 static void ptbl_buf_free(struct ptbl_buf *);
 static void ptbl_free_pmap_ptbl(pmap_t, pte_t *);
 
-static pte_t *ptbl_alloc(mmu_t, pmap_t, unsigned int, boolean_t);
-static void ptbl_free(mmu_t, pmap_t, unsigned int);
-static void ptbl_hold(mmu_t, pmap_t, unsigned int);
-static int ptbl_unhold(mmu_t, pmap_t, unsigned int);
+static pte_t *ptbl_alloc(pmap_t, unsigned int, boolean_t);
+static void ptbl_free(pmap_t, unsigned int);
+static void ptbl_hold(pmap_t, unsigned int);
+static int ptbl_unhold(pmap_t, unsigned int);
 
-static vm_paddr_t pte_vatopa(mmu_t, pmap_t, vm_offset_t);
-static int pte_enter(mmu_t, pmap_t, vm_page_t, vm_offset_t, uint32_t, boolean_t);
-static int pte_remove(mmu_t, pmap_t, vm_offset_t, uint8_t);
-static pte_t *pte_find(mmu_t, pmap_t, vm_offset_t);
-static void kernel_pte_alloc(vm_offset_t, vm_offset_t, vm_offset_t);
+static vm_paddr_t pte_vatopa(pmap_t, vm_offset_t);
+static int pte_enter(pmap_t, vm_page_t, vm_offset_t, uint32_t, boolean_t);
+static int pte_remove(pmap_t, vm_offset_t, uint8_t);
+static pte_t *pte_find(pmap_t, vm_offset_t);
 
 struct ptbl_buf {
 	TAILQ_ENTRY(ptbl_buf) link;	/* list link */
@@ -237,7 +238,7 @@ ptbl_free_pmap_ptbl(pmap_t pmap, pte_t *ptbl)
 
 /* Allocate page table. */
 static pte_t *
-ptbl_alloc(mmu_t mmu, pmap_t pmap, unsigned int pdir_idx, boolean_t nosleep)
+ptbl_alloc(pmap_t pmap, unsigned int pdir_idx, boolean_t nosleep)
 {
 	vm_page_t mtbl[PTBL_PAGES];
 	vm_page_t m;
@@ -283,7 +284,7 @@ ptbl_alloc(mmu_t mmu, pmap_t pmap, unsigned int pdir_idx, boolean_t nosleep)
 	}
 
 	/* Map allocated pages into kernel_pmap. */
-	mmu_booke_qenter(mmu, (vm_offset_t)ptbl, mtbl, PTBL_PAGES);
+	mmu_booke_qenter((vm_offset_t)ptbl, mtbl, PTBL_PAGES);
 
 	/* Zero whole ptbl. */
 	bzero((caddr_t)ptbl, PTBL_PAGES * PAGE_SIZE);
@@ -296,7 +297,7 @@ ptbl_alloc(mmu_t mmu, pmap_t pmap, unsigned int pdir_idx, boolean_t nosleep)
 
 /* Free ptbl pages and invalidate pdir entry. */
 static void
-ptbl_free(mmu_t mmu, pmap_t pmap, unsigned int pdir_idx)
+ptbl_free(pmap_t pmap, unsigned int pdir_idx)
 {
 	pte_t *ptbl;
 	vm_paddr_t pa;
@@ -330,11 +331,11 @@ ptbl_free(mmu_t mmu, pmap_t pmap, unsigned int pdir_idx)
 
 	for (i = 0; i < PTBL_PAGES; i++) {
 		va = ((vm_offset_t)ptbl + (i * PAGE_SIZE));
-		pa = pte_vatopa(mmu, kernel_pmap, va);
+		pa = pte_vatopa(kernel_pmap, va);
 		m = PHYS_TO_VM_PAGE(pa);
 		vm_page_free_zero(m);
 		vm_wire_sub(1);
-		mmu_booke_kremove(mmu, va);
+		mmu_booke_kremove(va);
 	}
 
 	ptbl_free_pmap_ptbl(pmap, ptbl);
@@ -347,7 +348,7 @@ ptbl_free(mmu_t mmu, pmap_t pmap, unsigned int pdir_idx)
  * Return 1 if ptbl pages were freed.
  */
 static int
-ptbl_unhold(mmu_t mmu, pmap_t pmap, unsigned int pdir_idx)
+ptbl_unhold(pmap_t pmap, unsigned int pdir_idx)
 {
 	pte_t *ptbl;
 	vm_paddr_t pa;
@@ -370,7 +371,7 @@ ptbl_unhold(mmu_t mmu, pmap_t pmap, unsigned int pdir_idx)
 
 	/* decrement hold count */
 	for (i = 0; i < PTBL_PAGES; i++) {
-		pa = pte_vatopa(mmu, kernel_pmap,
+		pa = pte_vatopa(kernel_pmap,
 		    (vm_offset_t)ptbl + (i * PAGE_SIZE));
 		m = PHYS_TO_VM_PAGE(pa);
 		m->ref_count--;
@@ -382,7 +383,7 @@ ptbl_unhold(mmu_t mmu, pmap_t pmap, unsigned int pdir_idx)
 	 * page.
 	 */
 	if (m->ref_count == 0) {
-		ptbl_free(mmu, pmap, pdir_idx);
+		ptbl_free(pmap, pdir_idx);
 
 		//debugf("ptbl_unhold: e (freed ptbl)\n");
 		return (1);
@@ -396,7 +397,7 @@ ptbl_unhold(mmu_t mmu, pmap_t pmap, unsigned int pdir_idx)
  * entry is being inserted into the ptbl.
  */
 static void
-ptbl_hold(mmu_t mmu, pmap_t pmap, unsigned int pdir_idx)
+ptbl_hold(pmap_t pmap, unsigned int pdir_idx)
 {
 	vm_paddr_t pa;
 	pte_t *ptbl;
@@ -416,7 +417,7 @@ ptbl_hold(mmu_t mmu, pmap_t pmap, unsigned int pdir_idx)
 	KASSERT((ptbl != NULL), ("ptbl_hold: null ptbl"));
 
 	for (i = 0; i < PTBL_PAGES; i++) {
-		pa = pte_vatopa(mmu, kernel_pmap,
+		pa = pte_vatopa(kernel_pmap,
 		    (vm_offset_t)ptbl + (i * PAGE_SIZE));
 		m = PHYS_TO_VM_PAGE(pa);
 		m->ref_count++;
@@ -429,7 +430,7 @@ ptbl_hold(mmu_t mmu, pmap_t pmap, unsigned int pdir_idx)
  * Return 1 if ptbl pages were freed, otherwise return 0.
  */
 static int
-pte_remove(mmu_t mmu, pmap_t pmap, vm_offset_t va, uint8_t flags)
+pte_remove(pmap_t pmap, vm_offset_t va, uint8_t flags)
 {
 	unsigned int pdir_idx = PDIR_IDX(va);
 	unsigned int ptbl_idx = PTBL_IDX(va);
@@ -489,7 +490,7 @@ pte_remove(mmu_t mmu, pmap_t pmap, vm_offset_t va, uint8_t flags)
 
 	if (flags & PTBL_UNHOLD) {
 		//debugf("pte_remove: e (unhold)\n");
-		return (ptbl_unhold(mmu, pmap, pdir_idx));
+		return (ptbl_unhold(pmap, pdir_idx));
 	}
 
 	//debugf("pte_remove: e\n");
@@ -500,7 +501,7 @@ pte_remove(mmu_t mmu, pmap_t pmap, vm_offset_t va, uint8_t flags)
  * Insert PTE for a given page and virtual address.
  */
 static int
-pte_enter(mmu_t mmu, pmap_t pmap, vm_page_t m, vm_offset_t va, uint32_t flags,
+pte_enter(pmap_t pmap, vm_page_t m, vm_offset_t va, uint32_t flags,
     boolean_t nosleep)
 {
 	unsigned int pdir_idx = PDIR_IDX(va);
@@ -515,7 +516,7 @@ pte_enter(mmu_t mmu, pmap_t pmap, vm_page_t m, vm_offset_t va, uint32_t flags,
 
 	if (ptbl == NULL) {
 		/* Allocate page table pages. */
-		ptbl = ptbl_alloc(mmu, pmap, pdir_idx, nosleep);
+		ptbl = ptbl_alloc(pmap, pdir_idx, nosleep);
 		if (ptbl == NULL) {
 			KASSERT(nosleep, ("nosleep and NULL ptbl"));
 			return (ENOMEM);
@@ -529,14 +530,14 @@ pte_enter(mmu_t mmu, pmap_t pmap, vm_page_t m, vm_offset_t va, uint32_t flags,
 		 */
 		pte = &pmap->pm_pdir[pdir_idx][ptbl_idx];
 		if (PTE_ISVALID(pte)) {
-			pte_remove(mmu, pmap, va, PTBL_HOLD);
+			pte_remove(pmap, va, PTBL_HOLD);
 		} else {
 			/*
 			 * pte is not used, increment hold count
 			 * for ptbl pages.
 			 */
 			if (pmap != kernel_pmap)
-				ptbl_hold(mmu, pmap, pdir_idx);
+				ptbl_hold(pmap, pdir_idx);
 		}
 	}
 
@@ -569,12 +570,12 @@ pte_enter(mmu_t mmu, pmap_t pmap, vm_page_t m, vm_offset_t va, uint32_t flags,
 
 /* Return the pa for the given pmap/va. */
 static vm_paddr_t
-pte_vatopa(mmu_t mmu, pmap_t pmap, vm_offset_t va)
+pte_vatopa(pmap_t pmap, vm_offset_t va)
 {
 	vm_paddr_t pa = 0;
 	pte_t *pte;
 
-	pte = pte_find(mmu, pmap, va);
+	pte = pte_find(pmap, va);
 	if ((pte != NULL) && PTE_ISVALID(pte))
 		pa = (PTE_PA(pte) | (va & PTE_PA_MASK));
 	return (pa);
@@ -582,7 +583,7 @@ pte_vatopa(mmu_t mmu, pmap_t pmap, vm_offset_t va)
 
 /* Get a pointer to a PTE in a page table. */
 static pte_t *
-pte_find(mmu_t mmu, pmap_t pmap, vm_offset_t va)
+pte_find(pmap_t pmap, vm_offset_t va)
 {
 	unsigned int pdir_idx = PDIR_IDX(va);
 	unsigned int ptbl_idx = PTBL_IDX(va);
@@ -595,18 +596,54 @@ pte_find(mmu_t mmu, pmap_t pmap, vm_offset_t va)
 	return (NULL);
 }
 
+/* Get a pointer to a PTE in a page table, or the next closest (greater) one. */
+static __inline pte_t *
+pte_find_next(pmap_t pmap, vm_offset_t *pva)
+{
+	vm_offset_t	va;
+	pte_t	      **pdir;
+	pte_t	       *pte;
+	unsigned long	i, j;
+
+	KASSERT((pmap != NULL), ("pte_find: invalid pmap"));
+
+	va = *pva;
+	i = PDIR_IDX(va);
+	j = PTBL_IDX(va);
+	pdir = pmap->pm_pdir;
+	for (; i < PDIR_NENTRIES; i++, j = 0) {
+		if (pdir[i] == NULL)
+			continue;
+		for (; j < PTBL_NENTRIES; j++) {
+			pte = &pdir[i][j];
+			if (!PTE_ISVALID(pte))
+				continue;
+			*pva = PDIR_SIZE * i + PAGE_SIZE * j;
+			return (pte);
+		}
+	}
+	return (NULL);
+}
+
 /* Set up kernel page tables. */
 static void
-kernel_pte_alloc(vm_offset_t data_end, vm_offset_t addr, vm_offset_t pdir)
+kernel_pte_alloc(vm_offset_t data_end, vm_offset_t addr)
 {
-	int		i;
-	vm_offset_t	va;
 	pte_t		*pte;
+	vm_offset_t	va;
+	vm_offset_t	pdir_start;
+	int		i;
+
+	kptbl_min = VM_MIN_KERNEL_ADDRESS / PDIR_SIZE;
+	kernel_pmap->pm_pdir = (pte_t **)kernel_ptbl_root;
+
+	pdir_start = kernel_ptbl_root + PDIR_NENTRIES * sizeof(pte_t);
 
 	/* Initialize kernel pdir */
-	for (i = 0; i < kernel_ptbls; i++)
+	for (i = 0; i < kernel_ptbls; i++) {
 		kernel_pmap->pm_pdir[kptbl_min + i] =
-		    (pte_t *)(pdir + (i * PAGE_SIZE * PTBL_PAGES));
+		    (pte_t *)(pdir_start + (i * PAGE_SIZE * PTBL_PAGES));
+	}
 
 	/*
 	 * Fill in PTEs covering kernel code and data. They are not required
@@ -616,18 +653,44 @@ kernel_pte_alloc(vm_offset_t data_end, vm_offset_t addr, vm_offset_t pdir)
 	 */
 	for (va = addr; va < data_end; va += PAGE_SIZE) {
 		pte = &(kernel_pmap->pm_pdir[PDIR_IDX(va)][PTBL_IDX(va)]);
+		powerpc_sync();
 		*pte = PTE_RPN_FROM_PA(kernload + (va - kernstart));
 		*pte |= PTE_M | PTE_SR | PTE_SW | PTE_SX | PTE_WIRED |
 		    PTE_VALID | PTE_PS_4KB;
 	}
 }
 
+static vm_offset_t
+mmu_booke_alloc_kernel_pgtables(vm_offset_t data_end)
+{
+	/* Allocate space for ptbl_bufs. */
+	ptbl_bufs = (struct ptbl_buf *)data_end;
+	data_end += sizeof(struct ptbl_buf) * PTBL_BUFS;
+	debugf(" ptbl_bufs at 0x%"PRI0ptrX" end = 0x%"PRI0ptrX"\n",
+	    (uintptr_t)ptbl_bufs, data_end);
+
+	data_end = round_page(data_end);
+
+	kernel_ptbl_root = data_end;
+	data_end += PDIR_NENTRIES * sizeof(pte_t*);
+
+	/* Allocate PTE tables for kernel KVA. */
+	kernel_ptbls = howmany(VM_MAX_KERNEL_ADDRESS - VM_MIN_KERNEL_ADDRESS,
+	    PDIR_SIZE);
+	data_end += kernel_ptbls * PTBL_PAGES * PAGE_SIZE;
+	debugf(" kernel ptbls: %d\n", kernel_ptbls);
+	debugf(" kernel pdir at %#jx end = %#jx\n",
+	    (uintmax_t)kernel_ptbl_root, (uintmax_t)data_end);
+
+	return (data_end);
+}
+
 /*
  * Initialize a preallocated and zeroed pmap structure,
  * such as one in a vmspace structure.
  */
-static void
-mmu_booke_pinit(mmu_t mmu, pmap_t pmap)
+static int
+mmu_booke_pinit(pmap_t pmap)
 {
 	int i;
 
@@ -643,6 +706,8 @@ mmu_booke_pinit(mmu_t mmu, pmap_t pmap)
 	pmap->pm_pdir = uma_zalloc(ptbl_root_zone, M_WAITOK);
 	bzero(pmap->pm_pdir, sizeof(pte_t *) * PDIR_NENTRIES);
 	TAILQ_INIT(&pmap->pm_ptbl_list);
+
+	return (1);
 }
 
 /*
@@ -651,7 +716,7 @@ mmu_booke_pinit(mmu_t mmu, pmap_t pmap)
  * Should only be called if the map contains no valid mappings.
  */
 static void
-mmu_booke_release(mmu_t mmu, pmap_t pmap)
+mmu_booke_release(pmap_t pmap)
 {
 
 	KASSERT(pmap->pm_stats.resident_count == 0,
@@ -661,7 +726,7 @@ mmu_booke_release(mmu_t mmu, pmap_t pmap)
 }
 
 static void
-mmu_booke_sync_icache(mmu_t mmu, pmap_t pm, vm_offset_t va, vm_size_t sz)
+mmu_booke_sync_icache(pmap_t pm, vm_offset_t va, vm_size_t sz)
 {
 	pte_t *pte;
 	vm_paddr_t pa = 0;
@@ -676,7 +741,7 @@ mmu_booke_sync_icache(mmu_t mmu, pmap_t pm, vm_offset_t va, vm_size_t sz)
 	active = (pm == kernel_pmap || pm == pmap) ? 1 : 0;
 	while (sz > 0) {
 		PMAP_LOCK(pm);
-		pte = pte_find(mmu, pm, va);
+		pte = pte_find(pm, va);
 		valid = (pte != NULL && PTE_ISVALID(pte)) ? 1 : 0;
 		if (valid)
 			pa = PTE_PA(pte);
@@ -689,11 +754,11 @@ mmu_booke_sync_icache(mmu_t mmu, pmap_t pm, vm_offset_t va, vm_size_t sz)
 				addr = 0;
 				m = PHYS_TO_VM_PAGE(pa);
 				PMAP_LOCK(pmap);
-				pte_enter(mmu, pmap, m, addr,
+				pte_enter(pmap, m, addr,
 				    PTE_SR | PTE_VALID, FALSE);
 				addr += (va & PAGE_MASK);
 				__syncicache((void *)addr, sync_sz);
-				pte_remove(mmu, pmap, addr, PTBL_UNHOLD);
+				pte_remove(pmap, addr, PTBL_UNHOLD);
 				PMAP_UNLOCK(pmap);
 			} else
 				__syncicache((void *)va, sync_sz);
@@ -712,7 +777,7 @@ mmu_booke_sync_icache(mmu_t mmu, pmap_t pm, vm_offset_t va, vm_size_t sz)
  * off and size must reside within a single page.
  */
 static void
-mmu_booke_zero_page_area(mmu_t mmu, vm_page_t m, int off, int size)
+mmu_booke_zero_page_area(vm_page_t m, int off, int size)
 {
 	vm_offset_t va;
 
@@ -721,9 +786,9 @@ mmu_booke_zero_page_area(mmu_t mmu, vm_page_t m, int off, int size)
 	mtx_lock(&zero_page_mutex);
 	va = zero_page_va;
 
-	mmu_booke_kenter(mmu, va, VM_PAGE_TO_PHYS(m));
+	mmu_booke_kenter(va, VM_PAGE_TO_PHYS(m));
 	bzero((caddr_t)va + off, size);
-	mmu_booke_kremove(mmu, va);
+	mmu_booke_kremove(va);
 
 	mtx_unlock(&zero_page_mutex);
 }
@@ -732,19 +797,19 @@ mmu_booke_zero_page_area(mmu_t mmu, vm_page_t m, int off, int size)
  * mmu_booke_zero_page zeros the specified hardware page.
  */
 static void
-mmu_booke_zero_page(mmu_t mmu, vm_page_t m)
+mmu_booke_zero_page(vm_page_t m)
 {
 	vm_offset_t off, va;
 
 	va = zero_page_va;
 	mtx_lock(&zero_page_mutex);
 
-	mmu_booke_kenter(mmu, va, VM_PAGE_TO_PHYS(m));
+	mmu_booke_kenter(va, VM_PAGE_TO_PHYS(m));
 
 	for (off = 0; off < PAGE_SIZE; off += cacheline_size)
 		__asm __volatile("dcbz 0,%0" :: "r"(va + off));
 
-	mmu_booke_kremove(mmu, va);
+	mmu_booke_kremove(va);
 
 	mtx_unlock(&zero_page_mutex);
 }
@@ -755,7 +820,7 @@ mmu_booke_zero_page(mmu_t mmu, vm_page_t m)
  * one machine dependent page at a time.
  */
 static void
-mmu_booke_copy_page(mmu_t mmu, vm_page_t sm, vm_page_t dm)
+mmu_booke_copy_page(vm_page_t sm, vm_page_t dm)
 {
 	vm_offset_t sva, dva;
 
@@ -763,18 +828,18 @@ mmu_booke_copy_page(mmu_t mmu, vm_page_t sm, vm_page_t dm)
 	dva = copy_page_dst_va;
 
 	mtx_lock(&copy_page_mutex);
-	mmu_booke_kenter(mmu, sva, VM_PAGE_TO_PHYS(sm));
-	mmu_booke_kenter(mmu, dva, VM_PAGE_TO_PHYS(dm));
+	mmu_booke_kenter(sva, VM_PAGE_TO_PHYS(sm));
+	mmu_booke_kenter(dva, VM_PAGE_TO_PHYS(dm));
 
 	memcpy((caddr_t)dva, (caddr_t)sva, PAGE_SIZE);
 
-	mmu_booke_kremove(mmu, dva);
-	mmu_booke_kremove(mmu, sva);
+	mmu_booke_kremove(dva);
+	mmu_booke_kremove(sva);
 	mtx_unlock(&copy_page_mutex);
 }
 
 static inline void
-mmu_booke_copy_pages(mmu_t mmu, vm_page_t *ma, vm_offset_t a_offset,
+mmu_booke_copy_pages(vm_page_t *ma, vm_offset_t a_offset,
     vm_page_t *mb, vm_offset_t b_offset, int xfersize)
 {
 	void *a_cp, *b_cp;
@@ -785,17 +850,17 @@ mmu_booke_copy_pages(mmu_t mmu, vm_page_t *ma, vm_offset_t a_offset,
 	while (xfersize > 0) {
 		a_pg_offset = a_offset & PAGE_MASK;
 		cnt = min(xfersize, PAGE_SIZE - a_pg_offset);
-		mmu_booke_kenter(mmu, copy_page_src_va,
+		mmu_booke_kenter(copy_page_src_va,
 		    VM_PAGE_TO_PHYS(ma[a_offset >> PAGE_SHIFT]));
 		a_cp = (char *)copy_page_src_va + a_pg_offset;
 		b_pg_offset = b_offset & PAGE_MASK;
 		cnt = min(cnt, PAGE_SIZE - b_pg_offset);
-		mmu_booke_kenter(mmu, copy_page_dst_va,
+		mmu_booke_kenter(copy_page_dst_va,
 		    VM_PAGE_TO_PHYS(mb[b_offset >> PAGE_SHIFT]));
 		b_cp = (char *)copy_page_dst_va + b_pg_offset;
 		bcopy(a_cp, b_cp, cnt);
-		mmu_booke_kremove(mmu, copy_page_dst_va);
-		mmu_booke_kremove(mmu, copy_page_src_va);
+		mmu_booke_kremove(copy_page_dst_va);
+		mmu_booke_kremove(copy_page_src_va);
 		a_offset += cnt;
 		b_offset += cnt;
 		xfersize -= cnt;
@@ -804,7 +869,7 @@ mmu_booke_copy_pages(mmu_t mmu, vm_page_t *ma, vm_offset_t a_offset,
 }
 
 static vm_offset_t
-mmu_booke_quick_enter_page(mmu_t mmu, vm_page_t m)
+mmu_booke_quick_enter_page(vm_page_t m)
 {
 	vm_paddr_t paddr;
 	vm_offset_t qaddr;
@@ -820,7 +885,7 @@ mmu_booke_quick_enter_page(mmu_t mmu, vm_page_t m)
 	critical_enter();
 	qaddr = PCPU_GET(qmap_addr);
 
-	pte = pte_find(mmu, kernel_pmap, qaddr);
+	pte = pte_find(kernel_pmap, qaddr);
 
 	KASSERT(*pte == 0, ("mmu_booke_quick_enter_page: PTE busy"));
 
@@ -842,11 +907,11 @@ mmu_booke_quick_enter_page(mmu_t mmu, vm_page_t m)
 }
 
 static void
-mmu_booke_quick_remove_page(mmu_t mmu, vm_offset_t addr)
+mmu_booke_quick_remove_page(vm_offset_t addr)
 {
 	pte_t *pte;
 
-	pte = pte_find(mmu, kernel_pmap, addr);
+	pte = pte_find(kernel_pmap, addr);
 
 	KASSERT(PCPU_GET(qmap_addr) == addr,
 	    ("mmu_booke_quick_remove_page: invalid address"));

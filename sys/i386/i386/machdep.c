@@ -1171,7 +1171,7 @@ exec_setregs(struct thread *td, struct image_params *imgp, uintptr_t stack)
 	regs->tf_cs = _ucodesel;
 
 	/* PS_STRINGS value for BSD/OS binaries.  It is 0 for non-BSD/OS. */
-	regs->tf_ebx = imgp->ps_strings;
+	regs->tf_ebx = (register_t)imgp->ps_strings;
 
         /*
          * Reset the hardware debug registers if they were in use.
@@ -1828,7 +1828,7 @@ getmemsize(int first)
 	 * Tell the physical memory allocator about pages used to store
 	 * the kernel and preloaded data.  See kmem_bootstrap_free().
 	 */
-	vm_phys_add_seg((vm_paddr_t)KERNLOAD, trunc_page(first));
+	vm_phys_early_add_seg((vm_paddr_t)KERNLOAD, trunc_page(first));
 
 	TUNABLE_INT_FETCH("hw.above4g_allow", &above4g_allow);
 	TUNABLE_INT_FETCH("hw.above24g_allow", &above24g_allow);

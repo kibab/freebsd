@@ -525,14 +525,14 @@ linux_cdev_pager_populate(vm_object_t vm_obj, vm_pindex_t pidx, int fault_type,
 	struct vm_area_struct *vmap;
 	int err;
 
-	linux_set_current(curthread);
-
 	/* get VM area structure */
 	vmap = linux_cdev_handle_find(vm_obj->handle);
 	MPASS(vmap != NULL);
 	MPASS(vmap->vm_private_data == vm_obj->handle);
 
 	VM_OBJECT_WUNLOCK(vm_obj);
+
+	linux_set_current(curthread);
 
 	down_write(&vmap->vm_mm->mmap_sem);
 	if (unlikely(vmap->vm_ops == NULL)) {
@@ -1903,14 +1903,19 @@ linux_timer_callback_wrapper(void *context)
 	timer->function(timer->data);
 }
 
-void
+int
 mod_timer(struct timer_list *timer, int expires)
 {
+	int ret;
 
 	timer->expires = expires;
-	callout_reset(&timer->callout,
+	ret = callout_reset(&timer->callout,
 	    linux_timer_jiffies_until(expires),
 	    &linux_timer_callback_wrapper, timer);
+
+	MPASS(ret == 0 || ret == 1);
+
+	return (ret == 1);
 }
 
 void
@@ -1936,6 +1941,15 @@ del_timer(struct timer_list *timer)
 {
 
 	if (callout_stop(&(timer)->callout) == -1)
+		return (0);
+	return (1);
+}
+
+int
+del_timer_sync(struct timer_list *timer)
+{
+
+	if (callout_drain(&(timer)->callout) == -1)
 		return (0);
 	return (1);
 }

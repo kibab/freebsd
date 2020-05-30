@@ -671,9 +671,12 @@ nvme_qpair_construct(struct nvme_qpair *qpair,
 
 		qpair->res = bus_alloc_resource_any(ctrlr->dev, SYS_RES_IRQ,
 		    &qpair->rid, RF_ACTIVE);
-		bus_setup_intr(ctrlr->dev, qpair->res,
+		if (bus_setup_intr(ctrlr->dev, qpair->res,
 		    INTR_TYPE_MISC | INTR_MPSAFE, NULL,
-		    nvme_qpair_msix_handler, qpair, &qpair->tag);
+		    nvme_qpair_msix_handler, qpair, &qpair->tag) != 0) {
+			nvme_printf(ctrlr, "unable to setup intx handler\n");
+			goto out;
+		}
 		if (qpair->id == 0) {
 			bus_describe_intr(ctrlr->dev, qpair->res, qpair->tag,
 			    "admin");
@@ -704,7 +707,7 @@ nvme_qpair_construct(struct nvme_qpair *qpair,
 	cmdsz = roundup2(cmdsz, PAGE_SIZE);
 	cplsz = qpair->num_entries * sizeof(struct nvme_completion);
 	cplsz = roundup2(cplsz, PAGE_SIZE);
-	prpsz = sizeof(uint64_t) * NVME_MAX_PRP_LIST_ENTRIES;;
+	prpsz = sizeof(uint64_t) * NVME_MAX_PRP_LIST_ENTRIES;
 	prpmemsz = qpair->num_trackers * prpsz;
 	allocsz = cmdsz + cplsz + prpmemsz;
 

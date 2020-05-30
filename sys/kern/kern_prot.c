@@ -65,7 +65,6 @@ __FBSDID("$FreeBSD$");
 #include <sys/sysent.h>
 #include <sys/sysproto.h>
 #include <sys/jail.h>
-#include <sys/pioctl.h>
 #include <sys/racct.h>
 #include <sys/rctl.h>
 #include <sys/resourcevar.h>
@@ -2001,14 +2000,20 @@ proc_set_cred(struct proc *p, struct ucred *newcred)
 {
 
 	MPASS(p->p_ucred != NULL);
-	if (newcred == NULL)
-		MPASS(p->p_state == PRS_ZOMBIE);
-	else
-		PROC_LOCK_ASSERT(p, MA_OWNED);
-
+	PROC_LOCK_ASSERT(p, MA_OWNED);
 	p->p_ucred = newcred;
-	if (newcred != NULL)
-		PROC_UPDATE_COW(p);
+	PROC_UPDATE_COW(p);
+}
+
+void
+proc_unset_cred(struct proc *p)
+{
+	struct ucred *cr;
+
+	MPASS(p->p_state == PRS_ZOMBIE);
+	cr = p->p_ucred;
+	p->p_ucred = NULL;
+	crfree(cr);
 }
 
 struct ucred *
@@ -2192,8 +2197,6 @@ setsugid(struct proc *p)
 
 	PROC_LOCK_ASSERT(p, MA_OWNED);
 	p->p_flag |= P_SUGID;
-	if (!(p->p_pfsflags & PF_ISUGID))
-		p->p_stops = 0;
 }
 
 /*-

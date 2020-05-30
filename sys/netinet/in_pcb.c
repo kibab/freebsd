@@ -88,6 +88,7 @@ __FBSDID("$FreeBSD$");
 #include <netinet/in_pcb.h>
 #ifdef INET
 #include <netinet/in_var.h>
+#include <netinet/in_fib.h>
 #endif
 #include <netinet/ip_var.h>
 #include <netinet/tcp_var.h>
@@ -102,6 +103,7 @@ __FBSDID("$FreeBSD$");
 #include <netinet6/in6_var.h>
 #include <netinet6/ip6_var.h>
 #endif /* INET6 */
+#include <net/route/nhop.h>
 #endif
 
 #include <netipsec/ipsec_support.h>
@@ -608,13 +610,16 @@ in_pcbbind(struct inpcb *inp, struct sockaddr *nam, struct ucred *cred)
 }
 #endif
 
-/*
- * Select a local port (number) to use.
- */
 #if defined(INET) || defined(INET6)
+/*
+ * Assign a local port like in_pcb_lport(), but also used with connect()
+ * and a foreign address and port.  If fsa is non-NULL, choose a local port
+ * that is unused with those, otherwise one that is completely unused.
+ * lsa can be NULL for IPv6.
+ */
 int
-in_pcb_lport(struct inpcb *inp, struct in_addr *laddrp, u_short *lportp,
-    struct ucred *cred, int lookupflags)
+in_pcb_lport_dest(struct inpcb *inp, struct sockaddr *lsa, u_short *lportp,
+    struct sockaddr *fsa, u_short fport, struct ucred *cred, int lookupflags)
 {
 	struct inpcbinfo *pcbinfo;
 	struct inpcb *tmpinp;
@@ -622,7 +627,10 @@ in_pcb_lport(struct inpcb *inp, struct in_addr *laddrp, u_short *lportp,
 	int count, dorandom, error;
 	u_short aux, first, last, lport;
 #ifdef INET
-	struct in_addr laddr;
+	struct in_addr laddr, faddr;
+#endif
+#ifdef INET6
+	struct in6_addr *laddr6, *faddr6;
 #endif
 
 	pcbinfo = inp->inp_pcbinfo;
@@ -683,15 +691,25 @@ in_pcb_lport(struct inpcb *inp, struct in_addr *laddrp, u_short *lportp,
 	}
 
 #ifdef INET
-	/* Make the compiler happy. */
-	laddr.s_addr = 0;
+	laddr.s_addr = INADDR_ANY;
 	if ((inp->inp_vflag & (INP_IPV4|INP_IPV6)) == INP_IPV4) {
-		KASSERT(laddrp != NULL, ("%s: laddrp NULL for v4 inp %p",
-		    __func__, inp));
-		laddr = *laddrp;
+		if (lsa != NULL)
+			laddr = ((struct sockaddr_in *)lsa)->sin_addr;
+		if (fsa != NULL)
+			faddr = ((struct sockaddr_in *)fsa)->sin_addr;
 	}
 #endif
-	tmpinp = NULL;	/* Make compiler happy. */
+#ifdef INET6
+	laddr6 = NULL;
+	if ((inp->inp_vflag & INP_IPV6) != 0) {
+		if (lsa != NULL)
+			laddr6 = &((struct sockaddr_in6 *)lsa)->sin6_addr;
+		if (fsa != NULL)
+			faddr6 = &((struct sockaddr_in6 *)fsa)->sin6_addr;
+	}
+#endif
+
+	tmpinp = NULL;
 	lport = *lportp;
 
 	if (dorandom)
@@ -707,27 +725,59 @@ in_pcb_lport(struct inpcb *inp, struct in_addr *laddrp, u_short *lportp,
 			*lastport = first;
 		lport = htons(*lastport);
 
-#ifdef INET6
-		if ((inp->inp_vflag & INP_IPV6) != 0)
-			tmpinp = in6_pcblookup_local(pcbinfo,
-			    &inp->in6p_laddr, lport, lookupflags, cred);
-#endif
-#if defined(INET) && defined(INET6)
-		else
-#endif
-#ifdef INET
-			tmpinp = in_pcblookup_local(pcbinfo, laddr,
-			    lport, lookupflags, cred);
-#endif
-	} while (tmpinp != NULL);
+		if (fsa != NULL) {
 
 #ifdef INET
-	if ((inp->inp_vflag & (INP_IPV4|INP_IPV6)) == INP_IPV4)
-		laddrp->s_addr = laddr.s_addr;
+			if (lsa->sa_family == AF_INET) {
+				tmpinp = in_pcblookup_hash_locked(pcbinfo,
+				    faddr, fport, laddr, lport, lookupflags,
+				    NULL);
+			}
 #endif
+#ifdef INET6
+			if (lsa->sa_family == AF_INET6) {
+				tmpinp = in6_pcblookup_hash_locked(pcbinfo,
+				    faddr6, fport, laddr6, lport, lookupflags,
+				    NULL);
+			}
+#endif
+		} else {
+#ifdef INET6
+			if ((inp->inp_vflag & INP_IPV6) != 0)
+				tmpinp = in6_pcblookup_local(pcbinfo,
+				    &inp->in6p_laddr, lport, lookupflags, cred);
+#endif
+#if defined(INET) && defined(INET6)
+			else
+#endif
+#ifdef INET
+				tmpinp = in_pcblookup_local(pcbinfo, laddr,
+				    lport, lookupflags, cred);
+#endif
+		}
+	} while (tmpinp != NULL);
+
 	*lportp = lport;
 
 	return (0);
+}
+
+/*
+ * Select a local port (number) to use.
+ */
+int
+in_pcb_lport(struct inpcb *inp, struct in_addr *laddrp, u_short *lportp,
+    struct ucred *cred, int lookupflags)
+{
+	struct sockaddr_in laddr;
+
+	if (laddrp) {
+		bzero(&laddr, sizeof(laddr));
+		laddr.sin_family = AF_INET;
+		laddr.sin_addr = *laddrp;
+	}
+	return (in_pcb_lport_dest(inp, laddrp ? (struct sockaddr *) &laddr :
+	    NULL, lportp, NULL, 0, cred, lookupflags));
 }
 
 /*
@@ -1033,8 +1083,8 @@ in_pcbladdr(struct inpcb *inp, struct in_addr *faddr, struct in_addr *laddr,
 {
 	struct ifaddr *ifa;
 	struct sockaddr *sa;
-	struct sockaddr_in *sin;
-	struct route sro;
+	struct sockaddr_in *sin, dst;
+	struct nhop_object *nh;
 	int error;
 
 	NET_EPOCH_ASSERT();
@@ -1047,9 +1097,10 @@ in_pcbladdr(struct inpcb *inp, struct in_addr *faddr, struct in_addr *laddr,
 		return (0);
 
 	error = 0;
-	bzero(&sro, sizeof(sro));
 
-	sin = (struct sockaddr_in *)&sro.ro_dst;
+	nh = NULL;
+	bzero(&dst, sizeof(dst));
+	sin = &dst;
 	sin->sin_family = AF_INET;
 	sin->sin_len = sizeof(struct sockaddr_in);
 	sin->sin_addr.s_addr = faddr->s_addr;
@@ -1061,7 +1112,8 @@ in_pcbladdr(struct inpcb *inp, struct in_addr *faddr, struct in_addr *laddr,
 	 * Find out route to destination.
 	 */
 	if ((inp->inp_socket->so_options & SO_DONTROUTE) == 0)
-		in_rtalloc_ign(&sro, 0, inp->inp_inc.inc_fibnum);
+		nh = fib4_lookup(inp->inp_inc.inc_fibnum, *faddr,
+		    0, NHR_NONE, 0);
 
 	/*
 	 * If we found a route, use the address corresponding to
@@ -1071,7 +1123,7 @@ in_pcbladdr(struct inpcb *inp, struct in_addr *faddr, struct in_addr *laddr,
 	 * network and try to find a corresponding interface to take
 	 * the source address from.
 	 */
-	if (sro.ro_rt == NULL || sro.ro_rt->rt_ifp == NULL) {
+	if (nh == NULL || nh->nh_ifp == NULL) {
 		struct in_ifaddr *ia;
 		struct ifnet *ifp;
 
@@ -1124,22 +1176,22 @@ in_pcbladdr(struct inpcb *inp, struct in_addr *faddr, struct in_addr *laddr,
 	 *    belonging to this jail. If so use it.
 	 * 3. as a last resort return the 'default' jail address.
 	 */
-	if ((sro.ro_rt->rt_ifp->if_flags & IFF_LOOPBACK) == 0) {
+	if ((nh->nh_ifp->if_flags & IFF_LOOPBACK) == 0) {
 		struct in_ifaddr *ia;
 		struct ifnet *ifp;
 
 		/* If not jailed, use the default returned. */
 		if (cred == NULL || !prison_flag(cred, PR_IP4)) {
-			ia = (struct in_ifaddr *)sro.ro_rt->rt_ifa;
+			ia = (struct in_ifaddr *)nh->nh_ifa;
 			laddr->s_addr = ia->ia_addr.sin_addr.s_addr;
 			goto done;
 		}
 
 		/* Jailed. */
 		/* 1. Check if the iface address belongs to the jail. */
-		sin = (struct sockaddr_in *)sro.ro_rt->rt_ifa->ifa_addr;
+		sin = (struct sockaddr_in *)nh->nh_ifa->ifa_addr;
 		if (prison_check_ip4(cred, &sin->sin_addr) == 0) {
-			ia = (struct in_ifaddr *)sro.ro_rt->rt_ifa;
+			ia = (struct in_ifaddr *)nh->nh_ifa;
 			laddr->s_addr = ia->ia_addr.sin_addr.s_addr;
 			goto done;
 		}
@@ -1149,7 +1201,7 @@ in_pcbladdr(struct inpcb *inp, struct in_addr *faddr, struct in_addr *laddr,
 		 *    belonging to this jail.
 		 */
 		ia = NULL;
-		ifp = sro.ro_rt->rt_ifp;
+		ifp = nh->nh_ifp;
 		CK_STAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link) {
 			sa = ifa->ifa_addr;
 			if (sa->sa_family != AF_INET)
@@ -1179,22 +1231,16 @@ in_pcbladdr(struct inpcb *inp, struct in_addr *faddr, struct in_addr *laddr,
 	 * In case of jails, check that it is an address of the jail
 	 * and if we cannot find, fall back to the 'default' jail address.
 	 */
-	if ((sro.ro_rt->rt_ifp->if_flags & IFF_LOOPBACK) != 0) {
-		struct sockaddr_in sain;
+	if ((nh->nh_ifp->if_flags & IFF_LOOPBACK) != 0) {
 		struct in_ifaddr *ia;
 
-		bzero(&sain, sizeof(struct sockaddr_in));
-		sain.sin_family = AF_INET;
-		sain.sin_len = sizeof(struct sockaddr_in);
-		sain.sin_addr.s_addr = faddr->s_addr;
-
-		ia = ifatoia(ifa_ifwithdstaddr(sintosa(&sain),
+		ia = ifatoia(ifa_ifwithdstaddr(sintosa(&dst),
 					inp->inp_socket->so_fibnum));
 		if (ia == NULL)
-			ia = ifatoia(ifa_ifwithnet(sintosa(&sain), 0,
+			ia = ifatoia(ifa_ifwithnet(sintosa(&dst), 0,
 						inp->inp_socket->so_fibnum));
 		if (ia == NULL)
-			ia = ifatoia(ifa_ifwithaddr(sintosa(&sain)));
+			ia = ifatoia(ifa_ifwithaddr(sintosa(&dst)));
 
 		if (cred == NULL || !prison_flag(cred, PR_IP4)) {
 			if (ia == NULL) {
@@ -1234,8 +1280,6 @@ in_pcbladdr(struct inpcb *inp, struct in_addr *faddr, struct in_addr *laddr,
 	}
 
 done:
-	if (sro.ro_rt != NULL)
-		RTFREE(sro.ro_rt);
 	return (error);
 }
 
@@ -1348,16 +1392,26 @@ in_pcbconnect_setup(struct inpcb *inp, struct sockaddr *nam,
 		if (error)
 			return (error);
 	}
-	oinp = in_pcblookup_hash_locked(inp->inp_pcbinfo, faddr, fport,
-	    laddr, lport, 0, NULL);
-	if (oinp != NULL) {
-		if (oinpp != NULL)
-			*oinpp = oinp;
-		return (EADDRINUSE);
-	}
-	if (lport == 0) {
-		error = in_pcbbind_setup(inp, NULL, &laddr.s_addr, &lport,
-		    cred);
+	if (lport != 0) {
+		oinp = in_pcblookup_hash_locked(inp->inp_pcbinfo, faddr,
+		    fport, laddr, lport, 0, NULL);
+		if (oinp != NULL) {
+			if (oinpp != NULL)
+				*oinpp = oinp;
+			return (EADDRINUSE);
+		}
+	} else {
+		struct sockaddr_in lsin, fsin;
+
+		bzero(&lsin, sizeof(lsin));
+		bzero(&fsin, sizeof(fsin));
+		lsin.sin_family = AF_INET;
+		lsin.sin_addr = laddr;
+		fsin.sin_family = AF_INET;
+		fsin.sin_addr = faddr;
+		error = in_pcb_lport_dest(inp, (struct sockaddr *) &lsin,
+		    &lport, (struct sockaddr *)& fsin, fport, cred,
+		    INPLOOKUP_WILDCARD);
 		if (error)
 			return (error);
 	}

@@ -76,6 +76,7 @@ __FBSDID("$FreeBSD$");
 #include <vm/uma.h>
 
 #include <net/route.h>
+#include <net/route/nhop.h>
 #include <net/if.h>
 #include <net/if_var.h>
 #include <net/vnet.h>
@@ -2199,9 +2200,9 @@ tcp_notify(struct inpcb *inp, int error)
 	if (tp->t_state == TCPS_ESTABLISHED &&
 	    (error == EHOSTUNREACH || error == ENETUNREACH ||
 	     error == EHOSTDOWN)) {
-		if (inp->inp_route.ro_rt) {
-			RTFREE(inp->inp_route.ro_rt);
-			inp->inp_route.ro_rt = (struct rtentry *)NULL;
+		if (inp->inp_route.ro_nh) {
+			NH_FREE(inp->inp_route.ro_nh);
+			inp->inp_route.ro_nh = (struct nhop_object *)NULL;
 		}
 		return (inp);
 	} else if (tp->t_state < TCPS_ESTABLISHED && tp->t_rxtshift > 3 &&
@@ -2919,7 +2920,7 @@ tcp_mtudisc(struct inpcb *inp, int mtuoffer)
 uint32_t
 tcp_maxmtu(struct in_conninfo *inc, struct tcp_ifcap *cap)
 {
-	struct nhop4_extended nh4;
+	struct nhop_object *nh;
 	struct ifnet *ifp;
 	uint32_t maxmtu = 0;
 
@@ -2927,12 +2928,12 @@ tcp_maxmtu(struct in_conninfo *inc, struct tcp_ifcap *cap)
 
 	if (inc->inc_faddr.s_addr != INADDR_ANY) {
 
-		if (fib4_lookup_nh_ext(inc->inc_fibnum, inc->inc_faddr,
-		    NHR_REF, 0, &nh4) != 0)
+		nh = fib4_lookup(inc->inc_fibnum, inc->inc_faddr, 0, NHR_NONE, 0);
+		if (nh == NULL)
 			return (0);
 
-		ifp = nh4.nh_ifp;
-		maxmtu = nh4.nh_mtu;
+		ifp = nh->nh_ifp;
+		maxmtu = nh->nh_mtu;
 
 		/* Report additional interface capabilities. */
 		if (cap != NULL) {
@@ -2944,7 +2945,6 @@ tcp_maxmtu(struct in_conninfo *inc, struct tcp_ifcap *cap)
 				cap->tsomaxsegsize = ifp->if_hw_tsomaxsegsize;
 			}
 		}
-		fib4_free_nh_ext(inc->inc_fibnum, &nh4);
 	}
 	return (maxmtu);
 }
@@ -2954,7 +2954,7 @@ tcp_maxmtu(struct in_conninfo *inc, struct tcp_ifcap *cap)
 uint32_t
 tcp_maxmtu6(struct in_conninfo *inc, struct tcp_ifcap *cap)
 {
-	struct nhop6_extended nh6;
+	struct nhop_object *nh;
 	struct in6_addr dst6;
 	uint32_t scopeid;
 	struct ifnet *ifp;
@@ -2967,12 +2967,12 @@ tcp_maxmtu6(struct in_conninfo *inc, struct tcp_ifcap *cap)
 
 	if (!IN6_IS_ADDR_UNSPECIFIED(&inc->inc6_faddr)) {
 		in6_splitscope(&inc->inc6_faddr, &dst6, &scopeid);
-		if (fib6_lookup_nh_ext(inc->inc_fibnum, &dst6, scopeid, 0,
-		    0, &nh6) != 0)
+		nh = fib6_lookup(inc->inc_fibnum, &dst6, scopeid, NHR_NONE, 0);
+		if (nh == NULL)
 			return (0);
 
-		ifp = nh6.nh_ifp;
-		maxmtu = nh6.nh_mtu;
+		ifp = nh->nh_ifp;
+		maxmtu = nh->nh_mtu;
 
 		/* Report additional interface capabilities. */
 		if (cap != NULL) {
@@ -2984,7 +2984,6 @@ tcp_maxmtu6(struct in_conninfo *inc, struct tcp_ifcap *cap)
 				cap->tsomaxsegsize = ifp->if_hw_tsomaxsegsize;
 			}
 		}
-		fib6_free_nh_ext(inc->inc_fibnum, &nh6);
 	}
 
 	return (maxmtu);
@@ -3463,4 +3462,33 @@ tcp_inptoxtp(const struct inpcb *inp, struct xtcpcb *xt)
 	in_pcbtoxinpcb(inp, &xt->xt_inp);
 	if (inp->inp_socket == NULL)
 		xt->xt_inp.xi_socket.xso_protocol = IPPROTO_TCP;
+}
+
+void
+tcp_log_end_status(struct tcpcb *tp, uint8_t status)
+{
+	uint32_t bit, i;
+
+	if ((tp == NULL) ||
+	    (status > TCP_EI_STATUS_MAX_VALUE) ||
+	    (status == 0)) {
+		/* Invalid */
+		return;
+	}
+	if (status > (sizeof(uint32_t) * 8)) {
+		/* Should this be a KASSERT? */
+		return;
+	}
+	bit = 1U << (status - 1);
+	if (bit & tp->t_end_info_status) {
+		/* already logged */
+		return;
+	}
+	for (i = 0; i < TCP_END_BYTE_INFO; i++) {
+		if (tp->t_end_info_bytes[i] == TCP_EI_EMPTY_SLOT) {
+			tp->t_end_info_bytes[i] = status;
+			tp->t_end_info_status |= bit;
+			break;
+		}
+	}
 }

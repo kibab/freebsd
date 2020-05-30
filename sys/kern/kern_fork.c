@@ -59,7 +59,6 @@ __FBSDID("$FreeBSD$");
 #include <sys/priv.h>
 #include <sys/proc.h>
 #include <sys/procdesc.h>
-#include <sys/pioctl.h>
 #include <sys/ptrace.h>
 #include <sys/racct.h>
 #include <sys/resourcevar.h>
@@ -129,6 +128,7 @@ sys_pdfork(struct thread *td, struct pdfork_args *uap)
 	fr.fr_pidp = &pid;
 	fr.fr_pd_fd = &fd;
 	fr.fr_pd_flags = uap->flags;
+	AUDIT_ARG_FFLAGS(uap->flags);
 	/*
 	 * It is necessary to return fd by reference because 0 is a valid file
 	 * descriptor number, and the child needs to be able to distinguish
@@ -583,15 +583,6 @@ do_fork(struct thread *td, struct fork_req *fr, struct proc *p2, struct thread *
 	callout_init_mtx(&p2->p_itcallout, &p2->p_mtx, 0);
 
 	/*
-	 * If PF_FORK is set, the child process inherits the
-	 * procfs ioctl flags from its parent.
-	 */
-	if (p1->p_pfsflags & PF_FORK) {
-		p2->p_stops = p1->p_stops;
-		p2->p_pfsflags = p1->p_pfsflags;
-	}
-
-	/*
 	 * This begins the section where we must prevent the parent
 	 * from being swapped.
 	 */
@@ -919,6 +910,7 @@ fork1(struct thread *td, struct fork_req *fr)
 		    fr->fr_pd_flags, fr->fr_pd_fcaps);
 		if (error != 0)
 			goto fail2;
+		AUDIT_ARG_FD(*fr->fr_pd_fd);
 	}
 
 	mem_charged = 0;
@@ -1111,7 +1103,6 @@ fork_return(struct thread *td, struct trapframe *frame)
 		 */
 		PROC_LOCK(p);
 		td->td_dbgflags |= TDB_SCX;
-		_STOPEVENT(p, S_SCX, td->td_sa.code);
 		if ((p->p_ptevents & PTRACE_SCX) != 0 ||
 		    (td->td_dbgflags & TDB_BORN) != 0)
 			ptracestop(td, SIGTRAP, NULL);

@@ -922,6 +922,10 @@ namespace {
       this->Entity = Entity;
     }
 
+    unsigned TransformTemplateDepth(unsigned Depth) {
+      return TemplateArgs.getNewDepth(Depth);
+    }
+
     bool TryExpandParameterPacks(SourceLocation EllipsisLoc,
                                  SourceRange PatternRange,
                                  ArrayRef<UnexpandedParameterPack> Unexpanded,
@@ -2162,7 +2166,7 @@ namespace {
     // The deduced type itself.
     TemplateTypeParmDecl *VisitTemplateTypeParmType(
         const TemplateTypeParmType *T) {
-      if (!T->getDecl()->isImplicit())
+      if (!T->getDecl() || !T->getDecl()->isImplicit())
         return nullptr;
       return T->getDecl();
     }
@@ -2339,7 +2343,7 @@ ParmVarDecl *Sema::SubstParmVarDecl(ParmVarDecl *OldParm,
     UnparsedDefaultArgInstantiations[OldParm].push_back(NewParm);
   } else if (Expr *Arg = OldParm->getDefaultArg()) {
     FunctionDecl *OwningFunc = cast<FunctionDecl>(OldParm->getDeclContext());
-    if (OwningFunc->isLexicallyWithinFunctionOrMethod()) {
+    if (OwningFunc->isInLocalScope()) {
       // Instantiate default arguments for methods of local classes (DR1484)
       // and non-defining declarations.
       Sema::ContextRAII SavedContext(*this, OwningFunc);

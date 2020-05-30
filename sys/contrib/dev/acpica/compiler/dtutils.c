@@ -186,10 +186,20 @@ DtError (
     DT_FIELD                *FieldObject,
     char                    *ExtraMessage)
 {
+    UINT32                  Line = 0;
+
+
+    /* Field object could be NULL */
+
+    if (FieldObject)
+    {
+        Line = FieldObject->Line;
+    }
 
     /* Check if user wants to ignore this exception */
 
-    if (AslIsExceptionIgnored (Level, MessageId))
+    if (AslIsExceptionIgnored (AslGbl_Files[ASL_FILE_INPUT].Filename,
+        Line, Level, MessageId))
     {
         return;
     }

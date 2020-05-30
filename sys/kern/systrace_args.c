@@ -2795,13 +2795,6 @@ systrace_args(int sysnum, void *params, uint64_t *uarg, int *n_args)
 		*n_args = 1;
 		break;
 	}
-	/* closefrom */
-	case 509: {
-		struct closefrom_args *p = params;
-		iarg[0] = p->lowfd; /* int */
-		*n_args = 1;
-		break;
-	}
 	/* __semctl */
 	case 510: {
 		struct __semctl_args *p = params;
@@ -3364,6 +3357,23 @@ systrace_args(int sysnum, void *params, uint64_t *uarg, int *n_args)
 		uarg[3] = p->size; /* size_t */
 		iarg[4] = p->flags; /* int */
 		*n_args = 5;
+		break;
+	}
+	/* close_range */
+	case 575: {
+		struct close_range_args *p = params;
+		uarg[0] = p->lowfd; /* u_int */
+		uarg[1] = p->highfd; /* u_int */
+		iarg[2] = p->flags; /* int */
+		*n_args = 3;
+		break;
+	}
+	/* rpctls_syscall */
+	case 576: {
+		struct rpctls_syscall_args *p = params;
+		iarg[0] = p->op; /* int */
+		uarg[1] = (intptr_t) p->path; /* const char * */
+		*n_args = 2;
 		break;
 	}
 	default:
@@ -7970,16 +7980,6 @@ systrace_entry_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 			break;
 		};
 		break;
-	/* closefrom */
-	case 509:
-		switch(ndx) {
-		case 0:
-			p = "int";
-			break;
-		default:
-			break;
-		};
-		break;
 	/* __semctl */
 	case 510:
 		switch(ndx) {
@@ -8995,6 +8995,35 @@ systrace_entry_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 			break;
 		case 4:
 			p = "int";
+			break;
+		default:
+			break;
+		};
+		break;
+	/* close_range */
+	case 575:
+		switch(ndx) {
+		case 0:
+			p = "u_int";
+			break;
+		case 1:
+			p = "u_int";
+			break;
+		case 2:
+			p = "int";
+			break;
+		default:
+			break;
+		};
+		break;
+	/* rpctls_syscall */
+	case 576:
+		switch(ndx) {
+		case 0:
+			p = "int";
+			break;
+		case 1:
+			p = "userland const char *";
 			break;
 		default:
 			break;
@@ -10619,11 +10648,6 @@ systrace_return_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 		if (ndx == 0 || ndx == 1)
 			p = "int";
 		break;
-	/* closefrom */
-	case 509:
-		if (ndx == 0 || ndx == 1)
-			p = "int";
-		break;
 	/* __semctl */
 	case 510:
 		if (ndx == 0 || ndx == 1)
@@ -10923,6 +10947,16 @@ systrace_return_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 		break;
 	/* __realpathat */
 	case 574:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* close_range */
+	case 575:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* rpctls_syscall */
+	case 576:
 		if (ndx == 0 || ndx == 1)
 			p = "int";
 		break;

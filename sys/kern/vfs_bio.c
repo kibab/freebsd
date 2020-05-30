@@ -2176,6 +2176,8 @@ breadn_flags(struct vnode *vp, daddr_t blkno, daddr_t dblkno, int size,
 			bp->b_flags |= B_CKHASH;
 			bp->b_ckhashcalc = ckhashfunc;
 		}
+		if ((flags & GB_CVTENXIO) != 0)
+			bp->b_xflags |= BX_CVTENXIO;
 		bp->b_ioflags &= ~BIO_ERROR;
 		if (bp->b_rcred == NOCRED && cred != NOCRED)
 			bp->b_rcred = crhold(cred);
@@ -2773,6 +2775,7 @@ brelse(struct buf *bp)
 		panic("brelse: not dirty");
 
 	bp->b_flags &= ~(B_ASYNC | B_NOCACHE | B_RELBUF | B_DIRECT);
+	bp->b_xflags &= ~(BX_CVTENXIO);
 	/* binsfree unlocks bp. */
 	binsfree(bp, qindex);
 }
@@ -2804,6 +2807,7 @@ bqrelse(struct buf *bp)
 		return;
 	}
 	bp->b_flags &= ~(B_ASYNC | B_NOCACHE | B_AGE | B_RELBUF);
+	bp->b_xflags &= ~(BX_CVTENXIO);
 
 	if (bp->b_flags & B_MANAGED) {
 		if (bp->b_flags & B_REMFREE)
@@ -5154,12 +5158,16 @@ vfs_bio_getpages(struct vnode *vp, vm_page_t *ma, int count,
 	br_flags = (mp != NULL && (mp->mnt_kern_flag & MNTK_UNMAPPED_BUFS)
 	    != 0) ? GB_UNMAPPED : 0;
 again:
-	for (i = 0; i < count; i++)
-		vm_page_busy_downgrade(ma[i]);
+	for (i = 0; i < count; i++) {
+		if (ma[i] != bogus_page)
+			vm_page_busy_downgrade(ma[i]);
+	}
 
 	lbnp = -1;
 	for (i = 0; i < count; i++) {
 		m = ma[i];
+		if (m == bogus_page)
+			continue;
 
 		/*
 		 * Pages are shared busy and the object lock is not
@@ -5228,6 +5236,8 @@ end_pages:
 
 	redo = false;
 	for (i = 0; i < count; i++) {
+		if (ma[i] == bogus_page)
+			continue;
 		if (vm_page_busy_tryupgrade(ma[i]) == 0) {
 			vm_page_sunbusy(ma[i]);
 			ma[i] = vm_page_grab_unlocked(object, ma[i]->pindex,

@@ -35,6 +35,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/mman.h>
 
 #include <machine/vmm.h>
+#include <machine/vmm_snapshot.h>
 #include <vmmapi.h>
 
 #include <stdio.h>
@@ -135,7 +136,7 @@ pci_fbuf_write(struct vmctx *ctx, int vcpu, struct pci_devinst *pi,
 	sc = pi->pi_arg;
 
 	DPRINTF(DEBUG_VERBOSE,
-	    ("fbuf wr: offset 0x%lx, size: %d, value: 0x%lx\n",
+	    ("fbuf wr: offset 0x%lx, size: %d, value: 0x%lx",
 	    offset, size, value));
 
 	if (offset + size > DMEMSZ) {
@@ -217,7 +218,7 @@ pci_fbuf_read(struct vmctx *ctx, int vcpu, struct pci_devinst *pi,
 	}
 
 	DPRINTF(DEBUG_VERBOSE,
-	    ("fbuf rd: offset 0x%lx, size: %d, value: 0x%lx\n",
+	    ("fbuf rd: offset 0x%lx, size: %d, value: 0x%lx",
 	     offset, size, value));
 
 	return (value);
@@ -440,10 +441,26 @@ done:
 	return (error);
 }
 
+#ifdef BHYVE_SNAPSHOT
+static int
+pci_fbuf_snapshot(struct vm_snapshot_meta *meta)
+{
+	int ret;
+
+	SNAPSHOT_BUF_OR_LEAVE(fbuf_sc->fb_base, FB_SIZE, meta, ret, err);
+
+err:
+	return (ret);
+}
+#endif
+
 struct pci_devemu pci_fbuf = {
 	.pe_emu =	"fbuf",
 	.pe_init =	pci_fbuf_init,
 	.pe_barwrite =	pci_fbuf_write,
-	.pe_barread =	pci_fbuf_read
+	.pe_barread =	pci_fbuf_read,
+#ifdef BHYVE_SNAPSHOT
+	.pe_snapshot =	pci_fbuf_snapshot,
+#endif
 };
 PCI_EMUL_SET(pci_fbuf);

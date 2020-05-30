@@ -1417,43 +1417,6 @@ copyinstr_toolong:
 	jmp	cpystrflt_x
 
 /*
- * copystr(from, to, maxlen, int *lencopied)
- *         %rdi, %rsi, %rdx, %rcx
- */
-ENTRY(copystr)
-	PUSH_FRAME_POINTER
-	movq	%rdx,%r8			/* %r8 = maxlen */
-
-	incq    %rdx
-1:
-	decq	%rdx
-	jz	4f
-	movb	(%rdi),%al
-	movb	%al,(%rsi)
-	incq	%rsi
-	incq	%rdi
-	testb	%al,%al
-	jnz	1b
-
-	/* Success -- 0 byte reached */
-	decq	%rdx
-	xorl	%eax,%eax
-2:
-	testq	%rcx,%rcx
-	jz      3f
-	/* set *lencopied and return %rax */
-	subq	%rdx,%r8
-	movq	%r8,(%rcx)
-3:
-	POP_FRAME_POINTER
-	ret
-4:
-	/* rdx is zero -- return ENAMETOOLONG */
-	movl    $ENAMETOOLONG,%eax
-	jmp	2b
-END(copystr)
-
-/*
  * Handling of special amd64 registers and descriptor tables etc
  */
 /* void lgdt(struct region_descriptor *rdp); */
@@ -1613,22 +1576,26 @@ ENTRY(pmap_pti_pcid_invlrng)
 	retq
 
 	.altmacro
-	.macro	ibrs_seq_label l
-handle_ibrs_\l:
+	.macro	rsb_seq_label l
+rsb_seq_\l:
 	.endm
-	.macro	ibrs_call_label l
-	call	handle_ibrs_\l
+	.macro	rsb_call_label l
+	call	rsb_seq_\l
 	.endm
-	.macro	ibrs_seq count
+	.macro	rsb_seq count
 	ll=1
 	.rept	\count
-	ibrs_call_label	%(ll)
+	rsb_call_label	%(ll)
 	nop
-	ibrs_seq_label %(ll)
+	rsb_seq_label %(ll)
 	addq	$8,%rsp
 	ll=ll+1
 	.endr
 	.endm
+
+ENTRY(rsb_flush)
+	rsb_seq	32
+	ret
 
 /* all callers already saved %rax, %rdx, and %rcx */
 ENTRY(handle_ibrs_entry)
@@ -1641,8 +1608,7 @@ ENTRY(handle_ibrs_entry)
 	wrmsr
 	movb	$1,PCPU(IBPB_SET)
 	testl	$CPUID_STDEXT_SMEP,cpu_stdext_feature(%rip)
-	jne	1f
-	ibrs_seq 32
+	je	rsb_flush
 1:	ret
 END(handle_ibrs_entry)
 

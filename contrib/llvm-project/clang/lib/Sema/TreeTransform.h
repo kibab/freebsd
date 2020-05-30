@@ -212,6 +212,14 @@ public:
     return T.isNull();
   }
 
+  /// Transform a template parameter depth level.
+  ///
+  /// During a transformation that transforms template parameters, this maps
+  /// an old template parameter depth to a new depth.
+  unsigned TransformTemplateDepth(unsigned Depth) {
+    return Depth;
+  }
+
   /// Determine whether the given call argument should be dropped, e.g.,
   /// because it is a default argument.
   ///
@@ -2527,8 +2535,9 @@ public:
   /// By default, performs semantic analysis to build the new expression.
   /// Subclasses may override this routine to provide different behavior.
   ExprResult RebuildStmtExpr(SourceLocation LParenLoc, Stmt *SubStmt,
-                             SourceLocation RParenLoc) {
-    return getSema().ActOnStmtExpr(nullptr, LParenLoc, SubStmt, RParenLoc);
+                             SourceLocation RParenLoc, unsigned TemplateDepth) {
+    return getSema().BuildStmtExpr(LParenLoc, SubStmt, RParenLoc,
+                                   TemplateDepth);
   }
 
   /// Build a new __builtin_choose_expr expression.
@@ -4013,50 +4022,8 @@ template<typename Derived>
 void TreeTransform<Derived>::InventTemplateArgumentLoc(
                                          const TemplateArgument &Arg,
                                          TemplateArgumentLoc &Output) {
-  SourceLocation Loc = getDerived().getBaseLocation();
-  switch (Arg.getKind()) {
-  case TemplateArgument::Null:
-    llvm_unreachable("null template argument in TreeTransform");
-    break;
-
-  case TemplateArgument::Type:
-    Output = TemplateArgumentLoc(Arg,
-               SemaRef.Context.getTrivialTypeSourceInfo(Arg.getAsType(), Loc));
-
-    break;
-
-  case TemplateArgument::Template:
-  case TemplateArgument::TemplateExpansion: {
-    NestedNameSpecifierLocBuilder Builder;
-    TemplateName Template = Arg.getAsTemplateOrTemplatePattern();
-    if (DependentTemplateName *DTN = Template.getAsDependentTemplateName())
-      Builder.MakeTrivial(SemaRef.Context, DTN->getQualifier(), Loc);
-    else if (QualifiedTemplateName *QTN = Template.getAsQualifiedTemplateName())
-      Builder.MakeTrivial(SemaRef.Context, QTN->getQualifier(), Loc);
-
-    if (Arg.getKind() == TemplateArgument::Template)
-      Output = TemplateArgumentLoc(Arg,
-                                   Builder.getWithLocInContext(SemaRef.Context),
-                                   Loc);
-    else
-      Output = TemplateArgumentLoc(Arg,
-                                   Builder.getWithLocInContext(SemaRef.Context),
-                                   Loc, Loc);
-
-    break;
-  }
-
-  case TemplateArgument::Expression:
-    Output = TemplateArgumentLoc(Arg, Arg.getAsExpr());
-    break;
-
-  case TemplateArgument::Declaration:
-  case TemplateArgument::Integral:
-  case TemplateArgument::Pack:
-  case TemplateArgument::NullPtr:
-    Output = TemplateArgumentLoc(Arg, TemplateArgumentLocInfo());
-    break;
-  }
+  Output = getSema().getTrivialTemplateArgumentLoc(
+      Arg, QualType(), getDerived().getBaseLocation());
 }
 
 template<typename Derived>
@@ -4066,11 +4033,44 @@ bool TreeTransform<Derived>::TransformTemplateArgument(
   const TemplateArgument &Arg = Input.getArgument();
   switch (Arg.getKind()) {
   case TemplateArgument::Null:
-  case TemplateArgument::Integral:
   case TemplateArgument::Pack:
-  case TemplateArgument::Declaration:
-  case TemplateArgument::NullPtr:
     llvm_unreachable("Unexpected TemplateArgument");
+
+  case TemplateArgument::Integral:
+  case TemplateArgument::NullPtr:
+  case TemplateArgument::Declaration: {
+    // Transform a resolved template argument straight to a resolved template
+    // argument. We get here when substituting into an already-substituted
+    // template type argument during concept satisfaction checking.
+    QualType T = Arg.getNonTypeTemplateArgumentType();
+    QualType NewT = getDerived().TransformType(T);
+    if (NewT.isNull())
+      return true;
+
+    ValueDecl *D = Arg.getKind() == TemplateArgument::Declaration
+                       ? Arg.getAsDecl()
+                       : nullptr;
+    ValueDecl *NewD = D ? cast_or_null<ValueDecl>(getDerived().TransformDecl(
+                              getDerived().getBaseLocation(), D))
+                        : nullptr;
+    if (D && !NewD)
+      return true;
+
+    if (NewT == T && D == NewD)
+      Output = Input;
+    else if (Arg.getKind() == TemplateArgument::Integral)
+      Output = TemplateArgumentLoc(
+          TemplateArgument(getSema().Context, Arg.getAsIntegral(), NewT),
+          TemplateArgumentLocInfo());
+    else if (Arg.getKind() == TemplateArgument::NullPtr)
+      Output = TemplateArgumentLoc(TemplateArgument(NewT, /*IsNullPtr=*/true),
+                                   TemplateArgumentLocInfo());
+    else
+      Output = TemplateArgumentLoc(TemplateArgument(NewD, NewT),
+                                   TemplateArgumentLocInfo());
+
+    return false;
+  }
 
   case TemplateArgument::Type: {
     TypeSourceInfo *DI = Input.getTypeSourceInfo();
@@ -10345,16 +10345,18 @@ TreeTransform<Derived>::TransformStmtExpr(StmtExpr *E) {
     return ExprError();
   }
 
-  if (!getDerived().AlwaysRebuild() &&
+  unsigned OldDepth = E->getTemplateDepth();
+  unsigned NewDepth = getDerived().TransformTemplateDepth(OldDepth);
+
+  if (!getDerived().AlwaysRebuild() && OldDepth == NewDepth &&
       SubStmt.get() == E->getSubStmt()) {
     // Calling this an 'error' is unintuitive, but it does the right thing.
     SemaRef.ActOnStmtExprError();
     return SemaRef.MaybeBindToTemporary(E);
   }
 
-  return getDerived().RebuildStmtExpr(E->getLParenLoc(),
-                                      SubStmt.get(),
-                                      E->getRParenLoc());
+  return getDerived().RebuildStmtExpr(E->getLParenLoc(), SubStmt.get(),
+                                      E->getRParenLoc(), NewDepth);
 }
 
 template<typename Derived>
@@ -11292,7 +11294,7 @@ TreeTransform<Derived>::TransformRequiresExpr(RequiresExpr *E) {
       SemaRef, Sema::ExpressionEvaluationContext::Unevaluated);
 
   RequiresExprBodyDecl *Body = RequiresExprBodyDecl::Create(
-      getSema().Context, E->getBody()->getDeclContext(),
+      getSema().Context, getSema().CurContext,
       E->getBody()->getBeginLoc());
 
   Sema::ContextRAII SavedContext(getSema(), Body, /*NewThisContext*/false);
@@ -11825,19 +11827,6 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
       NewTrailingRequiresClause.get());
 
   LSI->CallOperator = NewCallOperator;
-
-  for (unsigned I = 0, NumParams = NewCallOperator->getNumParams();
-       I != NumParams; ++I) {
-    auto *P = NewCallOperator->getParamDecl(I);
-    if (P->hasUninstantiatedDefaultArg()) {
-      EnterExpressionEvaluationContext Eval(
-          getSema(),
-          Sema::ExpressionEvaluationContext::PotentiallyEvaluatedIfUsed, P);
-      ExprResult R = getDerived().TransformExpr(
-          E->getCallOperator()->getParamDecl(I)->getDefaultArg());
-      P->setDefaultArg(R.get());
-    }
-  }
 
   getDerived().transformAttrs(E->getCallOperator(), NewCallOperator);
   getDerived().transformedLocalDecl(E->getCallOperator(), {NewCallOperator});

@@ -100,10 +100,6 @@ CFLAGS+= -DLOADER_DISK_SUPPORT
 # or powerpc64.
 .if ${MACHINE_ARCH} == "powerpc64"
 CFLAGS+=	-m32 -mcpu=powerpc
-# Use ld.bfd to workaround ld.lld issues on PowerPC 32 bit
-.if "${COMPILER_TYPE}" == "clang" && "${LINKER_TYPE}" == "lld"
-CFLAGS+=	-fuse-ld=${LD_BFD}
-.endif
 .endif
 
 # For amd64, there's a bit of mixed bag. Some of the tree (i386, lib*32) is
@@ -123,7 +119,7 @@ SSP_CFLAGS=
 # currently has no /boot/loader, but may soon.
 CFLAGS+=	-ffreestanding ${CFLAGS_NO_SIMD}
 .if ${MACHINE_CPUARCH} == "aarch64"
-CFLAGS+=	-mgeneral-regs-only -fPIC
+CFLAGS+=	-mgeneral-regs-only -ffixed-x18 -fPIC
 .elif ${MACHINE_CPUARCH} == "riscv"
 CFLAGS+=	-march=rv64imac -mabi=lp64
 .else
@@ -147,11 +143,7 @@ CFLAGS+=	-fPIC -mno-red-zone
 # Do not generate movt/movw, because the relocation fixup for them does not
 # translate to the -Bsymbolic -pie format required by self_reloc() in loader(8).
 # Also, the fpu is not available in a standalone environment.
-.if ${COMPILER_VERSION} < 30800
-CFLAGS.clang+=	-mllvm -arm-use-movt=0
-.else
 CFLAGS.clang+=	-mno-movt
-.endif
 CFLAGS.clang+=  -mfpu=none
 CFLAGS+=	-fPIC
 .endif
