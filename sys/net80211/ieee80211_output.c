@@ -125,6 +125,11 @@ ieee80211_vap_pkt_send_dest(struct ieee80211vap *vap, struct mbuf *m,
 	struct ieee80211com *ic = vap->iv_ic;
 	struct ifnet *ifp = vap->iv_ifp;
 	int mcast;
+	int do_ampdu = 0;
+	int do_amsdu = 0;
+	int do_ampdu_amsdu = 0;
+	int no_ampdu = 1; /* Will be set to 0 if ampdu is active */
+	int do_ff = 0;
 
 	if ((ni->ni_flags & IEEE80211_NODE_PWR_MGT) &&
 	    (m->m_flags & M_PWR_SAV) == 0) {
@@ -169,6 +174,27 @@ ieee80211_vap_pkt_send_dest(struct ieee80211vap *vap, struct mbuf *m,
 
 	BPF_MTAP(ifp, m);		/* 802.3 tx */
 
+
+	/*
+	 * Figure out if we can do A-MPDU, A-MSDU or FF.
+	 *
+	 * A-MPDU depends upon vap/node config.
+	 * A-MSDU depends upon vap/node config.
+	 * FF depends upon vap config, IE and whether
+	 *  it's 11abg (and not 11n/11ac/etc.)
+	 *
+	 * Note that these flags indiciate whether we can do
+	 * it at all, rather than the situation (eg traffic type.)
+	 */
+	do_ampdu = ((ni->ni_flags & IEEE80211_NODE_AMPDU_TX) &&
+	    (vap->iv_flags_ht & IEEE80211_FHT_AMPDU_TX));
+	do_amsdu = ((ni->ni_flags & IEEE80211_NODE_AMSDU_TX) &&
+	    (vap->iv_flags_ht & IEEE80211_FHT_AMSDU_TX));
+	do_ff =
+	    ((ni->ni_flags & IEEE80211_NODE_HT) == 0) &&
+	    ((ni->ni_flags & IEEE80211_NODE_VHT) == 0) &&
+	    (IEEE80211_ATH_CAP(vap, ni, IEEE80211_NODE_FF));
+
 	/*
 	 * Check if A-MPDU tx aggregation is setup or if we
 	 * should try to enable it.  The sta must be associated
@@ -186,8 +212,7 @@ ieee80211_vap_pkt_send_dest(struct ieee80211vap *vap, struct mbuf *m,
 	 * frames will always have sequence numbers allocated from the NON_QOS
 	 * TID.
 	 */
-	if ((ni->ni_flags & IEEE80211_NODE_AMPDU_TX) &&
-	    (vap->iv_flags_ht & IEEE80211_FHT_AMPDU_TX)) {
+	if (do_ampdu) {
 		if ((m->m_flags & M_EAPOL) == 0 && (! mcast)) {
 			int tid = WME_AC_TO_TID(M_WME_GETAC(m));
 			struct ieee80211_tx_ampdu *tap = &ni->ni_tx_ampdu[tid];
@@ -208,6 +233,23 @@ ieee80211_vap_pkt_send_dest(struct ieee80211vap *vap, struct mbuf *m,
 				ieee80211_ampdu_request(ni, tap);
 				/* XXX hold frame for reply? */
 			}
+			/*
+			 * Now update the no-ampdu flag.  A-MPDU may have been
+			 * started or administratively disabled above; so now we
+			 * know whether we're running yet or not.
+			 *
+			 * This will let us know whether we should be doing A-MSDU
+			 * at this point.  We only do A-MSDU if we're either not
+			 * doing A-MPDU, or A-MPDU is NACKed, or A-MPDU + A-MSDU
+			 * is available.
+			 *
+			 * Whilst here, update the amsdu-ampdu flag.  The above may
+			 * have also set or cleared the amsdu-in-ampdu txa_flags
+			 * combination so we can correctly do A-MPDU + A-MSDU.
+			 */
+			no_ampdu = (! IEEE80211_AMPDU_RUNNING(tap)
+			    || (IEEE80211_AMPDU_NACKED(tap)));
+			do_ampdu_amsdu = IEEE80211_AMPDU_RUNNING_AMSDU(tap);
 		}
 	}
 
@@ -222,15 +264,11 @@ ieee80211_vap_pkt_send_dest(struct ieee80211vap *vap, struct mbuf *m,
 	 * to really need to.  For A-MSDU we'd have to set the
 	 * A-MSDU QoS bit in the wifi header, so we just plain
 	 * can't do it.
-	 *
-	 * Strictly speaking, we could actually /do/ A-MSDU / FF
-	 * with A-MPDU together which for certain circumstances
-	 * is beneficial (eg A-MSDU of TCK ACKs.)  However,
-	 * I'll ignore that for now so existing behaviour is maintained.
-	 * Later on it would be good to make "amsdu + ampdu" configurable.
 	 */
-	else if (__predict_true((vap->iv_caps & IEEE80211_C_8023ENCAP) == 0)) {
-		if ((! mcast) && ieee80211_amsdu_tx_ok(ni)) {
+	if (__predict_true((vap->iv_caps & IEEE80211_C_8023ENCAP) == 0)) {
+		if ((! mcast) &&
+		    (do_ampdu_amsdu || (no_ampdu && do_amsdu)) &&
+		    ieee80211_amsdu_tx_ok(ni)) {
 			m = ieee80211_amsdu_check(ni, m);
 			if (m == NULL) {
 				/* NB: any ni ref held on stageq */
@@ -239,8 +277,7 @@ ieee80211_vap_pkt_send_dest(struct ieee80211vap *vap, struct mbuf *m,
 				    __func__);
 				return (0);
 			}
-		} else if ((! mcast) && IEEE80211_ATH_CAP(vap, ni,
-		    IEEE80211_NODE_FF)) {
+		} else if ((! mcast) && do_ff) {
 			m = ieee80211_ff_check(ni, m);
 			if (m == NULL) {
 				/* NB: any ni ref held on stageq */
@@ -2119,26 +2156,48 @@ add_ie(uint8_t *frm, const uint8_t *ie)
  * Add a WME information element to a frame.
  */
 uint8_t *
-ieee80211_add_wme_info(uint8_t *frm, struct ieee80211_wme_state *wme)
+ieee80211_add_wme_info(uint8_t *frm, struct ieee80211_wme_state *wme,
+    struct ieee80211_node *ni)
 {
-	static const struct ieee80211_wme_info info = {
-		.wme_id		= IEEE80211_ELEMID_VENDOR,
-		.wme_len	= sizeof(struct ieee80211_wme_info) - 2,
-		.wme_oui	= { WME_OUI_BYTES },
-		.wme_type	= WME_OUI_TYPE,
-		.wme_subtype	= WME_INFO_OUI_SUBTYPE,
-		.wme_version	= WME_VERSION,
-		.wme_info	= 0,
-	};
-	memcpy(frm, &info, sizeof(info));
-	return frm + sizeof(info); 
+	static const uint8_t oui[4] = { WME_OUI_BYTES, WME_OUI_TYPE };
+	struct ieee80211vap *vap = ni->ni_vap;
+
+	*frm++ = IEEE80211_ELEMID_VENDOR;
+	*frm++ = sizeof(struct ieee80211_wme_info) - 2;
+	memcpy(frm, oui, sizeof(oui));
+	frm += sizeof(oui);
+	*frm++ = WME_INFO_OUI_SUBTYPE;
+	*frm++ = WME_VERSION;
+
+	/* QoS info field depends upon operating mode */
+	switch (vap->iv_opmode) {
+	case IEEE80211_M_HOSTAP:
+		*frm = wme->wme_bssChanParams.cap_info;
+		if (vap->iv_flags_ext & IEEE80211_FEXT_UAPSD)
+			*frm |= WME_CAPINFO_UAPSD_EN;
+		frm++;
+		break;
+	case IEEE80211_M_STA:
+		/*
+		 * NB: UAPSD drivers must set this up in their
+		 * VAP creation method.
+		 */
+		*frm++ = vap->iv_uapsdinfo;
+		break;
+	default:
+		*frm++ = 0;
+		break;
+	}
+
+	return frm;
 }
 
 /*
  * Add a WME parameters element to a frame.
  */
 static uint8_t *
-ieee80211_add_wme_param(uint8_t *frm, struct ieee80211_wme_state *wme)
+ieee80211_add_wme_param(uint8_t *frm, struct ieee80211_wme_state *wme,
+    int uapsd_enable)
 {
 #define	SM(_v, _f)	(((_v) << _f##_S) & _f)
 #define	ADDSHORT(frm, v) do {	\
@@ -2158,8 +2217,12 @@ ieee80211_add_wme_param(uint8_t *frm, struct ieee80211_wme_state *wme)
 
 	memcpy(frm, &param, sizeof(param));
 	frm += __offsetof(struct ieee80211_wme_info, wme_info);
-	*frm++ = wme->wme_bssChanParams.cap_info;	/* AC info */
+	*frm = wme->wme_bssChanParams.cap_info;	/* AC info */
+	if (uapsd_enable)
+		*frm |= WME_CAPINFO_UAPSD_EN;
+	frm++;
 	*frm++ = 0;					/* reserved field */
+	/* XXX TODO - U-APSD bits - SP, flags below */
 	for (i = 0; i < WME_NUM_AC; i++) {
 		const struct wmeParams *ac =
 		       &wme->wme_bssChanParams.cap_wmeParams[i];
@@ -2522,7 +2585,7 @@ ieee80211_getcapinfo(struct ieee80211vap *vap, struct ieee80211_channel *chan)
 	if ((ic->ic_flags & IEEE80211_F_SHPREAMBLE) &&
 	    IEEE80211_IS_CHAN_2GHZ(chan))
 		capinfo |= IEEE80211_CAPINFO_SHORT_PREAMBLE;
-	if (ic->ic_flags & IEEE80211_F_SHSLOT)
+	if (vap->iv_flags & IEEE80211_F_SHSLOT)
 		capinfo |= IEEE80211_CAPINFO_SHORT_SLOTTIME;
 	if (IEEE80211_IS_CHAN_5GHZ(chan) && (vap->iv_flags & IEEE80211_F_DOTH))
 		capinfo |= IEEE80211_CAPINFO_SPECTRUM_MGMT;
@@ -2752,7 +2815,7 @@ ieee80211_send_mgmt(struct ieee80211_node *ni, int type, int arg)
 		frm = ieee80211_add_wpa(frm, vap);
 		if ((ic->ic_flags & IEEE80211_F_WME) &&
 		    ni->ni_ies.wme_ie != NULL)
-			frm = ieee80211_add_wme_info(frm, &ic->ic_wme);
+			frm = ieee80211_add_wme_info(frm, &ic->ic_wme, ni);
 
 		/*
 		 * Same deal - only send HT info if we're on an 11n
@@ -2844,7 +2907,8 @@ ieee80211_send_mgmt(struct ieee80211_node *ni, int type, int arg)
 		}
 		if ((vap->iv_flags & IEEE80211_F_WME) &&
 		    ni->ni_ies.wme_ie != NULL)
-			frm = ieee80211_add_wme_param(frm, &ic->ic_wme);
+			frm = ieee80211_add_wme_param(frm, &ic->ic_wme,
+			    !! (vap->iv_flags_ext & IEEE80211_FEXT_UAPSD));
 		if ((ni->ni_flags & HTFLAGS) == HTFLAGS) {
 			frm = ieee80211_add_htcap_vendor(frm, ni);
 			frm = ieee80211_add_htinfo_vendor(frm, ni);
@@ -3055,7 +3119,8 @@ ieee80211_alloc_proberesp(struct ieee80211_node *bss, int legacy)
 	}
 	frm = ieee80211_add_wpa(frm, vap);
 	if (vap->iv_flags & IEEE80211_F_WME)
-		frm = ieee80211_add_wme_param(frm, &ic->ic_wme);
+		frm = ieee80211_add_wme_param(frm, &ic->ic_wme,
+		    !! (vap->iv_flags_ext & IEEE80211_FEXT_UAPSD));
 	if (IEEE80211_IS_CHAN_HT(bss->ni_chan) &&
 	    (vap->iv_flags_ht & IEEE80211_FHT_HTCOMPAT) &&
 	    legacy != IEEE80211_SEND_LEGACY_11B) {
@@ -3453,7 +3518,8 @@ ieee80211_beacon_construct(struct mbuf *m, uint8_t *frm,
 	frm = ieee80211_add_wpa(frm, vap);
 	if (vap->iv_flags & IEEE80211_F_WME) {
 		bo->bo_wme = frm;
-		frm = ieee80211_add_wme_param(frm, &ic->ic_wme);
+		frm = ieee80211_add_wme_param(frm, &ic->ic_wme,
+		    !! (vap->iv_flags_ext & IEEE80211_FEXT_UAPSD));
 	}
 	if (IEEE80211_IS_CHAN_HT(ni->ni_chan) &&
 	    (vap->iv_flags_ht & IEEE80211_FHT_HTCOMPAT)) {
@@ -3745,7 +3811,8 @@ ieee80211_beacon_update(struct ieee80211_node *ni, struct mbuf *m, int mcast)
 					wme->wme_hipri_switch_hysteresis;
 		}
 		if (isset(bo->bo_flags, IEEE80211_BEACON_WME)) {
-			(void) ieee80211_add_wme_param(bo->bo_wme, wme);
+			(void) ieee80211_add_wme_param(bo->bo_wme, wme,
+			  vap->iv_flags_ext & IEEE80211_FEXT_UAPSD);
 			clrbit(bo->bo_flags, IEEE80211_BEACON_WME);
 		}
 	}

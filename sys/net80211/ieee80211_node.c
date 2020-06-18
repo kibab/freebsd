@@ -80,6 +80,7 @@ static int ieee80211_sta_join1(struct ieee80211_node *);
 
 static struct ieee80211_node *node_alloc(struct ieee80211vap *,
 	const uint8_t [IEEE80211_ADDR_LEN]);
+static int node_init(struct ieee80211_node *);
 static void node_cleanup(struct ieee80211_node *);
 static void node_free(struct ieee80211_node *);
 static void node_age(struct ieee80211_node *);
@@ -116,6 +117,7 @@ ieee80211_node_attach(struct ieee80211com *ic)
 		ieee80211_node_timeout, ic);
 
 	ic->ic_node_alloc = node_alloc;
+	ic->ic_node_init = node_init;
 	ic->ic_node_free = node_free;
 	ic->ic_node_cleanup = node_cleanup;
 	ic->ic_node_age = node_age;
@@ -446,7 +448,7 @@ ieee80211_reset_bss(struct ieee80211vap *vap)
 
 	ieee80211_node_table_reset(&ic->ic_sta, vap);
 	/* XXX multi-bss: wrong */
-	ieee80211_reset_erp(ic);
+	ieee80211_vap_reset_erp(vap);
 
 	ni = ieee80211_alloc_node(&ic->ic_sta, vap, vap->iv_myaddr);
 	KASSERT(ni != NULL, ("unable to setup initial BSS node"));
@@ -682,7 +684,7 @@ ieee80211_ibss_merge(struct ieee80211_node *ni)
 		"%s: new bssid %s: %s preamble, %s slot time%s\n", __func__,
 		ether_sprintf(ni->ni_bssid),
 		ic->ic_flags&IEEE80211_F_SHPREAMBLE ? "short" : "long",
-		ic->ic_flags&IEEE80211_F_SHSLOT ? "short" : "long",
+		vap->iv_flags&IEEE80211_F_SHSLOT ? "short" : "long",
 		ic->ic_flags&IEEE80211_F_USEPROT ? ", protection" : ""
 	);
 	return ieee80211_sta_join1(ieee80211_ref_node(ni));
@@ -881,7 +883,7 @@ ieee80211_sta_join1(struct ieee80211_node *selbs)
 	 * the auto-select case; this should be redundant if the
 	 * mode is locked.
 	 */
-	ieee80211_reset_erp(ic);
+	ieee80211_vap_reset_erp(vap);
 	ieee80211_wme_initparams(vap);
 
 	if (vap->iv_opmode == IEEE80211_M_STA) {
@@ -1072,6 +1074,12 @@ node_alloc(struct ieee80211vap *vap, const uint8_t macaddr[IEEE80211_ADDR_LEN])
 	ni = (struct ieee80211_node *) IEEE80211_MALLOC(sizeof(struct ieee80211_node),
 		M_80211_NODE, IEEE80211_M_NOWAIT | IEEE80211_M_ZERO);
 	return ni;
+}
+
+static int
+node_init(struct ieee80211_node *ni)
+{
+	return 0;
 }
 
 /*
@@ -1414,6 +1422,15 @@ ieee80211_alloc_node(struct ieee80211_node_table *nt,
 	ni->ni_ic = ic;
 	IEEE80211_NODE_UNLOCK(nt);
 
+	/* handle failure; free node state */
+	if (ic->ic_node_init(ni) != 0) {
+		vap->iv_stats.is_rx_nodealloc++;
+		ieee80211_psq_cleanup(&ni->ni_psq);
+		ieee80211_ratectl_node_deinit(ni);
+		_ieee80211_free_node(ni);
+		return NULL;
+	}
+
 	IEEE80211_NOTE(vap, IEEE80211_MSG_INACT, ni,
 	    "%s: inact_reload %u", __func__, ni->ni_inact_reload);
 
@@ -1456,6 +1473,16 @@ ieee80211_tmp_node(struct ieee80211vap *vap,
 		ieee80211_psq_init(&ni->ni_psq, "unknown");
 
 		ieee80211_ratectl_node_init(ni);
+
+		/* handle failure; free node state */
+		if (ic->ic_node_init(ni) != 0) {
+			vap->iv_stats.is_rx_nodealloc++;
+			ieee80211_psq_cleanup(&ni->ni_psq);
+			ieee80211_ratectl_node_deinit(ni);
+			_ieee80211_free_node(ni);
+			return NULL;
+		}
+
 	} else {
 		/* XXX msg */
 		vap->iv_stats.is_rx_nodealloc++;
@@ -2645,6 +2672,7 @@ static void
 ieee80211_node_join_11g(struct ieee80211_node *ni)
 {
 	struct ieee80211com *ic = ni->ni_ic;
+	struct ieee80211vap *vap = ni->ni_vap;
 
 	IEEE80211_LOCK_ASSERT(ic);
 
@@ -2660,14 +2688,13 @@ ieee80211_node_join_11g(struct ieee80211_node *ni)
 		IEEE80211_NOTE(ni->ni_vap, IEEE80211_MSG_ASSOC, ni,
 		    "station needs long slot time, count %d",
 		    ic->ic_longslotsta);
-		/* XXX vap's w/ conflicting needs won't work */
 		if (!IEEE80211_IS_CHAN_108G(ic->ic_bsschan)) {
 			/*
 			 * Don't force slot time when switched to turbo
 			 * mode as non-ERP stations won't be present; this
 			 * need only be done when on the normal G channel.
 			 */
-			ieee80211_set_shortslottime(ic, 0);
+			ieee80211_vap_set_shortslottime(vap, 0);
 		}
 	}
 	/*
@@ -2754,16 +2781,17 @@ ieee80211_node_join(struct ieee80211_node *ni, int resp)
 	 * XXX VHT - should log VHT channel width, etc
 	 */
 	IEEE80211_NOTE(vap, IEEE80211_MSG_ASSOC | IEEE80211_MSG_DEBUG, ni,
-	    "station associated at aid %d: %s preamble, %s slot time%s%s%s%s%s%s%s%s",
+	    "station associated at aid %d: %s preamble, %s slot time%s%s%s%s%s%s%s%s%s",
 	    IEEE80211_NODE_AID(ni),
 	    ic->ic_flags & IEEE80211_F_SHPREAMBLE ? "short" : "long",
-	    ic->ic_flags & IEEE80211_F_SHSLOT ? "short" : "long",
+	    vap->iv_flags & IEEE80211_F_SHSLOT ? "short" : "long",
 	    ic->ic_flags & IEEE80211_F_USEPROT ? ", protection" : "",
 	    ni->ni_flags & IEEE80211_NODE_QOS ? ", QoS" : "",
 	    /* XXX update for VHT string */
 	    ni->ni_flags & IEEE80211_NODE_HT ?
 		(ni->ni_chw == 40 ? ", HT40" : ", HT20") : "",
 	    ni->ni_flags & IEEE80211_NODE_AMPDU ? " (+AMPDU)" : "",
+	    ni->ni_flags & IEEE80211_NODE_AMSDU ? " (+AMSDU)" : "",
 	    ni->ni_flags & IEEE80211_NODE_MIMO_RTS ? " (+SMPS-DYN)" :
 	        ni->ni_flags & IEEE80211_NODE_MIMO_PS ? " (+SMPS)" : "",
 	    ni->ni_flags & IEEE80211_NODE_RIFS ? " (+RIFS)" : "",
@@ -2810,6 +2838,7 @@ static void
 ieee80211_node_leave_11g(struct ieee80211_node *ni)
 {
 	struct ieee80211com *ic = ni->ni_ic;
+	struct ieee80211vap *vap = ni->ni_vap;
 
 	IEEE80211_LOCK_ASSERT(ic);
 
@@ -2838,7 +2867,7 @@ ieee80211_node_leave_11g(struct ieee80211_node *ni)
 				    IEEE80211_MSG_ASSOC,
 				    "%s: re-enable use of short slot time\n",
 				    __func__);
-				ieee80211_set_shortslottime(ic, 1);
+				ieee80211_vap_set_shortslottime(vap, 1);
 			}
 		}
 	}

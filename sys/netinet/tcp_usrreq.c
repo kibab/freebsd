@@ -552,6 +552,10 @@ tcp_usr_connect(struct socket *so, struct sockaddr *nam, struct thread *td)
 	if (sinp->sin_family == AF_INET
 	    && IN_MULTICAST(ntohl(sinp->sin_addr.s_addr)))
 		return (EAFNOSUPPORT);
+	if ((sinp->sin_family == AF_INET) &&
+	    ((ntohl(sinp->sin_addr.s_addr) == INADDR_BROADCAST) ||
+	     (sinp->sin_addr.s_addr == INADDR_ANY)))
+		return(EAFNOSUPPORT);
 	if ((error = prison_remote_ip4(td->td_ucred, &sinp->sin_addr)) != 0)
 		return (error);
 
@@ -649,6 +653,11 @@ tcp6_usr_connect(struct socket *so, struct sockaddr *nam, struct thread *td)
 
 		in6_sin6_2_sin(&sin, sin6);
 		if (IN_MULTICAST(ntohl(sin.sin_addr.s_addr))) {
+			error = EAFNOSUPPORT;
+			goto out;
+		}
+		if ((ntohl(sin.sin_addr.s_addr) == INADDR_BROADCAST) ||
+		    (sin.sin_addr.s_addr == INADDR_ANY)) {
 			error = EAFNOSUPPORT;
 			goto out;
 		}
@@ -1024,6 +1033,13 @@ tcp_usr_send(struct socket *so, int flags, struct mbuf *m,
 				error = EAFNOSUPPORT;
 				goto out;
 			}
+			if ((ntohl(sinp->sin_addr.s_addr) == INADDR_BROADCAST) ||
+			    (sinp->sin_addr.s_addr == INADDR_ANY)) {
+				if (m)
+					m_freem(m);
+				error = EAFNOSUPPORT;
+				goto out;
+			}
 			if ((error = prison_remote_ip4(td->td_ucred,
 			    &sinp->sin_addr))) {
 				if (m)
@@ -1179,6 +1195,16 @@ tcp_usr_send(struct socket *so, int flags, struct mbuf *m,
 			 */
 			socantsendmore(so);
 			tcp_usrclosed(tp);
+		}
+		if (TCPS_HAVEESTABLISHED(tp->t_state) &&
+		    ((tp->t_flags2 & TF2_FBYTES_COMPLETE) == 0) &&
+		    (tp->t_fbyte_out == 0) &&
+		    (so->so_snd.sb_ccc > 0)) {
+			tp->t_fbyte_out = ticks;
+			if (tp->t_fbyte_out == 0)
+				tp->t_fbyte_out = 1;
+			if (tp->t_fbyte_out && tp->t_fbyte_in)
+				tp->t_flags2 |= TF2_FBYTES_COMPLETE;
 		}
 		if (!(inp->inp_flags & INP_DROPPED) &&
 		    !(flags & PRUS_NOTREADY)) {
@@ -2239,6 +2265,11 @@ unlock_and_done:
 				return (error);
 
 			INP_WLOCK_RECHECK(inp);
+			if ((tp->t_state != TCPS_CLOSED) &&
+			    (tp->t_state != TCPS_LISTEN)) {
+				error = EINVAL;
+				goto unlock_and_done;
+			}
 			if (tfo_optval.enable) {
 				if (tp->t_state == TCPS_LISTEN) {
 					if (!V_tcp_fastopen_server_enable) {
@@ -2246,7 +2277,6 @@ unlock_and_done:
 						goto unlock_and_done;
 					}
 
-					tp->t_flags |= TF_FASTOPEN;
 					if (tp->t_tfo_pending == NULL)
 						tp->t_tfo_pending =
 						    tcp_fastopen_alloc_counter();
@@ -2265,8 +2295,8 @@ unlock_and_done:
 						tp->t_tfo_client_cookie_len =
 						    TCP_FASTOPEN_PSK_LEN;
 					}
-					tp->t_flags |= TF_FASTOPEN;
 				}
+				tp->t_flags |= TF_FASTOPEN;
 			} else
 				tp->t_flags &= ~TF_FASTOPEN;
 			goto unlock_and_done;

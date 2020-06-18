@@ -136,7 +136,8 @@ static void objlist_put_after(Objlist *, Obj_Entry *, Obj_Entry *);
 static void objlist_remove(Objlist *, Obj_Entry *);
 static int open_binary_fd(const char *argv0, bool search_in_path,
     const char **binpath_res);
-static int parse_args(char* argv[], int argc, bool *use_pathp, int *fdp);
+static int parse_args(char* argv[], int argc, bool *use_pathp, int *fdp,
+    const char **argv0);
 static int parse_integer(const char *);
 static void *path_enumerate(const char *, path_enum_proc, const char *, void *);
 static void print_usage(const char *argv0);
@@ -383,11 +384,12 @@ _rtld(Elf_Addr *sp, func_ptr_type *exit_proc, Obj_Entry **objp)
     const char *argv0, *binpath;
     caddr_t imgentry;
     char buf[MAXPATHLEN];
-    int argc, fd, i, phnum, rtld_argc;
+    int argc, fd, i, mib[4], old_osrel, osrel, phnum, rtld_argc;
+    size_t sz;
 #ifdef __powerpc__
     int old_auxv_format = 1;
 #endif
-    bool dir_enable, explicit_fd, search_in_path;
+    bool dir_enable, direct_exec, explicit_fd, search_in_path;
 
     /*
      * On entry, the dynamic linker itself has not been relocated yet.
@@ -450,6 +452,7 @@ _rtld(Elf_Addr *sp, func_ptr_type *exit_proc, Obj_Entry **objp)
 	    ld_fast_sigblock = true;
 
     trust = !issetugid();
+    direct_exec = false;
 
     md_abi_variant_hook(aux_info);
 
@@ -465,10 +468,24 @@ _rtld(Elf_Addr *sp, func_ptr_type *exit_proc, Obj_Entry **objp)
 		    argv0);
 		rtld_die();
 	    }
+	    direct_exec = true;
+
+	    /*
+	     * Set osrel for us, it is later reset to the binary'
+	     * value before first instruction of code from the binary
+	     * is executed.
+	     */
+	    mib[0] = CTL_KERN;
+	    mib[1] = KERN_PROC;
+	    mib[2] = KERN_PROC_OSREL;
+	    mib[3] = getpid();
+	    osrel = __FreeBSD_version;
+	    sz = sizeof(old_osrel);
+	    (void)sysctl(mib, 4, &old_osrel, &sz, &osrel, sizeof(osrel));
+
 	    dbg("opening main program in direct exec mode");
 	    if (argc >= 2) {
-		rtld_argc = parse_args(argv, argc, &search_in_path, &fd);
-		argv0 = argv[rtld_argc];
+		rtld_argc = parse_args(argv, argc, &search_in_path, &fd, &argv0);
 		explicit_fd = (fd != -1);
 		binpath = NULL;
 		if (!explicit_fd)
@@ -704,7 +721,8 @@ _rtld(Elf_Addr *sp, func_ptr_type *exit_proc, Obj_Entry **objp)
     preload_tail = globallist_curr(TAILQ_LAST(&obj_list, obj_entry_q));
 
     dbg("loading needed objects");
-    if (load_needed_objects(obj_main, 0) == -1)
+    if (load_needed_objects(obj_main, ld_tracing != NULL ? RTLD_LO_TRACE :
+      0) == -1)
 	rtld_die();
 
     /* Make a list of all objects loaded at startup. */
@@ -803,6 +821,18 @@ _rtld(Elf_Addr *sp, func_ptr_type *exit_proc, Obj_Entry **objp)
      * init functions.
      */
     pre_init();
+
+    if (direct_exec) {
+	/* Set osrel for direct-execed binary */
+	mib[0] = CTL_KERN;
+	mib[1] = KERN_PROC;
+	mib[2] = KERN_PROC_OSREL;
+	mib[3] = getpid();
+	osrel = obj_main->osrel;
+	sz = sizeof(old_osrel);
+	dbg("setting osrel to %d", osrel);
+	(void)sysctl(mib, 4, &old_osrel, &sz, &osrel, sizeof(osrel));
+    }
 
     wlock_acquire(rtld_bind_lock, &lockstate);
 
@@ -1370,6 +1400,8 @@ digest_dynamic1(Obj_Entry *obj, int early, const Elf_Dyn **dyn_rpath,
 		    obj->z_interpose = true;
 		if (dynp->d_un.d_val & DF_1_NODEFLIB)
 		    obj->z_nodeflib = true;
+		if (dynp->d_un.d_val & DF_1_PIE)
+		    obj->z_pie = true;
 	    break;
 
 	default:
@@ -2582,6 +2614,11 @@ do_load_object(int fd, const char *name, char *path, struct stat *sbp,
 	goto errp;
     dbg("%s valid_hash_sysv %d valid_hash_gnu %d dynsymcount %d", obj->path,
 	obj->valid_hash_sysv, obj->valid_hash_gnu, obj->dynsymcount);
+    if (obj->z_pie && (flags & RTLD_LO_TRACE) == 0) {
+	dbg("refusing to load PIE executable \"%s\"", obj->path);
+	_rtld_error("Cannot load PIE binary %s as DSO", obj->path);
+	goto errp;
+    }
     if (obj->z_noopen && (flags & (RTLD_LO_DLOPEN | RTLD_LO_TRACE)) ==
       RTLD_LO_DLOPEN) {
 	dbg("refusing to load non-loadable \"%s\"", obj->path);
@@ -3402,6 +3439,9 @@ dlopen_object(const char *name, int fd, Obj_Entry *refobj, int lo_flags,
     RtldLockState mlockstate;
     int result;
 
+    dbg("dlopen_object name \"%s\" fd %d refobj \"%s\" lo_flags %#x mode %#x",
+      name != NULL ? name : "<null>", fd, refobj == NULL ? "<null>" :
+      refobj->path, lo_flags, mode);
     objlist_init(&initlist);
 
     if (lockstate == NULL && !(lo_flags & RTLD_LO_EARLY)) {
@@ -3437,7 +3477,7 @@ dlopen_object(const char *name, int fd, Obj_Entry *refobj, int lo_flags,
 	    }
 	    if (result != -1)
 		result = load_needed_objects(obj, lo_flags & (RTLD_LO_DLOPEN |
-		    RTLD_LO_EARLY | RTLD_LO_IGNSTLS));
+		  RTLD_LO_EARLY | RTLD_LO_IGNSTLS | RTLD_LO_TRACE));
 	    init_dag(obj);
 	    ref_dag(obj);
 	    if (result != -1)
@@ -5610,15 +5650,20 @@ open_binary_fd(const char *argv0, bool search_in_path,
  * Parse a set of command-line arguments.
  */
 static int
-parse_args(char* argv[], int argc, bool *use_pathp, int *fdp)
+parse_args(char* argv[], int argc, bool *use_pathp, int *fdp,
+    const char **argv0)
 {
 	const char *arg;
-	int fd, i, j, arglen;
+	char machine[64];
+	size_t sz;
+	int arglen, fd, i, j, mib[2];
 	char opt;
+	bool seen_b, seen_f;
 
 	dbg("Parsing command-line arguments");
 	*use_pathp = false;
 	*fdp = -1;
+	seen_b = seen_f = false;
 
 	for (i = 1; i < argc; i++ ) {
 		arg = argv[i];
@@ -5645,7 +5690,21 @@ parse_args(char* argv[], int argc, bool *use_pathp, int *fdp)
 			if (opt == 'h') {
 				print_usage(argv[0]);
 				_exit(0);
+			} else if (opt == 'b') {
+				if (seen_f) {
+					_rtld_error("Both -b and -f specified");
+					rtld_die();
+				}
+				i++;
+				*argv0 = argv[i];
+				seen_b = true;
+				break;
 			} else if (opt == 'f') {
+				if (seen_b) {
+					_rtld_error("Both -b and -f specified");
+					rtld_die();
+				}
+
 				/*
 				 * -f XX can be used to specify a
 				 * descriptor for the binary named at
@@ -5669,9 +5728,28 @@ parse_args(char* argv[], int argc, bool *use_pathp, int *fdp)
 					rtld_die();
 				}
 				*fdp = fd;
+				seen_f = true;
 				break;
 			} else if (opt == 'p') {
 				*use_pathp = true;
+			} else if (opt == 'v') {
+				machine[0] = '\0';
+				mib[0] = CTL_HW;
+				mib[1] = HW_MACHINE;
+				sz = sizeof(machine);
+				sysctl(mib, nitems(mib), machine, &sz, NULL, 0);
+				rtld_printf(
+				    "FreeBSD ld-elf.so.1 %s\n"
+				    "FreeBSD_version %d\n"
+				    "Default lib path %s\n"
+				    "Env prefix %s\n"
+				    "Hint file %s\n"
+				    "libmap file %s\n",
+				    machine,
+				    __FreeBSD_version, ld_standard_library_path,
+				    ld_env_prefix, ld_elf_hints_default,
+				    ld_path_libmap_conf);
+				_exit(0);
 			} else {
 				_rtld_error("Invalid argument: '%s'", arg);
 				print_usage(argv[0]);
@@ -5680,6 +5758,8 @@ parse_args(char* argv[], int argc, bool *use_pathp, int *fdp)
 		}
 	}
 
+	if (!seen_b)
+		*argv0 = argv[i];
 	return (i);
 }
 
@@ -5714,15 +5794,18 @@ static void
 print_usage(const char *argv0)
 {
 
-	rtld_printf("Usage: %s [-h] [-f <FD>] [--] <binary> [<args>]\n"
-		"\n"
-		"Options:\n"
-		"  -h        Display this help message\n"
-		"  -p        Search in PATH for named binary\n"
-		"  -f <FD>   Execute <FD> instead of searching for <binary>\n"
-		"  --        End of RTLD options\n"
-		"  <binary>  Name of process to execute\n"
-		"  <args>    Arguments to the executed process\n", argv0);
+	rtld_printf(
+	    "Usage: %s [-h] [-b <exe>] [-f <FD>] [-p] [--] <binary> [<args>]\n"
+	    "\n"
+	    "Options:\n"
+	    "  -h        Display this help message\n"
+	    "  -b <exe>  Execute <exe> instead of <binary>, arg0 is <binary>\n"
+	    "  -f <FD>   Execute <FD> instead of searching for <binary>\n"
+	    "  -p        Search in PATH for named binary\n"
+	    "  -v        Display identification information\n"
+	    "  --        End of RTLD options\n"
+	    "  <binary>  Name of process to execute\n"
+	    "  <args>    Arguments to the executed process\n", argv0);
 }
 
 /*

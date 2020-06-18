@@ -79,15 +79,19 @@ static const struct {
 	char		quirks_off;
 } hdac_devices[] = {
 	{ HDA_INTEL_OAK,     "Intel Oaktrail",	0, 0 },
+	{ HDA_INTEL_CMLKLP,  "Intel Comet Lake-LP",	0, 0 },
+	{ HDA_INTEL_CMLKH,   "Intel Comet Lake-H",	0, 0 },
 	{ HDA_INTEL_BAY,     "Intel BayTrail",	0, 0 },
 	{ HDA_INTEL_HSW1,    "Intel Haswell",	0, 0 },
 	{ HDA_INTEL_HSW2,    "Intel Haswell",	0, 0 },
 	{ HDA_INTEL_HSW3,    "Intel Haswell",	0, 0 },
 	{ HDA_INTEL_BDW1,    "Intel Broadwell",	0, 0 },
 	{ HDA_INTEL_BDW2,    "Intel Broadwell",	0, 0 },
+	{ HDA_INTEL_BXTNT,   "Intel Broxton-T",	0, 0 },
 	{ HDA_INTEL_CPT,     "Intel Cougar Point",	0, 0 },
 	{ HDA_INTEL_PATSBURG,"Intel Patsburg",  0, 0 },
 	{ HDA_INTEL_PPT1,    "Intel Panther Point",	0, 0 },
+	{ HDA_INTEL_BR,      "Intel Braswell",	0, 0 },
 	{ HDA_INTEL_LPT1,    "Intel Lynx Point",	0, 0 },
 	{ HDA_INTEL_LPT2,    "Intel Lynx Point",	0, 0 },
 	{ HDA_INTEL_WCPT,    "Intel Wildcat Point",	0, 0 },
@@ -101,6 +105,7 @@ static const struct {
 	{ HDA_INTEL_KBLK,    "Intel Kaby Lake",	0, 0 },
 	{ HDA_INTEL_KBLKH,   "Intel Kaby Lake-H",	0, 0 },
 	{ HDA_INTEL_CFLK,    "Intel Coffee Lake",	0, 0 },
+	{ HDA_INTEL_CMLKS,   "Intel Comet Lake-S",	0, 0 },
 	{ HDA_INTEL_CNLK,    "Intel Cannon Lake",	0, 0 },
 	{ HDA_INTEL_ICLK,    "Intel Ice Lake",		0, 0 },
 	{ HDA_INTEL_CMLKLP,  "Intel Comet Lake-LP",	0, 0 },
@@ -112,10 +117,14 @@ static const struct {
 	{ HDA_INTEL_82801G,  "Intel 82801G",	0, 0 },
 	{ HDA_INTEL_82801H,  "Intel 82801H",	0, 0 },
 	{ HDA_INTEL_82801I,  "Intel 82801I",	0, 0 },
+	{ HDA_INTEL_JLK,     "Intel Jasper Lake",	0, 0 },
 	{ HDA_INTEL_82801JI, "Intel 82801JI",	0, 0 },
 	{ HDA_INTEL_82801JD, "Intel 82801JD",	0, 0 },
 	{ HDA_INTEL_PCH,     "Intel Ibex Peak",	0, 0 },
 	{ HDA_INTEL_PCH2,    "Intel Ibex Peak",	0, 0 },
+	{ HDA_INTEL_ELLK,    "Intel Elkhart Lake",	0, 0 },
+	{ HDA_INTEL_JLK2,    "Intel Jasper Lake",	0, 0 },
+	{ HDA_INTEL_BXTNP,   "Intel Broxton-P",	0, 0 },
 	{ HDA_INTEL_SCH,     "Intel SCH",	0, 0 },
 	{ HDA_NVIDIA_MCP51,  "NVIDIA MCP51",	0, HDAC_QUIRK_MSI },
 	{ HDA_NVIDIA_MCP55,  "NVIDIA MCP55",	0, HDAC_QUIRK_MSI },
@@ -173,6 +182,10 @@ static const struct {
 	{ HDA_ATI_RV940,     "ATI RV940",	0, 0 },
 	{ HDA_ATI_RV970,     "ATI RV970",	0, 0 },
 	{ HDA_ATI_R1000,     "ATI R1000",	0, 0 },
+	{ HDA_AMD_X370,      "AMD X370",	0, 0 },
+	{ HDA_AMD_X570,      "AMD X570",	0, 0 },
+	{ HDA_AMD_STONEY,    "AMD Stoney",	0, 0 },
+	{ HDA_AMD_RAVEN,     "AMD Raven",	0, 0 },
 	{ HDA_AMD_HUDSON2,   "AMD Hudson-2",	0, 0 },
 	{ HDA_RDC_M3010,     "RDC M3010",	0, 0 },
 	{ HDA_VIA_VT82XX,    "VIA VT8251/8237A",0, 0 },
@@ -290,29 +303,12 @@ hdac_config_fetch(struct hdac_softc *sc, uint32_t *on, uint32_t *off)
 	}
 }
 
-/****************************************************************************
- * void hdac_intr_handler(void *)
- *
- * Interrupt handler. Processes interrupts received from the hdac.
- ****************************************************************************/
 static void
-hdac_intr_handler(void *context)
+hdac_one_intr(struct hdac_softc *sc, uint32_t intsts)
 {
-	struct hdac_softc *sc;
 	device_t dev;
-	uint32_t intsts;
 	uint8_t rirbsts;
 	int i;
-
-	sc = (struct hdac_softc *)context;
-	hdac_lock(sc);
-
-	/* Do we have anything to do? */
-	intsts = HDAC_READ_4(&sc->mem, HDAC_INTSTS);
-	if ((intsts & HDAC_INTSTS_GIS) == 0) {
-		hdac_unlock(sc);
-		return;
-	}
 
 	/* Was this a controller interrupt? */
 	if (intsts & HDAC_INTSTS_CIS) {
@@ -333,16 +329,45 @@ hdac_intr_handler(void *context)
 			if ((intsts & (1 << i)) == 0)
 				continue;
 			HDAC_WRITE_1(&sc->mem, (i << 5) + HDAC_SDSTS,
-			    HDAC_SDSTS_DESE | HDAC_SDSTS_FIFOE | HDAC_SDSTS_BCIS );
+			    HDAC_SDSTS_DESE | HDAC_SDSTS_FIFOE | HDAC_SDSTS_BCIS);
 			if ((dev = sc->streams[i].dev) != NULL) {
 				HDAC_STREAM_INTR(dev,
 				    sc->streams[i].dir, sc->streams[i].stream);
 			}
 		}
 	}
+}
 
-	HDAC_WRITE_4(&sc->mem, HDAC_INTSTS, intsts);
-	hdac_unlock(sc);
+/****************************************************************************
+ * void hdac_intr_handler(void *)
+ *
+ * Interrupt handler. Processes interrupts received from the hdac.
+ ****************************************************************************/
+static void
+hdac_intr_handler(void *context)
+{
+	struct hdac_softc *sc;
+	uint32_t intsts;
+
+	sc = (struct hdac_softc *)context;
+
+	/*
+	 * Loop until HDAC_INTSTS_GIS gets clear.
+	 * It is plausible that hardware interrupts a host only when GIS goes
+	 * from zero to one.  GIS is formed by OR-ing multiple hardware
+	 * statuses, so it's possible that a previously cleared status gets set
+	 * again while another status has not been cleared yet.  Thus, there
+	 * will be no new interrupt as GIS always stayed set.  If we don't
+	 * re-examine GIS then we can leave it set and never get an interrupt
+	 * again.
+	 */
+	intsts = HDAC_READ_4(&sc->mem, HDAC_INTSTS);
+	while ((intsts & HDAC_INTSTS_GIS) != 0) {
+		hdac_lock(sc);
+		hdac_one_intr(sc, intsts);
+		hdac_unlock(sc);
+		intsts = HDAC_READ_4(&sc->mem, HDAC_INTSTS);
+	}
 }
 
 static void

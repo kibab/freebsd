@@ -1052,11 +1052,6 @@ bool ncl_pager_setsize(struct vnode *vp, u_quad_t *nsizep);
 				    (n)->nm_minorvers > 0)
 
 /*
- * Gets the stats field out of the mount structure.
- */
-#define	vfs_statfs(m)	(&((m)->mnt_stat))
-
-/*
  * Set boottime.
  */
 #define	NFSSETBOOTTIME(b)	(getboottime(&b))
@@ -1079,6 +1074,11 @@ bool ncl_pager_setsize(struct vnode *vp, u_quad_t *nsizep);
 struct nfsex_args {
 	char	*fspec;
 	struct export_args	export;
+};
+
+struct nfsex_oldargs {
+	char	*fspec;
+	struct o2export_args	export;
 };
 
 /*

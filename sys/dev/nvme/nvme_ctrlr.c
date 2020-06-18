@@ -520,7 +520,7 @@ nvme_ctrlr_create_qpairs(struct nvme_controller *ctrlr)
 		}
 
 		status.done = 0;
-		nvme_ctrlr_cmd_create_io_sq(qpair->ctrlr, qpair,
+		nvme_ctrlr_cmd_create_io_sq(ctrlr, qpair,
 		    nvme_completion_poll_cb, &status);
 		nvme_completion_poll(&status);
 		if (nvme_completion_is_error(&status.cpl)) {
@@ -1126,12 +1126,14 @@ nvme_ctrlr_start_config_hook(void *arg)
 	status = nvme_ctrlr_hw_reset(ctrlr);
 	if (status != 0) {
 		nvme_ctrlr_fail(ctrlr);
+		config_intrhook_disestablish(&ctrlr->config_hook);
 		return;
 	}
 
 	status = nvme_ctrlr_hw_reset(ctrlr);
 	if (status != 0) {
 		nvme_ctrlr_fail(ctrlr);
+		config_intrhook_disestablish(&ctrlr->config_hook);
 		return;
 	}
 
@@ -1456,8 +1458,8 @@ nvme_ctrlr_destruct(struct nvme_controller *ctrlr, device_t dev)
 			nvme_io_qpair_destroy(&ctrlr->ioq[i]);
 		free(ctrlr->ioq, M_NVME);
 		nvme_ctrlr_hmb_free(ctrlr);
-		nvme_admin_qpair_destroy(&ctrlr->adminq);
 	}
+	nvme_admin_qpair_destroy(&ctrlr->adminq);
 
 	/*
 	 *  Notify the controller of a shutdown, even though this is due to

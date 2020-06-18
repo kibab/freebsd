@@ -57,7 +57,6 @@ __FBSDID("$FreeBSD$");
 #include <sys/smp.h>
 #include <sys/unistd.h>
 
-
 VNET_DEFINE(struct sctp_base_info, system_base_info);
 
 /* FIX: we don't handle multiple link local scopes */
@@ -302,8 +301,6 @@ sctp_delete_ifn(struct sctp_ifn *sctp_ifnp, int hold_addr_lock)
 		SCTP_IPI_ADDR_WLOCK();
 	LIST_REMOVE(sctp_ifnp, next_bucket);
 	LIST_REMOVE(sctp_ifnp, next_ifn);
-	SCTP_DEREGISTER_INTERFACE(sctp_ifnp->ifn_index,
-	    sctp_ifnp->registered_af);
 	if (hold_addr_lock == 0)
 		SCTP_IPI_ADDR_WUNLOCK();
 	/* Take away the reference, and possibly free it */
@@ -431,7 +428,6 @@ sctp_add_ifa_to_ifn(struct sctp_ifn *sctp_ifnp, struct sctp_ifa *sctp_ifap)
 	}
 	if (sctp_ifnp->ifa_count == 1) {
 		/* register the new interface */
-		SCTP_REGISTER_INTERFACE(sctp_ifnp->ifn_index, ifa_af);
 		sctp_ifnp->registered_af = ifa_af;
 	}
 }
@@ -472,13 +468,9 @@ sctp_remove_ifa_from_ifn(struct sctp_ifa *sctp_ifap)
 			/* re-register address family type, if needed */
 			if ((sctp_ifap->ifn_p->num_v6 == 0) &&
 			    (sctp_ifap->ifn_p->registered_af == AF_INET6)) {
-				SCTP_DEREGISTER_INTERFACE(sctp_ifap->ifn_p->ifn_index, AF_INET6);
-				SCTP_REGISTER_INTERFACE(sctp_ifap->ifn_p->ifn_index, AF_INET);
 				sctp_ifap->ifn_p->registered_af = AF_INET;
 			} else if ((sctp_ifap->ifn_p->num_v4 == 0) &&
 			    (sctp_ifap->ifn_p->registered_af == AF_INET)) {
-				SCTP_DEREGISTER_INTERFACE(sctp_ifap->ifn_p->ifn_index, AF_INET);
-				SCTP_REGISTER_INTERFACE(sctp_ifap->ifn_p->ifn_index, AF_INET6);
 				sctp_ifap->ifn_p->registered_af = AF_INET6;
 			}
 			/* free the ifn refcount */
@@ -679,7 +671,6 @@ sctp_add_addr_to_vrf(uint32_t vrf_id, void *ifn, uint32_t ifn_index,
 	vrf->total_ifa_count++;
 	atomic_add_int(&SCTP_BASE_INFO(ipi_count_ifas), 1);
 	if (new_ifn_af) {
-		SCTP_REGISTER_INTERFACE(ifn_index, new_ifn_af);
 		sctp_ifnp->registered_af = new_ifn_af;
 	}
 	SCTP_IPI_ADDR_WUNLOCK();
@@ -749,8 +740,7 @@ sctp_del_addr_from_vrf(uint32_t vrf_id, struct sockaddr *addr,
 
 			/*-
 			 * The name has priority over the ifn_index
-			 * if its given. We do this especially for
-			 * panda who might recycle indexes fast.
+			 * if its given.
 			 */
 			if (if_name) {
 				if (strncmp(if_name, sctp_ifap->ifn_p->ifn_name, SCTP_IFNAMSIZ) == 0) {
@@ -3157,8 +3147,7 @@ continue_anyway:
 		} else {
 			/*
 			 * Note for BSD we hit here always other O/S's will
-			 * pass things in via the sctp_ifap argument
-			 * (Panda).
+			 * pass things in via the sctp_ifap argument.
 			 */
 			ifa = sctp_find_ifa_by_addr(&store.sa,
 			    vrf_id, SCTP_ADDR_NOT_LOCKED);
@@ -4302,11 +4291,7 @@ sctp_aloc_assoc(struct sctp_inpcb *inp, struct sockaddr *firstaddr,
 		 * If you have not performed a bind, then we need to do the
 		 * ephemeral bind for you.
 		 */
-		if ((err = sctp_inpcb_bind(inp->sctp_socket,
-		    (struct sockaddr *)NULL,
-		    (struct sctp_ifa *)NULL,
-		    p
-		    ))) {
+		if ((err = sctp_inpcb_bind(inp->sctp_socket, NULL, NULL, p))) {
 			/* bind error, probably perm */
 			*error = err;
 			return (NULL);
@@ -4674,7 +4659,6 @@ sctp_clean_up_stream(struct sctp_tcb *stcb, struct sctp_readhead *rh)
 		}
 	}
 }
-
 
 /*-
  * Free the association after un-hashing the remote port. This
@@ -5543,18 +5527,14 @@ sctp_del_local_addr_restricted(struct sctp_tcb *stcb, struct sctp_ifa *ifa)
 	return;
 }
 
-/*
- * Temporarily remove for __APPLE__ until we use the Tiger equivalents
- */
 /* sysctl */
 static int sctp_max_number_of_assoc = SCTP_MAX_NUM_OF_ASOC;
 static int sctp_scale_up_for_address = SCTP_SCALE_FOR_ADDR;
 
-
-
-#if defined(__FreeBSD__) && defined(SCTP_MCORE_INPUT) && defined(SMP)
+#if defined(SCTP_MCORE_INPUT) && defined(SMP)
 struct sctp_mcore_ctrl *sctp_mcore_workers = NULL;
 int *sctp_cpuarry = NULL;
+
 void
 sctp_queue_to_mcore(struct mbuf *m, int off, int cpu_to_use)
 {
@@ -5693,7 +5673,6 @@ sctp_startup_mcore_threads(void)
 			i++;
 		}
 	}
-
 	/* Now start them all */
 	CPU_FOREACH(cpu) {
 		(void)kproc_create(sctp_mcore_thread,
@@ -5702,7 +5681,6 @@ sctp_startup_mcore_threads(void)
 		    RFPROC,
 		    SCTP_KTHREAD_PAGES,
 		    SCTP_MCORE_NAME);
-
 	}
 }
 #endif
@@ -5726,13 +5704,13 @@ sctp_pcb_init(void)
 #if defined(SCTP_LOCAL_TRACE_BUF)
 	memset(&SCTP_BASE_SYSCTL(sctp_log), 0, sizeof(struct sctp_log));
 #endif
-#if defined(__FreeBSD__) && defined(SMP) && defined(SCTP_USE_PERCPU_STAT)
+#if defined(SMP) && defined(SCTP_USE_PERCPU_STAT)
 	SCTP_MALLOC(SCTP_BASE_STATS, struct sctpstat *,
 	    ((mp_maxid + 1) * sizeof(struct sctpstat)),
 	    SCTP_M_MCORE);
 #endif
 	(void)SCTP_GETTIME_TIMEVAL(&tv);
-#if defined(__FreeBSD__) && defined(SMP) && defined(SCTP_USE_PERCPU_STAT)
+#if defined(SMP) && defined(SCTP_USE_PERCPU_STAT)
 	memset(SCTP_BASE_STATS, 0, sizeof(struct sctpstat) * (mp_maxid + 1));
 	SCTP_BASE_STATS[PCPU_GET(cpuid)].sctps_discontinuitytime.tv_sec = (uint32_t)tv.tv_sec;
 	SCTP_BASE_STATS[PCPU_GET(cpuid)].sctps_discontinuitytime.tv_usec = (uint32_t)tv.tv_usec;
@@ -5843,7 +5821,7 @@ sctp_pcb_init(void)
 	}
 	sctp_startup_iterator();
 
-#if defined(__FreeBSD__) && defined(SCTP_MCORE_INPUT) && defined(SMP)
+#if defined(SCTP_MCORE_INPUT) && defined(SMP)
 	sctp_startup_mcore_threads();
 #endif
 
@@ -5888,7 +5866,7 @@ retry:
 	 * holding the lock.  We won't find it on the list either and
 	 * continue and free/destroy it.  While holding the lock, spin, to
 	 * avoid the race condition as sctp_iterator_worker() will have to
-	 * wait to re-aquire the lock.
+	 * wait to re-acquire the lock.
 	 */
 	if (sctp_it_ctl.iterator_running != 0 || sctp_it_ctl.cur_it != NULL) {
 		SCTP_IPI_ITERATOR_WQ_UNLOCK();
@@ -5998,7 +5976,7 @@ retry:
 	SCTP_ZONE_DESTROY(SCTP_BASE_INFO(ipi_zone_strmoq));
 	SCTP_ZONE_DESTROY(SCTP_BASE_INFO(ipi_zone_asconf));
 	SCTP_ZONE_DESTROY(SCTP_BASE_INFO(ipi_zone_asconf_ack));
-#if defined(__FreeBSD__) && defined(SMP) && defined(SCTP_USE_PERCPU_STAT)
+#if defined(SMP) && defined(SCTP_USE_PERCPU_STAT)
 	SCTP_FREE(SCTP_BASE_STATS, SCTP_M_MCORE);
 #endif
 }

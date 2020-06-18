@@ -132,6 +132,8 @@ struct ieee80211_rx_ampdu;
 struct ieee80211_superg;
 struct ieee80211_frame;
 
+struct net80211dump_methods;
+
 struct ieee80211com {
 	void			*ic_softc;	/* driver softc */
 	const char		*ic_name;	/* usually device name */
@@ -308,11 +310,22 @@ struct ieee80211com {
 	/* TDMA update notification */
 	void			(*ic_tdma_update)(struct ieee80211_node *,
 				    const struct ieee80211_tdma_param *, int);
-	/* node state management */
+
+	/* Node state management */
+
+	/* Allocate a new node */
 	struct ieee80211_node*	(*ic_node_alloc)(struct ieee80211vap *,
 				    const uint8_t [IEEE80211_ADDR_LEN]);
+
+	/* Driver node initialisation after net80211 setup */
+	int			(*ic_node_init)(struct ieee80211_node *);
+
+	/* Driver node deallocation */
 	void			(*ic_node_free)(struct ieee80211_node *);
+
+	/* Driver node state cleanup before deallocation */
 	void			(*ic_node_cleanup)(struct ieee80211_node *);
+
 	void			(*ic_node_age)(struct ieee80211_node *);
 	void			(*ic_node_drain)(struct ieee80211_node *);
 	int8_t			(*ic_node_getrssi)(const struct ieee80211_node*);
@@ -370,6 +383,7 @@ struct ieee80211com {
 	/* The channel width has changed (20<->2040) */
 	void			(*ic_update_chw)(struct ieee80211com *);
 
+	const struct debugnet80211_methods	*ic_debugnet_meth;
 	uint64_t		ic_spare[7];
 };
 
@@ -563,6 +577,13 @@ struct ieee80211vap {
 				    const struct wmeParams *wme_params);
 	struct task		iv_wme_task;	/* deferred VAP WME update */
 
+	/* update device state for 802.11 slot time change */
+	void			(*iv_updateslot)(struct ieee80211vap *);
+	struct task		iv_slot_task;	/* deferred slot time update */
+
+	/* per-vap U-APSD state */
+	uint8_t			iv_uapsdinfo;	/* sta mode QoS Info flags */
+
 	uint64_t		iv_spare[6];
 };
 MALLOC_DECLARE(M_80211_VAP);
@@ -644,6 +665,7 @@ MALLOC_DECLARE(M_80211_VAP);
 #define	IEEE80211_FEXT_FRAG_OFFLOAD	0x00200000	/* CONF: hardware does 802.11 fragmentation + assignment */
 #define	IEEE80211_FEXT_VHT	0x00400000	/* CONF: VHT support */
 #define	IEEE80211_FEXT_QUIET_IE	0x00800000	/* STATUS: quiet IE in a beacon has been added */
+#define	IEEE80211_FEXT_UAPSD	0x01000000	/* CONF: enable U-APSD */
 
 #define	IEEE80211_FEXT_BITS \
 	"\20\2INACT\3SCANWAIT\4BGSCAN\5WPS\6TSN\7SCANREQ\10RESUME" \

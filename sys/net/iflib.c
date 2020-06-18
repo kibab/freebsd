@@ -788,13 +788,19 @@ iflib_netmap_register(struct netmap_adapter *na, int onoff)
 	if (!CTX_IS_VF(ctx))
 		IFDI_CRCSTRIP_SET(ctx, onoff, iflib_crcstrip);
 
-	/* enable or disable flags and callbacks in na and ifp */
+	iflib_stop(ctx);
+
+	/*
+	 * Enable (or disable) netmap flags, and intercept (or restore)
+	 * ifp->if_transmit. This is done once the device has been stopped
+	 * to prevent race conditions.
+	 */
 	if (onoff) {
 		nm_set_native_flags(na);
 	} else {
 		nm_clear_native_flags(na);
 	}
-	iflib_stop(ctx);
+
 	iflib_init_locked(ctx);
 	IFDI_CRCSTRIP_SET(ctx, onoff, iflib_crcstrip); // XXX why twice ?
 	status = ifp->if_drv_flags & IFF_DRV_RUNNING ? 0 : 1;
@@ -3790,6 +3796,10 @@ _task_fn_rx(void *context)
 	if_ctx_t ctx = rxq->ifr_ctx;
 	uint8_t more;
 	uint16_t budget;
+#ifdef DEV_NETMAP
+	u_int work = 0;
+	int nmirq;
+#endif
 
 #ifdef IFLIB_DIAGNOSTICS
 	rxq->ifr_cpu_exec_count[curcpu]++;
@@ -3798,12 +3808,10 @@ _task_fn_rx(void *context)
 	if (__predict_false(!(if_getdrvflags(ctx->ifc_ifp) & IFF_DRV_RUNNING)))
 		return;
 #ifdef DEV_NETMAP
-	if (if_getcapenable(ctx->ifc_ifp) & IFCAP_NETMAP) {
-		u_int work = 0;
-		if (netmap_rx_irq(ctx->ifc_ifp, rxq->ifr_id, &work)) {
-			more = 0;
-			goto skip_rxeof;
-		}
+	nmirq = netmap_rx_irq(ctx->ifc_ifp, rxq->ifr_id, &work);
+	if (nmirq != NM_IRQ_PASS) {
+		more = (nmirq == NM_IRQ_RESCHED) ? IFLIB_RXEOF_MORE : 0;
+		goto skip_rxeof;
 	}
 #endif
 	budget = ctx->ifc_sysctl_rx_budget;
@@ -4902,6 +4910,7 @@ iflib_pseudo_register(device_t dev, if_shared_ctx_t sctx, if_ctx_t *ctxp,
 		if_setgetcounterfn(ctx->ifc_ifp, iflib_if_get_counter);
 		iflib_add_device_sysctl_post(ctx);
 		ctx->ifc_flags |= IFC_INIT_DONE;
+		CTX_UNLOCK(ctx);
 		return (0);
 	}
 	_iflib_pre_assert(scctx);
@@ -5354,7 +5363,8 @@ iflib_register(if_ctx_t ctx)
 	device_t dev = ctx->ifc_dev;
 	if_t ifp;
 
-	_iflib_assert(sctx);
+	if ((sctx->isc_flags & IFLIB_PSEUDO) == 0)
+		_iflib_assert(sctx);
 
 	CTX_LOCK_INIT(ctx);
 	STATE_LOCK_INIT(ctx, device_get_nameunit(ctx->ifc_dev));

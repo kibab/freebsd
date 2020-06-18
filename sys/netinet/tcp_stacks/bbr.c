@@ -6028,7 +6028,7 @@ bbr_log_output(struct tcp_bbr *bbr, struct tcpcb *tp, struct tcpopt *to, int32_t
 		 * or FIN if seq_out is adding more on and a FIN is present
 		 * (and we are not resending).
 		 */
-		if (th_flags & TH_SYN)
+		if ((th_flags & TH_SYN) && (tp->iss == seq_out))
 			len++;
 		if (th_flags & TH_FIN)
 			len++;
@@ -8078,7 +8078,7 @@ bbr_restart_after_idle(struct tcp_bbr *bbr, uint32_t cts, uint32_t idle_time)
 			bbr->r_ctl.rc_bbr_hptsi_gain = bbr->r_ctl.rc_startup_pg;
 			bbr->r_ctl.rc_bbr_cwnd_gain = bbr->r_ctl.rc_startup_pg;
 			bbr_log_type_statechange(bbr, cts, __LINE__);
-		} else {
+		} else if (bbr->rc_bbr_state == BBR_STATE_PROBE_BW) {
 			bbr_substate_change(bbr, cts, __LINE__, 1);
 		}
 	}
@@ -8369,7 +8369,7 @@ bbr_process_data(struct mbuf *m, struct tcphdr *th, struct socket *so,
 	 */
 	tfo_syn = ((tp->t_state == TCPS_SYN_RECEIVED) &&
 		   IS_FASTOPEN(tp->t_flags));
-	if ((tlen || (thflags & TH_FIN) || tfo_syn) &&
+	if ((tlen || (thflags & TH_FIN) || (tfo_syn && tlen > 0)) &&
 	    TCPS_HAVERCVDFIN(tp->t_state) == 0) {
 		tcp_seq save_start = th->th_seq;
 		tcp_seq save_rnxt  = tp->rcv_nxt;
@@ -8415,6 +8415,15 @@ bbr_process_data(struct mbuf *m, struct tcphdr *th, struct socket *so,
 				tp->t_flags |= TF_ACKNOW;
 			}
 			tp->rcv_nxt += tlen;
+			if (tlen &&
+			    ((tp->t_flags2 & TF2_FBYTES_COMPLETE) == 0) &&
+			    (tp->t_fbyte_in == 0)) {
+				tp->t_fbyte_in = ticks;
+				if (tp->t_fbyte_in == 0)
+					tp->t_fbyte_in = 1;
+				if (tp->t_fbyte_out && tp->t_fbyte_in)
+					tp->t_flags2 |= TF2_FBYTES_COMPLETE;
+			}
 			thflags = th->th_flags & TH_FIN;
 			KMOD_TCPSTAT_ADD(tcps_rcvpack, (int)nsegs);
 			KMOD_TCPSTAT_ADD(tcps_rcvbyte, tlen);
@@ -8631,6 +8640,15 @@ bbr_do_fastnewdata(struct mbuf *m, struct tcphdr *th, struct socket *so,
 		tcp_clean_sackreport(tp);
 	KMOD_TCPSTAT_INC(tcps_preddat);
 	tp->rcv_nxt += tlen;
+	if (tlen &&
+	    ((tp->t_flags2 & TF2_FBYTES_COMPLETE) == 0) &&
+	    (tp->t_fbyte_in == 0)) {
+		tp->t_fbyte_in = ticks;
+		if (tp->t_fbyte_in == 0)
+			tp->t_fbyte_in = 1;
+		if (tp->t_fbyte_out && tp->t_fbyte_in)
+			tp->t_flags2 |= TF2_FBYTES_COMPLETE;
+	}
 	/*
 	 * Pull snd_wl1 up to prevent seq wrap relative to th_seq.
 	 */
@@ -11982,21 +12000,27 @@ bbr_window_update_needed(struct tcpcb *tp, struct socket *so, uint32_t recwin, i
 	 * "adv" is the amount we could increase the window, taking into
 	 * account that we are limited by TCP_MAXWIN << tp->rcv_scale.
 	 */
-	uint32_t adv;
+	int32_t adv;
 	int32_t oldwin;
 
-	adv = min(recwin, TCP_MAXWIN << tp->rcv_scale);
+	adv = recwin;
 	if (SEQ_GT(tp->rcv_adv, tp->rcv_nxt)) {
 		oldwin = (tp->rcv_adv - tp->rcv_nxt);
-		adv -= oldwin;
+		if (adv > oldwin)
+			adv -= oldwin;
+		else {
+			/* We can't increase the window */
+			adv = 0;
+		}
 	} else
 		oldwin = 0;
 
 	/*
-	 * If the new window size ends up being the same as the old size
-	 * when it is scaled, then don't force a window update.
+	 * If the new window size ends up being the same as or less
+	 * than the old size when it is scaled, then don't force
+	 * a window update.
 	 */
-	if (oldwin >> tp->rcv_scale == (adv + oldwin) >> tp->rcv_scale)
+	if (oldwin >> tp->rcv_scale >= (adv + oldwin) >> tp->rcv_scale)
 		return (0);
 
 	if (adv >= (2 * maxseg) &&
@@ -12133,8 +12157,8 @@ bbr_output_wtime(struct tcpcb *tp, const struct timeval *tv)
 			 * have gotten more data into the socket buffer to
 			 * send.
 			 */
-			recwin = min(max(sbspace(&so->so_rcv), 0),
-			    TCP_MAXWIN << tp->rcv_scale);
+			recwin = lmin(lmax(sbspace(&so->so_rcv), 0),
+				      (long)TCP_MAXWIN << tp->rcv_scale);
 			if ((bbr_window_update_needed(tp, so, recwin, maxseg) == 0) &&
 			    ((tcp_outflags[tp->t_state] & TH_RST) == 0) &&
 			    ((sbavail(sb) + ((tcp_outflags[tp->t_state] & TH_FIN) ? 1 : 0)) <=
@@ -12815,8 +12839,8 @@ recheck_resend:
 	    ipoptlen == 0)
 		tso = 1;
 
-	recwin = min(max(sbspace(&so->so_rcv), 0),
-	    TCP_MAXWIN << tp->rcv_scale);
+	recwin = lmin(lmax(sbspace(&so->so_rcv), 0),
+	    (long)TCP_MAXWIN << tp->rcv_scale);
 	/*
 	 * Sender silly window avoidance.   We transmit under the following
 	 * conditions when len is non-zero:
