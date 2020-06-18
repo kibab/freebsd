@@ -464,6 +464,9 @@ dwmmc_card_task(void *arg, int pending __unused)
 {
 	struct dwmmc_softc *sc = arg;
 
+#ifdef MMCCAM
+	mmccam_start_discovery(sc->sim);
+#else
 	DWMMC_LOCK(sc);
 
 	if (READ4(sc, SDMMC_CDETECT) == 0) {
@@ -491,6 +494,7 @@ dwmmc_card_task(void *arg, int pending __unused)
 		} else
 			DWMMC_UNLOCK(sc);
 	}
+#endif /* MMCCAM */
 }
 
 static int
