@@ -464,8 +464,6 @@ aw_mmc_attach(device_t dev)
 	struct sysctl_oid_list *tree;
 	int error;
 
-	bootverbose = 1;
-	node = ofw_bus_get_node(dev);
 	sc = device_get_softc(dev);
 	sc->aw_dev = dev;
 
@@ -545,13 +543,8 @@ aw_mmc_attach(device_t dev)
 
 	/* Set some defaults for freq and supported mode */
 	sc->aw_host.f_min = 400000;
+	sc->aw_host.f_max = 52000000;
 	sc->aw_host.ios.vccq = vccq_330;
-
-	if (OF_getencprop(node, "max-frequency", &max_freq,
-	    sizeof(uint32_t)) <= 0)
-		max_freq = 52000000;
-	sc->aw_host.f_max = max_freq;
-
 	sc->aw_host.host_ocr = MMC_OCR_320_330 | MMC_OCR_330_340;
 	sc->aw_host.caps |= MMC_CAP_HSPEED | MMC_CAP_SIGNALING_330;
 	mmc_fdt_parse(dev, 0, &sc->mmc_helper, &sc->aw_host);
@@ -575,29 +568,15 @@ aw_mmc_attach(device_t dev)
         }
 
 	mtx_lock(&sc->sim_mtx);
-        if (xpt_bus_register(sc->sim, sc->aw_dev, 0) != 0) {
-                device_printf(dev, "cannot register SCSI pass-through bus\n");
-                cam_sim_free(sc->sim, FALSE);
-                cam_simq_free(sc->devq);
-                mtx_unlock(&sc->sim_mtx);
-                goto fail;
-        }
-
-        mtx_unlock(&sc->sim_mtx);
-
-	/* Force rescan */
-	mmccam_start_discovery(sc->sim);
-#else /* !MMCCAM */
-	child = device_add_child(dev, "mmc", -1);
-	if (child == NULL) {
-		device_printf(dev, "attaching MMC bus failed!\n");
+	if (xpt_bus_register(sc->sim, sc->aw_dev, 0) != 0) {
+		device_printf(dev, "cannot register SCSI pass-through bus\n");
+		cam_sim_free(sc->sim, FALSE);
+		cam_simq_free(sc->devq);
+		mtx_unlock(&sc->sim_mtx);
 		goto fail;
 	}
-	if (device_probe_and_attach(child) != 0) {
-		device_printf(dev, "attaching MMC child failed!\n");
-		device_delete_child(dev, child);
-		goto fail;
-	}
+
+	mtx_unlock(&sc->sim_mtx);
 #endif /* MMCCAM */
 
 	return (0);
