@@ -1125,7 +1125,7 @@ mmcprobe_done(struct cam_periph *periph, union ccb *done_ccb)
             (path->device->flags & CAM_DEV_UNCONFIGURED) == 0) {
                 CAM_DEBUG(done_ccb->ccb_h.path, CAM_DEBUG_PROBE,
 			  ("mmc_probedone: Should send AC_LOST_DEVICE but won't for now\n"));
-                //xpt_async(AC_LOST_DEVICE, path, NULL);
+                xpt_async(AC_LOST_DEVICE, path, NULL);
         }
 
         if (softc->action != PROBE_INVALID)

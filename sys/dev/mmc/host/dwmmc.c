@@ -449,6 +449,7 @@ dwmmc_handle_card_present(struct dwmmc_softc *sc, bool is_present)
 {
 	bool was_present;
 
+	/* FOR MMCCAM THIS CHECK IS ALWAYS FALSE!!! */
 	was_present = sc->child != NULL;
 
 	if (!was_present && is_present) {
