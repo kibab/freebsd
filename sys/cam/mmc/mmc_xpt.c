@@ -823,7 +823,7 @@ mmcprobe_done(struct cam_periph *periph, union ccb *done_ccb)
 	struct ccb_mmcio *mmcio;
 	u_int32_t  priority;
 
-	CAM_DEBUG(done_ccb->ccb_h.path, CAM_DEBUG_PROBE, ("mmcprobe_done\n"));
+	CAM_DEBUG(done_ccb->ccb_h.path, CAM_DEBUG_TRACE, ("mmcprobe_done\n"));
 	softc = (mmcprobe_softc *)periph->softc;
 	path = done_ccb->ccb_h.path;
 	priority = done_ccb->ccb_h.pinfo.priority;
@@ -833,7 +833,6 @@ mmcprobe_done(struct cam_periph *periph, union ccb *done_ccb)
 		/* FALLTHROUGH */
 	case PROBE_IDENTIFY:
 	{
-		printf("Starting completion of PROBE_RESET\n");
 		CAM_DEBUG(done_ccb->ccb_h.path, CAM_DEBUG_PROBE, ("done with PROBE_RESET\n"));
 		mmcio = &done_ccb->mmcio;
 		err = mmcio->cmd.error;
@@ -845,6 +844,9 @@ mmcprobe_done(struct cam_periph *periph, union ccb *done_ccb)
 
 			/* There was a device there, but now it's gone... */
 			if ((path->device->flags & CAM_DEV_UNCONFIGURED) == 0) {
+				CAM_DEBUG(done_ccb->ccb_h.path, CAM_DEBUG_PROBE,
+				  ("Device lost!\n"));
+
 				xpt_async(AC_LOST_DEVICE, path, NULL);
 			}
 			PROBE_SET_ACTION(softc, PROBE_INVALID);
@@ -914,7 +916,7 @@ mmcprobe_done(struct cam_periph *periph, union ccb *done_ccb)
                           ("SDIO card: %d functions\n", mmcp->sdio_func_count));
                 if (io_ocr == 0) {
                     CAM_DEBUG(done_ccb->ccb_h.path, CAM_DEBUG_PROBE,
-                              ("SDIO OCR invalid?!\n"));
+                              ("SDIO OCR invalid, retrying\n"));
                     break; /* Retry */
                 }
 
@@ -1138,22 +1140,21 @@ mmcprobe_done(struct cam_periph *periph, union ccb *done_ccb)
         }
 	default:
 		CAM_DEBUG(done_ccb->ccb_h.path, CAM_DEBUG_PROBE,
-			  ("mmc_probedone: invalid action state 0x%x\n", softc->action));
+			  ("mmcprobe_done: invalid action state 0x%x\n", softc->action));
 		panic("default: case in mmc_probe_done()");
 	}
 
-        if (softc->action == PROBE_INVALID &&
-            (path->device->flags & CAM_DEV_UNCONFIGURED) == 0) {
-                CAM_DEBUG(done_ccb->ccb_h.path, CAM_DEBUG_PROBE,
-			  ("mmc_probedone: Should send AC_LOST_DEVICE but won't for now\n"));
-                xpt_async(AC_LOST_DEVICE, path, NULL);
-        }
+	if (softc->action == PROBE_INVALID &&
+	  (path->device->flags & CAM_DEV_UNCONFIGURED) == 0) {
+		xpt_async(AC_LOST_DEVICE, path, NULL);
+	}
 
-        if (softc->action != PROBE_INVALID)
-                xpt_schedule(periph, priority);
+	if (softc->action != PROBE_INVALID)
+		xpt_schedule(periph, priority);
 	/* Drop freeze taken due to CAM_DEV_QFREEZE flag set. */
 	int frozen = cam_release_devq(path, 0, 0, 0, FALSE);
-        printf("mmc_probedone: remaining freezecnt %d\n", frozen);
+	CAM_DEBUG(done_ccb->ccb_h.path, CAM_DEBUG_PROBE,
+	  ("mmcprobe_done: remaining freeze count %d\n", frozen));
 
 	if (softc->action == PROBE_DONE) {
                 /* Notify the system that the device is found! */
@@ -1166,10 +1167,10 @@ mmcprobe_done(struct cam_periph *periph, union ccb *done_ccb)
 		}
 	}
 	xpt_release_ccb(done_ccb);
-        if (softc->action == PROBE_DONE || softc->action == PROBE_INVALID) {
-                cam_periph_invalidate(periph);
-                cam_periph_release_locked(periph);
-        }
+	if (softc->action == PROBE_DONE || softc->action == PROBE_INVALID) {
+		cam_periph_invalidate(periph);
+		cam_periph_release_locked(periph);
+	}
 }
 
 void
