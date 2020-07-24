@@ -593,14 +593,14 @@ fail:
 
 #ifdef MMCCAM
 	if (sc->sim != NULL) {
-                mtx_lock(&sc->sim_mtx);
-                xpt_bus_deregister(cam_sim_path(sc->sim));
-                cam_sim_free(sc->sim, FALSE);
-                mtx_unlock(&sc->sim_mtx);
-        }
+		mtx_lock(&sc->sim_mtx);
+		xpt_bus_deregister(cam_sim_path(sc->sim));
+		cam_sim_free(sc->sim, FALSE);
+		mtx_unlock(&sc->sim_mtx);
+	}
 
-        if (sc->devq != NULL)
-                cam_simq_free(sc->devq);
+	if (sc->devq != NULL)
+		cam_simq_free(sc->devq);
 #endif
 	return (ENXIO);
 }
