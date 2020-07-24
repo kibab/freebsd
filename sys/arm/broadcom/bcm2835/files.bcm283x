@@ -12,7 +12,6 @@ arm/broadcom/bcm2835/bcm2835_intr.c		standard
 arm/broadcom/bcm2835/bcm2835_machdep.c		optional platform
 arm/broadcom/bcm2835/bcm2835_mbox.c		standard
 arm/broadcom/bcm2835/bcm2835_rng.c		optional random
-arm/broadcom/bcm2835/bcm2835_sdhost.c		optional sdhci
 arm/broadcom/bcm2835/bcm2835_sdhci.c		optional sdhci
 arm/broadcom/bcm2835/bcm2835_sdhost.c		optional sdhci
 arm/broadcom/bcm2835/bcm2835_spi.c		optional bcm2835_spi

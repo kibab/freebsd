@@ -566,10 +566,10 @@ aw_mmc_attach(device_t dev)
 	    &sc->sim_mtx, 1, 1, sc->devq);
 
 	if (sc->sim == NULL) {
-                cam_simq_free(sc->devq);
-                device_printf(dev, "cannot allocate CAM SIM\n");
-                goto fail;
-        }
+		cam_simq_free(sc->devq);
+		device_printf(dev, "cannot allocate CAM SIM\n");
+		goto fail;
+	}
 
 	mtx_lock(&sc->sim_mtx);
 	if (xpt_bus_register(sc->sim, sc->aw_dev, 0) != 0) {

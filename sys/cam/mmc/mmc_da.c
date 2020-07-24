@@ -79,6 +79,7 @@ __FBSDID("$FreeBSD$");
 
 #ifdef _KERNEL
 
+/* Use to temporarily disable partition support if there are any problems */
 const bool partitions_enabled = 1;
 
 typedef enum {
@@ -1622,7 +1623,8 @@ finish_hs_tests:
 	if (f_max > 25000000) {
 		err = mmc_set_timing(periph, start_ccb, bus_timing_hs);
 		if (err != MMC_ERR_NONE) {
-			CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("Cannot switch card to high-speed mode"));
+			CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH,
+			  ("Cannot switch card to high-speed mode"));
 			f_max = 25000000;
 		}
 	}
@@ -1630,7 +1632,8 @@ finish_hs_tests:
 	enum mmc_bus_timing timing;
 	/* FIXME: MMCCAM supports max. bus_timing_mmc_hs200 at the moment. */
 	for (timing = bus_timing_mmc_hs200; timing > bus_timing_normal; timing--) {
-		printf("timing = %d\n", timing);
+		CAM_DEBUG(periph->path, CAM_DEBUG_TRACE,
+		  ("Trying out timing %d\n", timing));
 		if (isset(&softc->vccq_120, timing)) {
 			/* Set VCCQ = 1.2V */
 			start_ccb->ccb_h.func_code = XPT_SET_TRAN_SETTINGS;
@@ -1698,7 +1701,9 @@ finish_hs_tests:
 //		softc->tuning_required = true;
 	}
 
-	CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH, ("Set SD freq to %d MHz (min out of host f=%d MHz and card f=%d MHz)\n", f_max  / 1000000, host_f_max / 1000000, softc->card_f_max / 1000000));
+	CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH,
+	  ("Set SD freq to %d MHz (min out of host f=%d MHz and card f=%d MHz)\n",
+	    f_max  / 1000000, host_f_max / 1000000, softc->card_f_max / 1000000));
 	/* Set frequency on the controller */
 	start_ccb->ccb_h.func_code = XPT_SET_TRAN_SETTINGS;
 	start_ccb->ccb_h.flags = CAM_DIR_NONE;
@@ -1716,7 +1721,8 @@ finish_hs_tests:
 	softc->state = SDDA_STATE_NORMAL;
 
 	/* MMC partitions support */
-	if (mmcp->card_features & CARD_FEATURE_MMC && mmc_get_spec_vers(periph) >= 4 && partitions_enabled == 1) {
+	if (mmcp->card_features & CARD_FEATURE_MMC && mmc_get_spec_vers(periph) >= 4
+	  && partitions_enabled == 1) {
 		sdda_process_mmc_partitions(periph, start_ccb);
 	} else {
 		/* For SD[HC] cards, just add one partition that is the whole card */
