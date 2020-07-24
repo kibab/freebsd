@@ -54,7 +54,7 @@ __FBSDID("$FreeBSD$");
 #include <x86/include/apicvar.h>
 #include <x86/include/busdma_impl.h>
 #include <x86/iommu/intel_reg.h>
-#include <x86/iommu/busdma_dmar.h>
+#include <dev/iommu/busdma_iommu.h>
 #include <dev/pci/pcireg.h>
 #include <x86/iommu/intel_dmar.h>
 #include <dev/pci/pcivar.h>
@@ -255,7 +255,7 @@ dmar_ir_find(device_t src, uint16_t *rid, int *is_dmar)
 	} else {
 		unit = dmar_find(src, bootverbose);
 		if (unit != NULL && rid != NULL)
-			dmar_get_requester(src, rid);
+			iommu_get_requester(src, rid);
 	}
 	return (unit);
 }

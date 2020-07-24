@@ -312,7 +312,7 @@ void nfsrc_trimcache(uint64_t, uint32_t, int);
 
 /* nfs_commonsubs.c */
 void nfscl_reqstart(struct nfsrv_descript *, int, struct nfsmount *,
-    u_int8_t *, int, u_int32_t **, struct nfsclsession *, int, int);
+    u_int8_t *, int, u_int32_t **, struct nfsclsession *, int, int, bool);
 void nfsm_stateidtom(struct nfsrv_descript *, nfsv4stateid_t *, int);
 void nfscl_fillsattr(struct nfsrv_descript *, struct vattr *,
       vnode_t, int, u_int32_t);
@@ -361,6 +361,7 @@ void nfsv4_freeslot(struct nfsclsession *, int);
 struct ucred *nfsrv_getgrpscred(struct ucred *);
 struct nfsdevice *nfsv4_findmirror(struct nfsmount *);
 void nfsm_set(struct nfsrv_descript *, u_int);
+struct mbuf *nfsm_add_ext_pgs(struct mbuf *, int, int *);
 
 /* nfs_clcomsubs.c */
 void nfsm_uiombuf(struct nfsrv_descript *, struct uio *, int);

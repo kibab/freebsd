@@ -106,7 +106,8 @@ ieee80211_ioctl_getkey(struct ieee80211vap *vap, struct ieee80211req *ireq)
 	ik.ik_flags = wk->wk_flags & (IEEE80211_KEY_XMIT | IEEE80211_KEY_RECV);
 	if (wk->wk_keyix == vap->iv_def_txkey)
 		ik.ik_flags |= IEEE80211_KEY_DEFAULT;
-	if (priv_check(curthread, PRIV_NET80211_GETKEY) == 0) {
+	/* XXX TODO: move priv check to ieee80211_freebsd.c */
+	if (priv_check(curthread, PRIV_NET80211_VAP_GETKEY) == 0) {
 		/* NB: only root can read key data */
 		ik.ik_keyrsc = wk->wk_keyrsc[IEEE80211_NONQOS_TID];
 		ik.ik_keytsc = wk->wk_keytsc;
@@ -815,7 +816,8 @@ ieee80211_ioctl_get80211(struct ieee80211vap *vap, u_long cmd,
 			return EINVAL;
 		len = (u_int) vap->iv_nw_keys[kid].wk_keylen;
 		/* NB: only root can read WEP keys */
-		if (priv_check(curthread, PRIV_NET80211_GETKEY) == 0) {
+		/* XXX TODO: move priv check to ieee80211_freebsd.c */
+		if (priv_check(curthread, PRIV_NET80211_VAP_GETKEY) == 0) {
 			bcopy(vap->iv_nw_keys[kid].wk_key, tmpkey, len);
 		} else {
 			bzero(tmpkey, len);
@@ -851,7 +853,7 @@ ieee80211_ioctl_get80211(struct ieee80211vap *vap, u_long cmd,
 		ireq->i_val = vap->iv_rtsthreshold;
 		break;
 	case IEEE80211_IOC_PROTMODE:
-		ireq->i_val = ic->ic_protmode;
+		ireq->i_val = vap->iv_protmode;
 		break;
 	case IEEE80211_IOC_TXPOWER:
 		/*
@@ -1097,7 +1099,7 @@ ieee80211_ioctl_get80211(struct ieee80211vap *vap, u_long cmd,
 		error = ieee80211_ioctl_getdevcaps(ic, ireq);
 		break;
 	case IEEE80211_IOC_HTPROTMODE:
-		ireq->i_val = ic->ic_htprotmode;
+		ireq->i_val = vap->iv_htprotmode;
 		break;
 	case IEEE80211_IOC_HTCONF:
 		if (vap->iv_flags_ht & IEEE80211_FHT_HT) {
@@ -2912,11 +2914,13 @@ ieee80211_ioctl_set80211(struct ieee80211vap *vap, u_long cmd, struct ieee80211r
 	case IEEE80211_IOC_PROTMODE:
 		if (ireq->i_val > IEEE80211_PROT_RTSCTS)
 			return EINVAL;
-		ic->ic_protmode = (enum ieee80211_protmode)ireq->i_val;
+		vap->iv_protmode = (enum ieee80211_protmode)ireq->i_val;
 		/* NB: if not operating in 11g this can wait */
 		if (ic->ic_bsschan != IEEE80211_CHAN_ANYC &&
 		    IEEE80211_IS_CHAN_ANYG(ic->ic_bsschan))
 			error = ERESTART;
+		/* driver callback for protection mode update */
+		ieee80211_vap_update_erp_protmode(vap);
 		break;
 	case IEEE80211_IOC_TXPOWER:
 		if ((ic->ic_caps & IEEE80211_C_TXPMGT) == 0)
@@ -3384,11 +3388,13 @@ ieee80211_ioctl_set80211(struct ieee80211vap *vap, u_long cmd, struct ieee80211r
 	case IEEE80211_IOC_HTPROTMODE:
 		if (ireq->i_val > IEEE80211_PROT_RTSCTS)
 			return EINVAL;
-		ic->ic_htprotmode = ireq->i_val ?
+		vap->iv_htprotmode = ireq->i_val ?
 		    IEEE80211_PROT_RTSCTS : IEEE80211_PROT_NONE;
 		/* NB: if not operating in 11n this can wait */
 		if (isvapht(vap))
 			error = ERESTART;
+		/* Notify driver layer of HT protmode changes */
+		ieee80211_vap_update_ht_protmode(vap);
 		break;
 	case IEEE80211_IOC_STA_VLAN:
 		error = ieee80211_ioctl_setstavlan(vap, ireq);
@@ -3632,7 +3638,8 @@ ieee80211_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
 				(struct ieee80211req *) data);
 		break;
 	case SIOCS80211:
-		error = priv_check(curthread, PRIV_NET80211_MANAGE);
+		/* XXX TODO: move priv check to ieee80211_freebsd.c */
+		error = priv_check(curthread, PRIV_NET80211_VAP_MANAGE);
 		if (error == 0)
 			error = ieee80211_ioctl_set80211(vap, cmd,
 					(struct ieee80211req *) data);
@@ -3677,6 +3684,12 @@ ieee80211_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
 			break;
 		}
 		break;
+	case SIOCSIFLLADDR:
+		/* XXX TODO: move priv check to ieee80211_freebsd.c */
+		error = priv_check(curthread, PRIV_NET80211_VAP_SETMAC);
+		if (error == 0)
+			break;
+		/* Fallthrough */
 	default:
 		/*
 		 * Pass unknown ioctls first to the driver, and if it

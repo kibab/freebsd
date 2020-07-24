@@ -109,8 +109,12 @@
 #include <ufs/ufs/ufsmount.h>
 #include <vm/uma.h>
 #include <vm/vm.h>
-#include <vm/vm_object.h>
+#include <vm/pmap.h>
 #include <vm/vm_extern.h>
+#include <vm/vm_object.h>
+#include <vm/vm_page.h>
+#include <vm/vm_pageout.h>
+#include <vm/vm_param.h>
 #include <nfs/nfssvc.h>
 #include "opt_nfs.h"
 #include "opt_ufs.h"
@@ -649,6 +653,7 @@ struct nfsvattr {
 #define	na_atime	na_vattr.va_atime
 #define	na_mtime	na_vattr.va_mtime
 #define	na_ctime	na_vattr.va_ctime
+#define	na_btime	na_vattr.va_birthtime
 #define	na_gen		na_vattr.va_gen
 #define	na_flags	na_vattr.va_flags
 #define	na_rdev		na_vattr.va_rdev

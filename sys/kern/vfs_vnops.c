@@ -192,7 +192,7 @@ vn_open(struct nameidata *ndp, int *flagp, int cmode, struct file *fp)
  * Common code for vnode open operations via a name lookup.
  * Lookup the vnode and invoke VOP_CREATE if needed.
  * Check permissions, and call the VOP_OPEN or VOP_CREATE routine.
- * 
+ *
  * Note that this does NOT free nameidata for the successful case,
  * due to the NDINIT being done elsewhere.
  */
@@ -489,10 +489,13 @@ vn_close(struct vnode *vp, int flags, struct ucred *file_cred,
 static int
 sequential_heuristic(struct uio *uio, struct file *fp)
 {
+	enum uio_rw rw;
 
 	ASSERT_VOP_LOCKED(fp->f_vnode, __func__);
+
+	rw = uio->uio_rw;
 	if (fp->f_flag & FRDAHEAD)
-		return (fp->f_seqcount << IO_SEQSHIFT);
+		return (fp->f_seqcount[rw] << IO_SEQSHIFT);
 
 	/*
 	 * Offset 0 is handled specially.  open() sets f_seqcount to 1 so
@@ -501,8 +504,8 @@ sequential_heuristic(struct uio *uio, struct file *fp)
 	 * unless previous seeks have reduced f_seqcount to 0, in which
 	 * case offset 0 is not special.
 	 */
-	if ((uio->uio_offset == 0 && fp->f_seqcount > 0) ||
-	    uio->uio_offset == fp->f_nextoff) {
+	if ((uio->uio_offset == 0 && fp->f_seqcount[rw] > 0) ||
+	    uio->uio_offset == fp->f_nextoff[rw]) {
 		/*
 		 * f_seqcount is in units of fixed-size blocks so that it
 		 * depends mainly on the amount of sequential I/O and not
@@ -513,20 +516,20 @@ sequential_heuristic(struct uio *uio, struct file *fp)
 		 * to any block size used by software.
 		 */
 		if (uio->uio_resid >= IO_SEQMAX * 16384)
-			fp->f_seqcount = IO_SEQMAX;
+			fp->f_seqcount[rw] = IO_SEQMAX;
 		else {
-			fp->f_seqcount += howmany(uio->uio_resid, 16384);
-			if (fp->f_seqcount > IO_SEQMAX)
-				fp->f_seqcount = IO_SEQMAX;
+			fp->f_seqcount[rw] += howmany(uio->uio_resid, 16384);
+			if (fp->f_seqcount[rw] > IO_SEQMAX)
+				fp->f_seqcount[rw] = IO_SEQMAX;
 		}
-		return (fp->f_seqcount << IO_SEQSHIFT);
+		return (fp->f_seqcount[rw] << IO_SEQSHIFT);
 	}
 
 	/* Not sequential.  Quickly draw-down sequentiality. */
-	if (fp->f_seqcount > 1)
-		fp->f_seqcount = 1;
+	if (fp->f_seqcount[rw] > 1)
+		fp->f_seqcount[rw] = 1;
 	else
-		fp->f_seqcount = 0;
+		fp->f_seqcount[rw] = 0;
 	return (0);
 }
 
@@ -734,8 +737,10 @@ foffset_unlock(struct file *fp, off_t val, int flags)
 
 	if ((flags & FOF_NOUPDATE) == 0)
 		atomic_store_long(&fp->f_offset, val);
-	if ((flags & FOF_NEXTOFF) != 0)
-		fp->f_nextoff = val;
+	if ((flags & FOF_NEXTOFF_R) != 0)
+		fp->f_nextoff[UIO_READ] = val;
+	if ((flags & FOF_NEXTOFF_W) != 0)
+		fp->f_nextoff[UIO_WRITE] = val;
 
 	if ((flags & FOF_NOLOCK) != 0)
 		return;
@@ -788,8 +793,10 @@ foffset_unlock(struct file *fp, off_t val, int flags)
 	mtx_lock(mtxp);
 	if ((flags & FOF_NOUPDATE) == 0)
 		fp->f_offset = val;
-	if ((flags & FOF_NEXTOFF) != 0)
-		fp->f_nextoff = val;
+	if ((flags & FOF_NEXTOFF_R) != 0)
+		fp->f_nextoff[UIO_READ] = val;
+	if ((flags & FOF_NEXTOFF_W) != 0)
+		fp->f_nextoff[UIO_WRITE] = val;
 	if ((flags & FOF_NOLOCK) == 0) {
 		KASSERT((fp->f_vnread_flags & FOFFSET_LOCKED) != 0,
 		    ("Lost FOFFSET_LOCKED"));
@@ -878,7 +885,7 @@ vn_read(struct file *fp, struct uio *uio, struct ucred *active_cred, int flags,
 	if (error == 0)
 #endif
 		error = VOP_READ(vp, uio, ioflag, fp->f_cred);
-	fp->f_nextoff = uio->uio_offset;
+	fp->f_nextoff[UIO_READ] = uio->uio_offset;
 	VOP_UNLOCK(vp);
 	if (error == 0 && advice == POSIX_FADV_NOREUSE &&
 	    orig_offset != uio->uio_offset)
@@ -953,7 +960,7 @@ vn_write(struct file *fp, struct uio *uio, struct ucred *active_cred, int flags,
 	if (error == 0)
 #endif
 		error = VOP_WRITE(vp, uio, ioflag, fp->f_cred);
-	fp->f_nextoff = uio->uio_offset;
+	fp->f_nextoff[UIO_WRITE] = uio->uio_offset;
 	VOP_UNLOCK(vp);
 	if (vp->v_type != VCHR)
 		vn_finished_write(mp);
@@ -1545,16 +1552,16 @@ vn_stat(struct vnode *vp, struct stat *sb, struct ucred *active_cred,
 	sb->st_birthtim.tv_sec = vap->va_birthtime.tv_sec;
 	sb->st_birthtim.tv_nsec = vap->va_birthtime.tv_nsec;
 
-        /*
+	/*
 	 * According to www.opengroup.org, the meaning of st_blksize is 
 	 *   "a filesystem-specific preferred I/O block size for this 
 	 *    object.  In some filesystem types, this may vary from file
 	 *    to file"
-	 * Use miminum/default of PAGE_SIZE (e.g. for VCHR).
+	 * Use minimum/default of PAGE_SIZE (e.g. for VCHR).
 	 */
 
 	sb->st_blksize = max(PAGE_SIZE, vap->va_blocksize);
-	
+
 	sb->st_flags = vap->va_flags;
 	if (priv_check_cred_vfs_generation(td->td_ucred))
 		sb->st_gen = 0;
@@ -1628,14 +1635,16 @@ vn_poll(struct file *fp, int events, struct ucred *active_cred,
 	int error;
 
 	vp = fp->f_vnode;
-#ifdef MAC
-	vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
-	AUDIT_ARG_VNODE1(vp);
-	error = mac_vnode_check_poll(active_cred, fp->f_cred, vp);
-	VOP_UNLOCK(vp);
-	if (!error)
+#if defined(MAC) || defined(AUDIT)
+	if (AUDITING_TD(td) || mac_vnode_check_poll_enabled()) {
+		vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
+		AUDIT_ARG_VNODE1(vp);
+		error = mac_vnode_check_poll(active_cred, fp->f_cred, vp);
+		VOP_UNLOCK(vp);
+		if (error != 0)
+			return (error);
+	}
 #endif
-
 	error = VOP_POLL(vp, events, fp->f_cred, td);
 	return (error);
 }

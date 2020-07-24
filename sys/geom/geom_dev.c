@@ -166,7 +166,7 @@ init_dumpdev(struct cdev *dev)
 {
 	struct diocskerneldump_arg kda;
 	struct g_consumer *cp;
-	const char *devprefix = "/dev/", *devname;
+	const char *devprefix = _PATH_DEV, *devname;
 	int error;
 	size_t len;
 
@@ -614,10 +614,7 @@ g_dev_ioctl(struct cdev *dev, u_long cmd, caddr_t data, int fflag, struct thread
 			kda->kda_encryptedkey = encryptedkey;
 			error = g_dev_setdumpdev(dev, kda);
 		}
-		if (encryptedkey != NULL) {
-			explicit_bzero(encryptedkey, kda->kda_encryptedkeysize);
-			free(encryptedkey, M_TEMP);
-		}
+		zfree(encryptedkey, M_TEMP);
 		explicit_bzero(kda, sizeof(*kda));
 		break;
 	    }

@@ -45,9 +45,12 @@ __FBSDID("$FreeBSD$");
 #include "opt_sctp.h"
 
 #include <sys/param.h>
+#include <sys/domain.h>
+#include <sys/eventhandler.h>
 #include <sys/ktr.h>
 #include <sys/systm.h>
 #include <sys/malloc.h>
+#include <sys/module.h>
 #include <sys/kernel.h>
 #include <sys/sysctl.h>
 #include <sys/mbuf.h>
@@ -85,7 +88,6 @@ __FBSDID("$FreeBSD$");
 #include <netinet/icmp_var.h>
 
 #ifdef INET6
-#include <sys/domain.h>
 #include <netinet/ip6.h>
 #include <netinet6/in6_fib.h>
 #include <netinet6/ip6_var.h>
@@ -267,12 +269,17 @@ typedef struct callout sctp_os_timer_t;
 
 
 #define SCTP_OS_TIMER_INIT(tmr)	callout_init(tmr, 1)
-#define SCTP_OS_TIMER_START	callout_reset
-#define SCTP_OS_TIMER_STOP	callout_stop
-#define SCTP_OS_TIMER_STOP_DRAIN callout_drain
-#define SCTP_OS_TIMER_PENDING	callout_pending
-#define SCTP_OS_TIMER_ACTIVE	callout_active
-#define SCTP_OS_TIMER_DEACTIVATE callout_deactivate
+/*
+ * NOTE: The next two shouldn't be called directly outside of sctp_timer_start()
+ * and sctp_timer_stop(), since they don't handle incrementing/decrementing
+ * relevant reference counts.
+ */
+#define SCTP_OS_TIMER_START		callout_reset
+#define SCTP_OS_TIMER_STOP		callout_stop
+#define SCTP_OS_TIMER_STOP_DRAIN	callout_drain
+#define SCTP_OS_TIMER_PENDING		callout_pending
+#define SCTP_OS_TIMER_ACTIVE		callout_active
+#define SCTP_OS_TIMER_DEACTIVATE	callout_deactivate
 
 #define sctp_get_tick_count() (ticks)
 
@@ -476,5 +483,8 @@ sctp_get_mbuf_for_msg(unsigned int space_needed,
 #endif
 
 #define SCTP_IS_LISTENING(inp) ((inp->sctp_flags & SCTP_PCB_FLAGS_ACCEPTING) != 0)
+
+int sctp_syscalls_init(void);
+int sctp_syscalls_uninit(void);
 
 #endif

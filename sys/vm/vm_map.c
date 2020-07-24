@@ -1616,8 +1616,7 @@ vm_map_insert(vm_map_t map, vm_object_t object, vm_ooffset_t offset,
 	/*
 	 * Check that the start and end points are not bogus.
 	 */
-	if (start < vm_map_min(map) || end > vm_map_max(map) ||
-	    start >= end)
+	if (start == end || !vm_map_range_valid(map, start, end))
 		return (KERN_INVALID_ADDRESS);
 
 	/*
@@ -2161,9 +2160,7 @@ again:
 			goto done;
 		}
 	} else if ((cow & MAP_REMAP) != 0) {
-		if (*addr < vm_map_min(map) ||
-		    *addr + length > vm_map_max(map) ||
-		    *addr + length <= length) {
+		if (!vm_map_range_valid(map, *addr, *addr + length)) {
 			rv = KERN_INVALID_ADDRESS;
 			goto done;
 		}
@@ -2382,6 +2379,11 @@ vm_map_clip_start(vm_map_t map, vm_map_entry_t entry, vm_offset_t start)
 {
 	vm_map_entry_t new_entry;
 
+	if (!map->system_map)
+		WITNESS_WARN(WARN_GIANTOK | WARN_SLEEPOK, NULL,
+		    "%s: map %p entry %p start 0x%jx", __func__, map, entry,
+		    (uintmax_t)start);
+
 	if (start <= entry->start)
 		return;
 
@@ -2412,6 +2414,11 @@ vm_map_lookup_clip_start(vm_map_t map, vm_offset_t start,
 {
 	vm_map_entry_t entry;
 
+	if (!map->system_map)
+		WITNESS_WARN(WARN_GIANTOK | WARN_SLEEPOK, NULL,
+		    "%s: map %p start 0x%jx prev %p", __func__, map,
+		    (uintmax_t)start, prev_entry);
+
 	if (vm_map_lookup_entry(map, start, prev_entry)) {
 		entry = *prev_entry;
 		vm_map_clip_start(map, entry, start);
@@ -2432,6 +2439,11 @@ static inline void
 vm_map_clip_end(vm_map_t map, vm_map_entry_t entry, vm_offset_t end)
 {
 	vm_map_entry_t new_entry;
+
+	if (!map->system_map)
+		WITNESS_WARN(WARN_GIANTOK | WARN_SLEEPOK, NULL,
+		    "%s: map %p entry %p end 0x%jx", __func__, map, entry,
+		    (uintmax_t)end);
 
 	if (end >= entry->end)
 		return;
@@ -3647,7 +3659,7 @@ static void
 vm_map_entry_delete(vm_map_t map, vm_map_entry_t entry)
 {
 	vm_object_t object;
-	vm_pindex_t offidxstart, offidxend, count, size1;
+	vm_pindex_t offidxstart, offidxend, size1;
 	vm_size_t size;
 
 	vm_map_entry_unlink(map, entry, UNLINK_MERGE_NONE);
@@ -3676,9 +3688,8 @@ vm_map_entry_delete(vm_map_t map, vm_map_entry_t entry)
 		KASSERT(entry->cred == NULL || object->cred == NULL ||
 		    (entry->eflags & MAP_ENTRY_NEEDS_COPY),
 		    ("OVERCOMMIT vm_map_entry_delete: both cred %p", entry));
-		count = atop(size);
 		offidxstart = OFF_TO_IDX(entry->offset);
-		offidxend = offidxstart + count;
+		offidxend = offidxstart + atop(size);
 		VM_OBJECT_WLOCK(object);
 		if (object->ref_count != 1 &&
 		    ((object->flags & OBJ_ONEMAPPING) != 0 ||
@@ -3693,9 +3704,6 @@ vm_map_entry_delete(vm_map_t map, vm_map_entry_t entry)
 			 */
 			vm_object_page_remove(object, offidxstart, offidxend,
 			    OBJPR_NOTMAPPED);
-			if (object->type == OBJT_SWAP)
-				swap_pager_freespace(object, offidxstart,
-				    count);
 			if (offidxend >= object->size &&
 			    offidxstart < object->size) {
 				size1 = object->size;
@@ -3732,6 +3740,7 @@ vm_map_delete(vm_map_t map, vm_offset_t start, vm_offset_t end)
 	vm_map_entry_t entry, next_entry;
 
 	VM_MAP_ASSERT_LOCKED(map);
+
 	if (start == end)
 		return (KERN_SUCCESS);
 
@@ -4324,9 +4333,8 @@ vm_map_stack_locked(vm_map_t map, vm_offset_t addrbos, vm_size_t max_ssize,
 	KASSERT(orient != (MAP_STACK_GROWS_DOWN | MAP_STACK_GROWS_UP),
 	    ("bi-dir stack"));
 
-	if (addrbos < vm_map_min(map) ||
-	    addrbos + max_ssize > vm_map_max(map) ||
-	    addrbos + max_ssize <= addrbos)
+	if (max_ssize == 0 ||
+	    !vm_map_range_valid(map, addrbos, addrbos + max_ssize))
 		return (KERN_INVALID_ADDRESS);
 	sgp = ((curproc->p_flag2 & P2_STKGAP_DISABLE) != 0 ||
 	    (curproc->p_fctl0 & NT_FREEBSD_FCTL_STKGAP_DISABLE) != 0) ? 0 :
@@ -5004,6 +5012,13 @@ vm_map_pmap_KBI(vm_map_t map)
 {
 
 	return (map->pmap);
+}
+
+bool
+vm_map_range_valid_KBI(vm_map_t map, vm_offset_t start, vm_offset_t end)
+{
+
+	return (vm_map_range_valid(map, start, end));
 }
 
 #ifdef INVARIANTS

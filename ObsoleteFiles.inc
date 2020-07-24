@@ -36,6 +36,30 @@
 #   xargs -n1 | sort | uniq -d;
 # done
 
+# 20200715: rework of devstat(9) man page
+OLD_FILES+=usr/share/man/man9/devstat_add_entry.9.gz
+
+# 20200714: update byacc to 20200330
+OLD_FILES+=usr/tests/usr.bin/yacc/btyacc_calc1.y
+OLD_FILES+=usr/tests/usr.bin/yacc/btyacc_demo.y
+OLD_FILES+=usr/tests/usr.bin/yacc/btyacc_destroy1.y
+OLD_FILES+=usr/tests/usr.bin/yacc/btyacc_destroy2.y
+OLD_FILES+=usr/tests/usr.bin/yacc/btyacc_destroy3.y
+OLD_FILES+=usr/tests/usr.bin/yacc/err_inherit1.y
+OLD_FILES+=usr/tests/usr.bin/yacc/err_inherit2.y
+OLD_FILES+=usr/tests/usr.bin/yacc/err_inherit3.y
+OLD_FILES+=usr/tests/usr.bin/yacc/err_inherit4.y
+OLD_FILES+=usr/tests/usr.bin/yacc/err_inherit5.y
+OLD_FILES+=usr/tests/usr.bin/yacc/inherit0.y
+OLD_FILES+=usr/tests/usr.bin/yacc/inherit1.y
+OLD_FILES+=usr/tests/usr.bin/yacc/inherit2.y
+
+# 20200706: update of sglist(9), r360574
+OLD_FILES+=usr/share/man/man9/sglist_append_ext_pgs.9.gz
+OLD_FILES+=usr/share/man/man9/sglist_append_mb_ext_pgs.9.gz
+OLD_FILES+=usr/share/man/man9/sglist_count_ext_pgs.9.gz
+OLD_FILES+=usr/share/man/man9/sglist_count_mb_ext_pgs.9.gz
+
 # 20200617: update opencsd to 0.14.2
 OLD_FILES+=usr/include/opencsd/etmv4/trc_pkt_elem_etmv4d.h
 
@@ -6763,7 +6787,6 @@ OLD_FILES+=usr/include/clang/3.3/x86intrin.h
 OLD_FILES+=usr/include/clang/3.3/xmmintrin.h
 OLD_FILES+=usr/include/clang/3.3/xopintrin.h
 OLD_FILES+=usr/share/man/man1/llvm-prof.1.gz
-OLD_FILES+=usr/share/man/man1/llvm-ranlib.1.gz
 OLD_DIRS+=usr/include/clang/3.3
 # 20140216: nve(4) removed
 OLD_FILES+=usr/share/man/man4/if_nve.4.gz

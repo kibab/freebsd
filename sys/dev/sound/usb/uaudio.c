@@ -1163,7 +1163,7 @@ uaudio_attach_sub(device_t dev, kobj_class_t mixer_class, kobj_class_t chan_clas
 	if (sc->sc_play_chan[i].num_alt > 0 &&
 	    (sc->sc_child[i].mix_info & SOUND_MASK_PCM) == 0) {
 
-		DPRINTF("emulating master volume\n");
+		DPRINTF("software controlled main volume\n");
 
 		/*
 		 * Emulate missing pcm mixer controller
@@ -4968,10 +4968,6 @@ uaudio_mixer_fill_info(struct uaudio_softc *sc,
 	iot = malloc(sizeof(struct uaudio_terminal_node) * 256, M_TEMP,
 	    M_WAITOK | M_ZERO);
 
-	if (iot == NULL) {
-		DPRINTF("no memory!\n");
-		goto done;
-	}
 	while ((desc = usb_desc_foreach(cd, desc))) {
 
 		dp = desc;

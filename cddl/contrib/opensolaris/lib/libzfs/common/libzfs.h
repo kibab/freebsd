@@ -22,7 +22,7 @@
 /*
  * Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2011 Pawel Jakub Dawidek. All rights reserved.
- * Copyright (c) 2011, 2017 by Delphix. All rights reserved.
+ * Copyright (c) 2011, 2020 by Delphix. All rights reserved.
  * Copyright 2019 Joyent, Inc.
  * Copyright (c) 2012 Martin Matuska <mm@FreeBSD.org>. All rights reserved.
  * Copyright (c) 2013 Steven Hartland. All rights reserved.
@@ -142,6 +142,7 @@ typedef enum zfs_error {
 	EZFS_INITIALIZING,	/* currently initializing */
 	EZFS_NO_INITIALIZE,	/* no active initialize */
 	EZFS_WRONG_PARENT,	/* invalid parent dataset (e.g ZVOL) */
+	EZFS_IOC_NOTSUPPORTED,	/* operation not supported by zfs module */
 	EZFS_UNKNOWN
 } zfs_error_t;
 
@@ -440,7 +441,8 @@ typedef enum {
 extern char *zpool_vdev_name(libzfs_handle_t *, zpool_handle_t *, nvlist_t *,
     int name_flags);
 extern int zpool_upgrade(zpool_handle_t *, uint64_t);
-extern int zpool_get_history(zpool_handle_t *, nvlist_t **);
+extern int zpool_get_history(zpool_handle_t *, nvlist_t **, uint64_t *,
+    boolean_t *);
 extern int zpool_history_unpack(char *, uint64_t, uint64_t *,
     nvlist_t ***, uint_t *);
 extern void zpool_obj_to_path(zpool_handle_t *, uint64_t, uint64_t, char *,

@@ -185,12 +185,11 @@ cubic_ack_received(struct cc_var *ccv, uint16_t type)
 				 */
 				if (CCV(ccv, snd_cwnd) < w_tf)
 					CCV(ccv, snd_cwnd) = ulmin(w_tf, INT_MAX);
-			}
-
-			else if (CCV(ccv, snd_cwnd) < w_cubic_next) {
+			} else if (CCV(ccv, snd_cwnd) < w_cubic_next) {
 				/*
 				 * Concave or convex region, follow CUBIC
 				 * cwnd growth.
+				 * Only update snd_cwnd, if it doesn't shrink.
 				 */
 				if (V_tcp_do_rfc3465)
 					CCV(ccv, snd_cwnd) = ulmin(w_cubic_next,
@@ -313,10 +312,15 @@ cubic_cong_signal(struct cc_var *ccv, uint32_t type)
 		 * timeout has fired more than once, as there is a reasonable
 		 * chance the first one is a false alarm and may not indicate
 		 * congestion.
+		 * This will put Cubic firmly into the concave / TCP friendly
+		 * region, for a slower ramp-up after two consecutive RTOs.
 		 */
 		if (CCV(ccv, t_rxtshift) >= 2) {
 			cubic_data->flags |= CUBICFLAG_CONG_EVENT;
 			cubic_data->t_last_cong = ticks;
+			cubic_data->max_cwnd = CCV(ccv, snd_cwnd_prev);
+			cubic_data->K = cubic_k(cubic_data->max_cwnd /
+						CCV(ccv, t_maxseg));
 		}
 		break;
 	}
@@ -468,3 +472,4 @@ cubic_ssthresh_update(struct cc_var *ccv)
 
 
 DECLARE_CC_MODULE(cubic, &cubic_cc_algo);
+MODULE_VERSION(cubic, 1);

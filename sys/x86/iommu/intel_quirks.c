@@ -59,7 +59,7 @@ __FBSDID("$FreeBSD$");
 #include <vm/vm_map.h>
 #include <x86/include/busdma_impl.h>
 #include <x86/iommu/intel_reg.h>
-#include <x86/iommu/busdma_dmar.h>
+#include <dev/iommu/busdma_iommu.h>
 #include <dev/pci/pcireg.h>
 #include <x86/iommu/intel_dmar.h>
 #include <dev/pci/pcivar.h>
@@ -222,8 +222,11 @@ static const struct intel_dmar_quirk_cpu post_ident_cpu[] = {
 };
 
 void
-dmar_quirks_pre_use(struct dmar_unit *dmar)
+dmar_quirks_pre_use(struct iommu_unit *unit)
 {
+	struct dmar_unit *dmar;
+
+	dmar = (struct dmar_unit *)unit;
 
 	if (!dmar_barrier_enter(dmar, DMAR_BARRIER_USEQ))
 		return;

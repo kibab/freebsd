@@ -62,11 +62,14 @@ __FBSDID("$FreeBSD$");
 #include <sys/sysproto.h>
 #include <sys/ucontext.h>
 #include <sys/vdso.h>
+#include <sys/vmmeter.h>
 
 #include <vm/vm.h>
+#include <vm/vm_param.h>
 #include <vm/vm_kern.h>
 #include <vm/vm_object.h>
 #include <vm/vm_page.h>
+#include <vm/vm_phys.h>
 #include <vm/pmap.h>
 #include <vm/vm_map.h>
 #include <vm/vm_pager.h>
@@ -120,6 +123,7 @@ int has_pan;
  * passed into the kernel and used by the EFI code to call runtime services.
  */
 vm_paddr_t efi_systbl_phys;
+static struct efi_map_header *efihdr;
 
 /* pagezero_* implementations are provided in support.S */
 void pagezero_simple(void *);
@@ -169,9 +173,28 @@ has_hyp(void)
 static void
 cpu_startup(void *dummy)
 {
+	vm_paddr_t size;
+	int i;
+
+	printf("real memory  = %ju (%ju MB)\n", ptoa((uintmax_t)realmem),
+	    ptoa((uintmax_t)realmem) / 1024 / 1024);
+
+	if (bootverbose) {
+		printf("Physical memory chunk(s):\n");
+		for (i = 0; phys_avail[i + 1] != 0; i += 2) {
+			size = phys_avail[i + 1] - phys_avail[i];
+			printf("%#016jx - %#016jx, %ju bytes (%ju pages)\n",
+			    (uintmax_t)phys_avail[i],
+			    (uintmax_t)phys_avail[i + 1] - 1,
+			    (uintmax_t)size, (uintmax_t)size / PAGE_SIZE);
+		}
+	}
+
+	printf("avail memory = %ju (%ju MB)\n",
+	    ptoa((uintmax_t)vm_free_count()),
+	    ptoa((uintmax_t)vm_free_count()) / 1024 / 1024);
 
 	undef_init();
-	identify_cpu();
 	install_cpu_errata();
 
 	vm_ksubmap_init(&kmi);
@@ -180,6 +203,13 @@ cpu_startup(void *dummy)
 }
 
 SYSINIT(cpu, SI_SUB_CPU, SI_ORDER_FIRST, cpu_startup, NULL);
+
+static void
+late_ifunc_resolve(void *dummy __unused)
+{
+	link_elf_late_ireloc();
+}
+SYSINIT(late_ifunc_resolve, SI_SUB_CPU, SI_ORDER_ANY, late_ifunc_resolve, NULL);
 
 int
 cpu_idle_wakeup(int cpu)
@@ -1071,11 +1101,52 @@ cache_setup(void)
 	}
 }
 
+int
+memory_mapping_mode(vm_paddr_t pa)
+{
+	struct efi_md *map, *p;
+	size_t efisz;
+	int ndesc, i;
+
+	if (efihdr == NULL)
+		return (VM_MEMATTR_WRITE_BACK);
+
+	/*
+	 * Memory map data provided by UEFI via the GetMemoryMap
+	 * Boot Services API.
+	 */
+	efisz = (sizeof(struct efi_map_header) + 0xf) & ~0xf;
+	map = (struct efi_md *)((uint8_t *)efihdr + efisz);
+
+	if (efihdr->descriptor_size == 0)
+		return (VM_MEMATTR_WRITE_BACK);
+	ndesc = efihdr->memory_size / efihdr->descriptor_size;
+
+	for (i = 0, p = map; i < ndesc; i++,
+	    p = efi_next_descriptor(p, efihdr->descriptor_size)) {
+		if (pa < p->md_phys ||
+		    pa >= p->md_phys + p->md_pages * EFI_PAGE_SIZE)
+			continue;
+		if (p->md_type == EFI_MD_TYPE_IOMEM ||
+		    p->md_type == EFI_MD_TYPE_IOPORT)
+			return (VM_MEMATTR_DEVICE);
+		else if ((p->md_attr & EFI_MD_ATTR_WB) != 0 ||
+		    p->md_type == EFI_MD_TYPE_RECLAIM)
+			return (VM_MEMATTR_WRITE_BACK);
+		else if ((p->md_attr & EFI_MD_ATTR_WT) != 0)
+			return (VM_MEMATTR_WRITE_THROUGH);
+		else if ((p->md_attr & EFI_MD_ATTR_WC) != 0)
+			return (VM_MEMATTR_WRITE_COMBINING);
+		break;
+	}
+
+	return (VM_MEMATTR_DEVICE);
+}
+
 void
 initarm(struct arm64_bootparams *abp)
 {
 	struct efi_fb *efifb;
-	struct efi_map_header *efihdr;
 	struct pcpu *pcpup;
 	char *env;
 #ifdef FDT
@@ -1095,6 +1166,9 @@ initarm(struct arm64_bootparams *abp)
 	kmdp = preload_search_by_type("elf kernel");
 	if (kmdp == NULL)
 		kmdp = preload_search_by_type("elf64 kernel");
+
+	identify_cpu(0);
+	update_special_regs(0);
 
 	link_elf_ireloc(kmdp);
 	try_load_dtb(kmdp);
@@ -1139,6 +1213,7 @@ initarm(struct arm64_bootparams *abp)
 	    "msr tpidr_el1, %0" :: "r"(pcpup));
 
 	PCPU_SET(curthread, &thread0);
+	PCPU_SET(midr, get_midr());
 
 	/* Do basic tuning, hz etc */
 	init_param1();
