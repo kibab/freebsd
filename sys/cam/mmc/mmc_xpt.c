@@ -412,11 +412,7 @@ mmccam_start_discovery(struct cam_sim *sim) {
 	KASSERT(sim->sim_dev != NULL, ("mmccam_start_discovery(%s): sim_dev is not initialized,"
 	    " has cam_sim_alloc_dev() been used?", cam_sim_name(sim)));
 	pathid = cam_sim_path(sim);
-	ccb = xpt_alloc_ccb_nowait();
-	if (ccb == NULL) {
-		device_printf(sim->sim_dev, "Cannot allocate CCB for starting MMC discovery\n");
-		return;
-	}
+	ccb = xpt_alloc_ccb();
 
 	/*
 	 * We create a rescan request for BUS:0:0, since the card
