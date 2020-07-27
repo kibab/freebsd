@@ -179,7 +179,6 @@ mmc_alloc_device(struct cam_eb *bus, struct cam_et *target, lun_id_t lun_id)
 {
 	struct cam_ed *device;
 
-	printf("mmc_alloc_device()\n");
 	device = xpt_alloc_device(bus, target, lun_id);
 	if (device == NULL)
 		return (NULL);
@@ -282,7 +281,8 @@ mmc_scan_lun(struct cam_periph *periph, struct cam_path *path,
 			xpt_done(request_ccb);
 		}
 	} else {
-		xpt_print(path, " Set up the mmcprobe device...\n");
+		if (bootverbose)
+			xpt_print(path, " Set up the mmcprobe device...\n");
 
                 status = cam_periph_alloc(mmcprobe_register, NULL,
 					  mmcprobe_cleanup,
@@ -392,8 +392,7 @@ mmc_announce_periph(struct cam_periph *periph)
 
 	cam_periph_assert(periph, MA_OWNED);
 
-	CAM_DEBUG(periph->path, CAM_DEBUG_INFO,
-		  ("mmc_announce_periph: called\n"));
+	CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("mmc_announce_periph"));
 
 	xpt_setup_ccb(&cts.ccb_h, path, CAM_PRIORITY_NORMAL);
 	cts.ccb_h.func_code = XPT_GET_TRAN_SETTINGS;

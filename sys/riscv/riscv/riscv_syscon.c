@@ -1,7 +1,8 @@
 /*-
  * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
  *
- * Copyright (c) 2019 Ian Lepore <ian@FreeBSD.org>
+ * Copyright (c) 2018 Kyle Evans <kevans@FreeBSD.org>
+ * Copyright (c) 2020 Jessica Clarke <jrtc27@FreeBSD.org>
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -25,51 +26,59 @@
  * SUCH DAMAGE.
  */
 
+/*
+ * RISC-V syscon driver. Used as a generic interface by QEMU's virt machine for
+ * describing the SiFive test finisher as a power and reset controller.
+ */
+
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
-#include <sys/systm.h>
+#include <sys/bus.h>
 #include <sys/kernel.h>
-#include <sys/malloc.h>
-#include <sys/slicer.h>
+#include <sys/module.h>
+#include <sys/mutex.h>
+#include <sys/rman.h>
+#include <machine/bus.h>
 
-#include <geom/geom.h>
-#include <geom/geom_flashmap.h>
-#include <geom/geom_slice.h>
-#include <geom/label/g_label.h>
+#include <dev/ofw/openfirm.h>
+#include <dev/ofw/ofw_bus.h>
+#include <dev/ofw/ofw_bus_subr.h>
 
-static void
-g_label_flashmap_taste(struct g_consumer *cp, char *label, size_t size)
-{
-	struct g_flashmap *gfp;
-	struct g_slicer *gsp;
-	struct g_provider *pp;
+#include <dev/extres/syscon/syscon.h>
+#include <dev/extres/syscon/syscon_generic.h>
 
-	g_topology_assert_not();
-
-	pp = cp->provider;
-	label[0] = '\0';
-
-	/* We taste only partitions handled by flashmap */
-	if (strncmp(pp->geom->class->name, FLASHMAP_CLASS_NAME,
-	    sizeof(FLASHMAP_CLASS_NAME)) != 0)
-		return;
-
-	gsp = (struct g_slicer *)pp->geom->softc;
-	gfp = (struct g_flashmap *)gsp->softc;
-
-	/* If it's handled by flashmap it should have a label, but be safe. */
-	if (gfp->labels[pp->index] == NULL)
-		return;
-
-	strlcpy(label, gfp->labels[pp->index], size);
-}
-
-struct g_label_desc g_label_flashmap = {
-	.ld_taste = g_label_flashmap_taste,
-	.ld_dirprefix = "flash/",
-	.ld_enabled = 1
+static struct ofw_compat_data compat_data[] = {
+	{"sifive,test0",	1},
+	{"sifive,test1",	1},
+	{NULL,			0}
 };
 
-G_LABEL_INIT(flashmap, g_label_flashmap, "Create device nodes for Flashmap labels");
+static int
+riscv_syscon_probe(device_t dev)
+{
+
+	if (!ofw_bus_status_okay(dev))
+		return (ENXIO);
+	if (ofw_bus_search_compatible(dev, compat_data)->ocd_data == 0)
+		return (ENXIO);
+
+	device_set_desc(dev, "RISC-V syscon");
+	return (BUS_PROBE_DEFAULT);
+}
+
+static device_method_t riscv_syscon_methods[] = {
+	DEVMETHOD(device_probe, riscv_syscon_probe),
+
+	DEVMETHOD_END
+};
+
+DEFINE_CLASS_1(riscv_syscon, riscv_syscon_driver, riscv_syscon_methods,
+    sizeof(struct syscon_generic_softc), syscon_generic_driver);
+
+static devclass_t riscv_syscon_devclass;
+/* riscv_syscon needs to attach prior to syscon_power */
+EARLY_DRIVER_MODULE(riscv_syscon, simplebus, riscv_syscon_driver,
+    riscv_syscon_devclass, 0, 0, BUS_PASS_SCHEDULER + BUS_PASS_ORDER_LAST);
+MODULE_VERSION(riscv_syscon, 1);

@@ -175,9 +175,6 @@ dmar_identify(driver_t *driver, device_t parent)
 	TUNABLE_INT_FETCH("hw.dmar.enable", &dmar_enable);
 	if (!dmar_enable)
 		return;
-#ifdef INVARIANTS
-	TUNABLE_INT_FETCH("hw.dmar.check_free", &dmar_check_free);
-#endif
 	status = AcpiGetTable(ACPI_SIG_DMAR, 1, (ACPI_TABLE_HEADER **)&dmartbl);
 	if (ACPI_FAILURE(status))
 		return;
@@ -492,7 +489,7 @@ dmar_attach(device_t dev)
 	 * address translation after the required invalidations are
 	 * done.
 	 */
-	dmar_pgalloc(unit->ctx_obj, 0, DMAR_PGF_WAITOK | DMAR_PGF_ZERO);
+	dmar_pgalloc(unit->ctx_obj, 0, IOMMU_PGF_WAITOK | IOMMU_PGF_ZERO);
 	DMAR_LOCK(unit);
 	error = dmar_load_root_entry_ptr(unit);
 	if (error != 0) {
@@ -945,8 +942,9 @@ dmar_rmrr_iter(ACPI_DMAR_HEADER *dmarh, void *arg)
 		match = dmar_match_devscope(devscope, ria->dev_busno,
 		    ria->dev_path, ria->dev_path_len);
 		if (match == 1) {
-			entry = dmar_gas_alloc_entry(ria->domain,
-			    DMAR_PGF_WAITOK);
+			entry = iommu_gas_alloc_entry(
+			    (struct iommu_domain *)ria->domain,
+			    IOMMU_PGF_WAITOK);
 			entry->start = resmem->BaseAddress;
 			/* The RMRR entry end address is inclusive. */
 			entry->end = resmem->EndAddress;
@@ -1152,15 +1150,18 @@ dmar_print_ctx(struct dmar_ctx *ctx)
 static void
 dmar_print_domain(struct dmar_domain *domain, bool show_mappings)
 {
+	struct iommu_domain *iodom;
 	struct iommu_map_entry *entry;
 	struct dmar_ctx *ctx;
+
+	iodom = (struct iommu_domain *)domain;
 
 	db_printf(
 	    "  @%p dom %d mgaw %d agaw %d pglvl %d end %jx refs %d\n"
 	    "   ctx_cnt %d flags %x pgobj %p map_ents %u\n",
 	    domain, domain->domain, domain->mgaw, domain->agaw, domain->pglvl,
-	    (uintmax_t)domain->end, domain->refs, domain->ctx_cnt,
-	    domain->flags, domain->pgtbl_obj, domain->iodom.entries_cnt);
+	    (uintmax_t)domain->iodom.end, domain->refs, domain->ctx_cnt,
+	    domain->iodom.flags, domain->pgtbl_obj, domain->iodom.entries_cnt);
 	if (!LIST_EMPTY(&domain->contexts)) {
 		db_printf("  Contexts:\n");
 		LIST_FOREACH(ctx, &domain->contexts, link)
@@ -1169,7 +1170,7 @@ dmar_print_domain(struct dmar_domain *domain, bool show_mappings)
 	if (!show_mappings)
 		return;
 	db_printf("    mapped:\n");
-	RB_FOREACH(entry, dmar_gas_entries_tree, &domain->rb_root) {
+	RB_FOREACH(entry, iommu_gas_entries_tree, &iodom->rb_root) {
 		dmar_print_domain_entry(entry);
 		if (db_pager_quit)
 			break;
