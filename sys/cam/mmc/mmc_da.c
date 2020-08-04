@@ -186,6 +186,8 @@ static uint32_t sdda_get_host_caps(struct cam_periph *periph, union ccb *ccb);
 static void sdda_init_switch_part(struct cam_periph *periph, union ccb *start_ccb, u_int part);
 static int mmc_select_card(struct cam_periph *periph, union ccb *ccb, uint32_t rca);
 static inline uint32_t mmc_get_sector_size(struct cam_periph *periph) {return MMC_SECTOR_SIZE;}
+static inline const char *bus_width_str(enum mmc_bus_width w);
+static inline const char *bus_timing_str(enum mmc_bus_timing t);
 
 static SYSCTL_NODE(_kern_cam, OID_AUTO, sdda, CTLFLAG_RD | CTLFLAG_MPSAFE, 0,
     "CAM Direct Access Disk driver");
@@ -1053,40 +1055,8 @@ mmc_sd_switch(struct cam_periph *periph, union ccb *ccb,
 }
 
 static int
-mmc_send_retune(struct cam_periph *periph, union ccb *ccb) {
-	struct sdda_softc *softc = (struct sdda_softc *)periph->softc;
-	int err;
-
-	cam_fill_mmcio(&ccb->mmcio,
-		       /*retries*/ 0,
-		       /*cbfcnp*/ NULL,
-		       /*flags*/ CAM_DIR_IN,
-		       /*mmc_opcode*/ MMC_SEND_TUNING_BLOCK_HS200,
-		       /*mmc_arg*/ 0,
-		       /*mmc_flags*/ MMC_RSP_R1 | MMC_CMD_ADTC,
-		       /*mmc_data*/ softc->retune_mmcdata,
-		       /*timeout*/ 150);
-
-	for (int i = 0; i < 40; i++) {
-		CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH, ("Start sending tune request #%d\n", i));
-		cam_periph_runccb(ccb, sddaerror, CAM_FLAG_NONE, /*sense_flags*/0, NULL);
-		err = mmc_handle_reply(ccb);
-		CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH, ("Finished tune request err %d\n", err));
-		if (err == MMC_ERR_NONE)
-			break;
-	}
-	if (err != MMC_ERR_NONE) {
-		CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH, ("Error %d when sending tuning request\n", err));
-		return (err);
-	}
-	if (memcmp(softc->retune_mmcdata->data, tuning_blk_pattern_8bit, sizeof(tuning_blk_pattern_8bit))) {
-		CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH, ("Tuning block is different than expected!\n"));
-	}
-	return 0;
-}
-
-static int
-mmc_set_power_class(struct cam_periph *periph, union ccb *ccb) {
+mmc_set_power_class(struct cam_periph *periph, union ccb *ccb)
+{
 	struct mmc_params *mmcp = &periph->path->device->mmc_ident_data;
 	struct ccb_trans_settings_mmc *cts = &ccb->cts.proto_specific.mmc;
 	struct sdda_softc *softc = (struct sdda_softc *)periph->softc;
@@ -1096,8 +1066,7 @@ mmc_set_power_class(struct cam_periph *periph, union ccb *ccb) {
 	enum mmc_bus_timing timing;
 	enum mmc_bus_width bus_width;
 
-	CAM_DEBUG(ccb->ccb_h.path, CAM_DEBUG_TRACE,
-		  ("mmc_set_power_class()"));
+	CAM_DEBUG(ccb->ccb_h.path, CAM_DEBUG_TRACE, ("mmc_set_power_class()"));
 	if (!(mmcp->card_features & CARD_FEATURE_MMC && mmc_get_spec_vers(periph) >= 4))
 		return 0;
 
@@ -1115,7 +1084,7 @@ mmc_set_power_class(struct cam_periph *periph, union ccb *ccb) {
 	value = 0;
  
 	CAM_DEBUG(ccb->ccb_h.path, CAM_DEBUG_PERIPH,
-		  ("timing=%d, clock=%d, vdd=%d", timing, clock, cts->ios.vdd));
+	  ("timing=%d, clock=%d, vdd=%d", timing, clock, cts->ios.vdd));
 	/* Power classes are defined only for 4-bit and 8-bit bus */ 
 	if (bus_width == bus_width_1 || timing == bus_timing_normal)
 		return (MMC_ERR_NONE);
@@ -1126,7 +1095,7 @@ mmc_set_power_class(struct cam_periph *periph, union ccb *ccb) {
 			value = ext_csd[EXT_CSD_PWR_CL_26_195];
 		else if (clock <= MMC_TYPE_HS_52_MAX) {
 			if (timing >= bus_timing_mmc_ddr52 &&
-			    bus_width >= bus_width_4)
+			  bus_width >= bus_width_4)
 				value = ext_csd[EXT_CSD_PWR_CL_52_195_DDR];
 			else
 				value = ext_csd[EXT_CSD_PWR_CL_52_195];
@@ -1146,7 +1115,7 @@ mmc_set_power_class(struct cam_periph *periph, union ccb *ccb) {
 			value = ext_csd[EXT_CSD_PWR_CL_26_360];
 		else if (clock <= MMC_TYPE_HS_52_MAX) {
 			if (timing == bus_timing_mmc_ddr52 &&
-			    bus_width >= bus_width_4)
+			  bus_width >= bus_width_4)
 				value = ext_csd[EXT_CSD_PWR_CL_52_360_DDR];
 			else
 				value = ext_csd[EXT_CSD_PWR_CL_52_360];
@@ -1165,10 +1134,10 @@ mmc_set_power_class(struct cam_periph *periph, union ccb *ccb) {
 
 	if (bus_width == bus_width_8)
 		value = (value & EXT_CSD_POWER_CLASS_8BIT_MASK) >>
-		    EXT_CSD_POWER_CLASS_8BIT_SHIFT;
+			EXT_CSD_POWER_CLASS_8BIT_SHIFT;
 	else
 		value = (value & EXT_CSD_POWER_CLASS_4BIT_MASK) >>
-		    EXT_CSD_POWER_CLASS_4BIT_SHIFT;
+			EXT_CSD_POWER_CLASS_4BIT_SHIFT;
 
 	CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH, ("Set power class to %d\n", value));
 	if (value == 0)
@@ -1185,12 +1154,12 @@ mmc_set_timing(struct cam_periph *periph,
 {
 	u_char switch_res[64];
 	int err;
-	uint8_t	value;
+	uint8_t value;
 	struct sdda_softc *softc = (struct sdda_softc *)periph->softc;
 	struct mmc_params *mmcp = &periph->path->device->mmc_ident_data;
 
-	CAM_DEBUG(ccb->ccb_h.path, CAM_DEBUG_TRACE,
-		  ("mmc_set_timing(timing=%d)", timing));
+	CAM_DEBUG(ccb->ccb_h.path, CAM_DEBUG_PERIPH,
+	  ("mmc_set_timing(timing=%d / %s)", timing, bus_timing_str(timing)));
 	if (mmcp->card_features & CARD_FEATURE_MMC) {
 		switch (timing) {
 		case bus_timing_normal:
@@ -1211,7 +1180,7 @@ mmc_set_timing(struct cam_periph *periph,
 			return (MMC_ERR_INVALID);
 		}
 		err = mmc_switch(periph, ccb, EXT_CSD_CMD_SET_NORMAL,
-				 EXT_CSD_HS_TIMING, value, softc->cmd6_time);
+		  EXT_CSD_HS_TIMING, value, softc->cmd6_time);
 		if (err != MMC_ERR_NONE) {
 			CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH, ("Error %d when setting MMC timing %d\n", err, value));
 			return (err);
@@ -1257,19 +1226,20 @@ mmc_set_timing(struct cam_periph *periph,
 		memset(&ccb->mmcio.cmd, 0, sizeof(struct mmc_command));
 		memset(&ccb->mmcio.stop, 0, sizeof(struct mmc_command));
 		cam_fill_mmcio(&ccb->mmcio,
-			       /*retries*/ 0,
-			       /*cbfcnp*/ NULL,
-			       /*flags*/ CAM_DIR_NONE,
-			       /*mmc_opcode*/ MMC_SEND_STATUS,
-			       /*mmc_arg*/ get_rca(periph) << 16,
-			       /*mmc_flags*/ MMC_RSP_R1 | MMC_CMD_AC,
-			       /*mmc_data*/ NULL,
-			       /*timeout*/ 0);
-
+		  /*retries*/ 0,
+		  /*cbfcnp*/ NULL,
+		  /*flags*/ CAM_DIR_NONE,
+		  /*mmc_opcode*/ MMC_SEND_STATUS,
+		  /*mmc_arg*/ get_rca(periph) << 16,
+		  /*mmc_flags*/ MMC_RSP_R1 | MMC_CMD_AC,
+		  /*mmc_data*/ NULL,
+		  /*timeout*/ 0);
 		cam_periph_runccb(ccb, sddaerror, CAM_FLAG_NONE, /*sense_flags*/0, NULL);
 		err = mmc_handle_reply(ccb);
 		status = ccb->mmcio.cmd.resp[0];
-		CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH, ("Switch timing: error %d, status %d\n", err, status));
+		CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH,
+		  ("Switch timing to %s: error %d, status %d\n",
+		    bus_timing_str(timing), err, status));
 	} 
 	return (err);
 }
@@ -1378,6 +1348,37 @@ static inline const char
 		return ("4-bit");
 	case bus_width_8:
 		return ("8-bit");
+	}
+}
+
+static inline const char
+*bus_timing_str(enum mmc_bus_timing t)
+{
+
+	switch (t) {
+	case bus_timing_normal:
+		return "Regular timing";
+	case bus_timing_hs:
+		return "High-speed timing";
+		/* SDHC modes */
+	case bus_timing_uhs_sdr25:
+		return "UHS (SDR25)";
+	case bus_timing_uhs_sdr50:
+		return "UHS (SDR50)";
+	case bus_timing_uhs_ddr50:
+		return "UHS (DDR50)";
+	case bus_timing_uhs_sdr104:
+		return "UHS (SDR104)";
+	case bus_timing_mmc_ddr52:
+		return "MMC (DDR52)";
+	case bus_timing_mmc_hs200:
+		return "MMC (HS200)";
+	case bus_timing_mmc_hs400:
+		return "MMC (HS400)";
+	case bus_timing_mmc_hs400es:
+		return "MMC (HS400ES)";
+	default:
+		return "(unknown timing)";
 	}
 }
 
@@ -1593,6 +1594,7 @@ sdda_start_init(void *context, union ccb *start_ccb)
 		}
 	}
 	int f_max;
+	int max_possible_timing = bus_timing_normal;
 finish_hs_tests:
 	f_max = min(host_f_max, softc->card_f_max);
 
@@ -1603,6 +1605,8 @@ finish_hs_tests:
 			CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH,
 			  ("Cannot switch card to high-speed mode"));
 			f_max = 25000000;
+		} else {
+			max_possible_timing = bus_timing_hs;
 		}
 	}
 	/* If possible, set lower-level signaling */
@@ -1610,7 +1614,7 @@ finish_hs_tests:
 	/* FIXME: MMCCAM supports max. bus_timing_mmc_hs200 at the moment. */
 	for (timing = bus_timing_mmc_hs200; timing > bus_timing_normal; timing--) {
 		CAM_DEBUG(periph->path, CAM_DEBUG_TRACE,
-		  ("Trying out timing %d\n", timing));
+		  ("Trying out timing %s\n", bus_timing_str(timing)));
 		if (isset(&softc->vccq_120, timing)) {
 			/* Set VCCQ = 1.2V */
 			start_ccb->ccb_h.func_code = XPT_SET_TRAN_SETTINGS;
@@ -1621,7 +1625,8 @@ finish_hs_tests:
 			cts->ios.vccq = vccq_120;
 			cts->ios_valid = MMC_VCCQ;
 			xpt_action(start_ccb);
-			break;
+			if (((start_ccb->ccb_h.status & CAM_STATUS_MASK) == CAM_REQ_CMP))
+				break;
 		} else if (isset(&softc->vccq_180, timing)) {
 			/* Set VCCQ = 1.8V */
 			start_ccb->ccb_h.func_code = XPT_SET_TRAN_SETTINGS;
@@ -1632,7 +1637,8 @@ finish_hs_tests:
 			cts->ios.vccq = vccq_180;
 			cts->ios_valid = MMC_VCCQ;
 			xpt_action(start_ccb);
-			break;
+			if (((start_ccb->ccb_h.status & CAM_STATUS_MASK) == CAM_REQ_CMP))
+				break;
 		} else {
 			/* Set VCCQ = 3.3V */
 			start_ccb->ccb_h.func_code = XPT_SET_TRAN_SETTINGS;
@@ -1643,9 +1649,13 @@ finish_hs_tests:
 			cts->ios.vccq = vccq_330;
 			cts->ios_valid = MMC_VCCQ;
 			xpt_action(start_ccb);
-			break;
+			if (((start_ccb->ccb_h.status & CAM_STATUS_MASK) == CAM_REQ_CMP))
+				break;
 		}
 	}
+	CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH,
+	  ("Using bus timing mode: %s\n", bus_timing_str(timing)));
+
 
 	/* Set bus width */
 	enum mmc_bus_width desired_bus_width = bus_width_1;
@@ -1675,7 +1685,6 @@ finish_hs_tests:
 	/* Set HS200 or higher now that bus widths are maxed */
 	if ((timing > bus_timing_hs) && mmcp->card_features & CARD_FEATURE_MMC) {
 		mmc_set_timing(periph, start_ccb, timing);
-//		softc->tuning_required = true;
 	}
 
 	CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH,
@@ -1698,8 +1707,7 @@ finish_hs_tests:
 	softc->state = SDDA_STATE_NORMAL;
 
 	/* MMC partitions support */
-	if (mmcp->card_features & CARD_FEATURE_MMC && mmc_get_spec_vers(periph) >= 4
-	  && partitions_enabled == 1) {
+	if (mmcp->card_features & CARD_FEATURE_MMC && mmc_get_spec_vers(periph) >= 4) {
 		sdda_process_mmc_partitions(periph, start_ccb);
 	} else {
 		/* For SD[HC] cards, just add one partition that is the whole card */
