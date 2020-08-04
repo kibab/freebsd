@@ -107,6 +107,7 @@ struct vnode {
 	enum	vtype v_type:8;			/* u vnode type */
 	short	v_irflag;			/* i frequently read flags */
 	seqc_t	v_seqc;				/* i modification count */
+	uint32_t v_nchash;			/* u namecache hash */
 	struct	vop_vector *v_op;		/* u vnode operations vector */
 	void	*v_data;			/* u private data for fs */
 
@@ -171,8 +172,8 @@ struct vnode {
 
 	u_int	v_holdcnt;			/* I prevents recycling. */
 	u_int	v_usecount;			/* I ref count of users */
-	u_int	v_iflag;			/* i vnode flags (see below) */
-	u_int	v_vflag;			/* v vnode flags */
+	u_short	v_iflag;			/* i vnode flags (see below) */
+	u_short	v_vflag;			/* v vnode flags */
 	u_short	v_mflag;			/* l mnt-specific vnode flags */
 	short	v_dbatchcpu;			/* i LRU requeue deferral batch */
 	int	v_writecount;			/* I ref count of writers or
@@ -245,10 +246,10 @@ struct xvnode {
 #define	VIRF_DOOMED	0x0001	/* This vnode is being recycled */
 
 #define	VI_TEXT_REF	0x0001	/* Text ref grabbed use ref */
-#define	VI_MOUNT	0x0020	/* Mount in progress */
-#define	VI_DOINGINACT	0x0800	/* VOP_INACTIVE is in progress */
-#define	VI_OWEINACT	0x1000	/* Need to call inactive */
-#define	VI_DEFINACT	0x2000	/* deferred inactive */
+#define	VI_MOUNT	0x0002	/* Mount in progress */
+#define	VI_DOINGINACT	0x0004	/* VOP_INACTIVE is in progress */
+#define	VI_OWEINACT	0x0008	/* Need to call inactive */
+#define	VI_DEFINACT	0x0010	/* deferred inactive */
 
 #define	VV_ROOT		0x0001	/* root of its filesystem */
 #define	VV_ISTTY	0x0002	/* vnode represents a tty */
@@ -635,6 +636,7 @@ void	cache_enter_time(struct vnode *dvp, struct vnode *vp,
 	    struct timespec *dtsp);
 int	cache_lookup(struct vnode *dvp, struct vnode **vpp,
 	    struct componentname *cnp, struct timespec *tsp, int *ticksp);
+void	cache_vnode_init(struct vnode *vp);
 void	cache_purge(struct vnode *vp);
 void	cache_purge_negative(struct vnode *vp);
 void	cache_purgevfs(struct mount *mp, bool force);
@@ -869,23 +871,23 @@ void	vop_symlink_post(void *a, int rc);
 int	vop_sigdefer(struct vop_vector *vop, struct vop_generic_args *a);
 
 #ifdef DEBUG_VFS_LOCKS
-void	vop_fplookup_vexec_pre(void *a);
-void	vop_fplookup_vexec_post(void *a, int rc);
-void	vop_strategy_pre(void *a);
-void	vop_lock_pre(void *a);
-void	vop_lock_post(void *a, int rc);
-void	vop_unlock_pre(void *a);
-void	vop_need_inactive_pre(void *a);
-void	vop_need_inactive_post(void *a, int rc);
+void	vop_fplookup_vexec_debugpre(void *a);
+void	vop_fplookup_vexec_debugpost(void *a, int rc);
+void	vop_strategy_debugpre(void *a);
+void	vop_lock_debugpre(void *a);
+void	vop_lock_debugpost(void *a, int rc);
+void	vop_unlock_debugpre(void *a);
+void	vop_need_inactive_debugpre(void *a);
+void	vop_need_inactive_debugpost(void *a, int rc);
 #else
-#define	vop_fplookup_vexec_pre(x)	do { } while (0)
-#define	vop_fplookup_vexec_post(x, y)	do { } while (0)
-#define	vop_strategy_pre(x)	do { } while (0)
-#define	vop_lock_pre(x)		do { } while (0)
-#define	vop_lock_post(x, y)	do { } while (0)
-#define	vop_unlock_pre(x)	do { } while (0)
-#define	vop_need_inactive_pre(x)	do { } while (0)
-#define	vop_need_inactive_post(x, y)	do { } while (0)
+#define	vop_fplookup_vexec_debugpre(x)		do { } while (0)
+#define	vop_fplookup_vexec_debugpost(x, y)	do { } while (0)
+#define	vop_strategy_debugpre(x)		do { } while (0)
+#define	vop_lock_debugpre(x)			do { } while (0)
+#define	vop_lock_debugpost(x, y)		do { } while (0)
+#define	vop_unlock_debugpre(x)			do { } while (0)
+#define	vop_need_inactive_debugpre(x)		do { } while (0)
+#define	vop_need_inactive_debugpost(x, y)	do { } while (0)
 #endif
 
 void	vop_rename_fail(struct vop_rename_args *ap);

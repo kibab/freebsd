@@ -1637,7 +1637,7 @@ static struct buf *
 buf_alloc(struct bufdomain *bd)
 {
 	struct buf *bp;
-	int freebufs;
+	int freebufs, error;
 
 	/*
 	 * We can only run out of bufs in the buf zone if the average buf
@@ -1660,8 +1660,10 @@ buf_alloc(struct bufdomain *bd)
 	if (freebufs == bd->bd_lofreebuffers)
 		bufspace_daemon_wakeup(bd);
 
-	if (BUF_LOCK(bp, LK_EXCLUSIVE | LK_NOWAIT, NULL) != 0)
-		panic("getnewbuf_empty: Locked buf %p on free queue.", bp);
+	error = BUF_LOCK(bp, LK_EXCLUSIVE, NULL);
+	KASSERT(error == 0, ("%s: BUF_LOCK on free buf %p: %d.", __func__, bp,
+	    error));
+	(void)error;
 
 	KASSERT(bp->b_vp == NULL,
 	    ("bp: %p still has vnode %p.", bp, bp->b_vp));
@@ -3844,7 +3846,7 @@ getblkx(struct vnode *vp, daddr_t blkno, daddr_t dblkno, int size, int slpflag,
 	struct buf *bp;
 	struct bufobj *bo;
 	daddr_t d_blkno;
-	int bsize, error, maxsize, vmio, lockflags;
+	int bsize, error, maxsize, vmio;
 	off_t offset;
 
 	CTR3(KTR_BUF, "getblk(%p, %ld, %d)", vp, (long)blkno, size);
@@ -3865,14 +3867,9 @@ getblkx(struct vnode *vp, daddr_t blkno, daddr_t dblkno, int size, int slpflag,
 	if (bp == NULL)
 		goto newbuf_unlocked;
 
-	lockflags = LK_EXCLUSIVE | LK_SLEEPFAIL |
-	    ((flags & GB_LOCK_NOWAIT) ? LK_NOWAIT : 0);
-
-	error = BUF_TIMELOCK(bp, lockflags, NULL, "getblku", slpflag,
-	    slptimeo);
-	if (error == EINTR || error == ERESTART)
-		return (error);
-	else if (error != 0)
+	error = BUF_TIMELOCK(bp, LK_EXCLUSIVE | LK_NOWAIT, NULL, "getblku", 0,
+	    0);
+	if (error != 0)
 		goto loop;
 
 	/* Verify buf identify has not changed since lookup. */
@@ -3886,14 +3883,14 @@ loop:
 	BO_RLOCK(bo);
 	bp = gbincore(bo, blkno);
 	if (bp != NULL) {
+		int lockflags;
+
 		/*
 		 * Buffer is in-core.  If the buffer is not busy nor managed,
 		 * it must be on a queue.
 		 */
-		lockflags = LK_EXCLUSIVE | LK_SLEEPFAIL | LK_INTERLOCK;
-
-		if ((flags & GB_LOCK_NOWAIT) != 0)
-			lockflags |= LK_NOWAIT;
+		lockflags = LK_EXCLUSIVE | LK_INTERLOCK |
+		    ((flags & GB_LOCK_NOWAIT) ? LK_NOWAIT : LK_SLEEPFAIL);
 
 		error = BUF_TIMELOCK(bp, lockflags,
 		    BO_LOCKPTR(bo), "getblk", slpflag, slptimeo);

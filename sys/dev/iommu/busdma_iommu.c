@@ -299,7 +299,7 @@ acpi_iommu_get_dma_tag(device_t dev, device_t child)
 }
 
 bool
-bus_dma_dmar_set_buswide(device_t dev)
+bus_dma_iommu_set_buswide(device_t dev)
 {
 	struct iommu_unit *unit;
 	device_t parent;
@@ -317,13 +317,33 @@ bus_dma_dmar_set_buswide(device_t dev)
 	if (slot != 0 || func != 0) {
 		if (bootverbose) {
 			device_printf(dev,
-			    "dmar%d pci%d:%d:%d requested buswide busdma\n",
+			    "iommu%d pci%d:%d:%d requested buswide busdma\n",
 			    unit->unit, busno, slot, func);
 		}
 		return (false);
 	}
-	dmar_set_buswide_ctx(unit, busno);
+	iommu_set_buswide_ctx(unit, busno);
 	return (true);
+}
+
+void
+iommu_set_buswide_ctx(struct iommu_unit *unit, u_int busno)
+{
+
+	MPASS(busno <= PCI_BUSMAX);
+	IOMMU_LOCK(unit);
+	unit->buswide_ctxs[busno / NBBY / sizeof(uint32_t)] |=
+	    1 << (busno % (NBBY * sizeof(uint32_t)));
+	IOMMU_UNLOCK(unit);
+}
+
+bool
+iommu_is_buswide_ctx(struct iommu_unit *unit, u_int busno)
+{
+
+	MPASS(busno <= PCI_BUSMAX);
+	return ((unit->buswide_ctxs[busno / NBBY / sizeof(uint32_t)] &
+	    (1U << (busno % (NBBY * sizeof(uint32_t))))) != 0);
 }
 
 static MALLOC_DEFINE(M_IOMMU_DMAMAP, "iommu_dmamap", "IOMMU DMA Map");
@@ -390,7 +410,7 @@ iommu_bus_dma_tag_destroy(bus_dma_tag_t dmat1)
 			    1) {
 				if (dmat == dmat->ctx->tag)
 					iommu_free_ctx(dmat->ctx);
-				free_domain(dmat->segments, M_IOMMU_DMAMAP);
+				free(dmat->segments, M_IOMMU_DMAMAP);
 				free(dmat, M_DEVBUF);
 				dmat = parent;
 			} else
@@ -427,7 +447,7 @@ iommu_bus_dmamap_create(bus_dma_tag_t dmat, int flags, bus_dmamap_t *mapp)
 		    tag->common.nsegments, M_IOMMU_DMAMAP,
 		    DOMAINSET_PREF(tag->common.domain), M_NOWAIT);
 		if (tag->segments == NULL) {
-			free_domain(map, M_IOMMU_DMAMAP);
+			free(map, M_IOMMU_DMAMAP);
 			*mapp = NULL;
 			return (ENOMEM);
 		}
@@ -459,7 +479,7 @@ iommu_bus_dmamap_destroy(bus_dma_tag_t dmat, bus_dmamap_t map1)
 			return (EBUSY);
 		}
 		IOMMU_DOMAIN_UNLOCK(domain);
-		free_domain(map, M_IOMMU_DMAMAP);
+		free(map, M_IOMMU_DMAMAP);
 	}
 	tag->map_count--;
 	return (0);
@@ -517,7 +537,7 @@ iommu_bus_dmamem_free(bus_dma_tag_t dmat, void *vaddr, bus_dmamap_t map1)
 	map = (struct bus_dmamap_iommu *)map1;
 
 	if ((map->flags & BUS_DMAMAP_IOMMU_MALLOC) != 0) {
-		free_domain(vaddr, M_DEVBUF);
+		free(vaddr, M_DEVBUF);
 		map->flags &= ~BUS_DMAMAP_IOMMU_MALLOC;
 	} else {
 		KASSERT((map->flags & BUS_DMAMAP_IOMMU_KMEM_ALLOC) != 0,
@@ -987,7 +1007,7 @@ iommu_fini_busdma(struct iommu_unit *unit)
 }
 
 int
-bus_dma_dmar_load_ident(bus_dma_tag_t dmat, bus_dmamap_t map1,
+bus_dma_iommu_load_ident(bus_dma_tag_t dmat, bus_dmamap_t map1,
     vm_paddr_t start, vm_size_t length, int flags)
 {
 	struct bus_dma_tag_common *tc;
