@@ -97,7 +97,8 @@ static bool __elfN(freebsd_trans_osrel)(const Elf_Note *note,
     int32_t *osrel);
 static bool kfreebsd_trans_osrel(const Elf_Note *note, int32_t *osrel);
 static boolean_t __elfN(check_note)(struct image_params *imgp,
-    Elf_Brandnote *checknote, int32_t *osrel, uint32_t *fctl0);
+    Elf_Brandnote *checknote, int32_t *osrel, boolean_t *has_fctl0,
+    uint32_t *fctl0);
 static vm_prot_t __elfN(trans_prot)(Elf_Word);
 static Elf_Word __elfN(untrans_prot)(vm_prot_t);
 
@@ -309,7 +310,7 @@ __elfN(get_brandinfo)(struct image_params *imgp, const char *interp,
 {
 	const Elf_Ehdr *hdr = (const Elf_Ehdr *)imgp->image_header;
 	Elf_Brandinfo *bi, *bi_m;
-	boolean_t ret;
+	boolean_t ret, has_fctl0;
 	int i, interp_name_len;
 
 	interp_name_len = interp != NULL ? strlen(interp) + 1 : 0;
@@ -331,11 +332,16 @@ __elfN(get_brandinfo)(struct image_params *imgp, const char *interp,
 			continue;
 		if (hdr->e_machine == bi->machine && (bi->flags &
 		    (BI_BRAND_NOTE|BI_BRAND_NOTE_MANDATORY)) != 0) {
+			has_fctl0 = false;
+			*fctl0 = 0;
+			*osrel = 0;
 			ret = __elfN(check_note)(imgp, bi->brand_note, osrel,
-			    fctl0);
+			    &has_fctl0, fctl0);
 			/* Give brand a chance to veto check_note's guess */
-			if (ret && bi->header_supported)
-				ret = bi->header_supported(imgp);
+			if (ret && bi->header_supported) {
+				ret = bi->header_supported(imgp, osrel,
+				    has_fctl0 ? fctl0 : NULL);
+			}
 			/*
 			 * If note checker claimed the binary, but the
 			 * interpreter path in the image does not
@@ -374,7 +380,7 @@ __elfN(get_brandinfo)(struct image_params *imgp, const char *interp,
 		    bi->compat_3_brand) == 0))) {
 			/* Looks good, but give brand a chance to veto */
 			if (bi->header_supported == NULL ||
-			    bi->header_supported(imgp)) {
+			    bi->header_supported(imgp, NULL, NULL)) {
 				/*
 				 * Again, prefer strictly matching
 				 * interpreter path.
@@ -402,7 +408,7 @@ __elfN(get_brandinfo)(struct image_params *imgp, const char *interp,
 		    bi->header_supported == NULL)
 			continue;
 		if (hdr->e_machine == bi->machine) {
-			ret = bi->header_supported(imgp);
+			ret = bi->header_supported(imgp, NULL, NULL);
 			if (ret)
 				return (bi);
 		}
@@ -422,7 +428,7 @@ __elfN(get_brandinfo)(struct image_params *imgp, const char *interp,
 			    strlen(bi->interp_path) + 1 == interp_name_len &&
 			    strncmp(interp, bi->interp_path, interp_name_len)
 			    == 0 && (bi->header_supported == NULL ||
-			    bi->header_supported(imgp)))
+			    bi->header_supported(imgp, NULL, NULL)))
 				return (bi);
 		}
 	}
@@ -436,10 +442,17 @@ __elfN(get_brandinfo)(struct image_params *imgp, const char *interp,
 		if (hdr->e_machine == bi->machine &&
 		    __elfN(fallback_brand) == bi->brand &&
 		    (bi->header_supported == NULL ||
-		    bi->header_supported(imgp)))
+		    bi->header_supported(imgp, NULL, NULL)))
 			return (bi);
 	}
 	return (NULL);
+}
+
+static bool
+__elfN(phdr_in_zero_page)(const Elf_Ehdr *hdr)
+{
+	return (hdr->e_phoff <= PAGE_SIZE &&
+	    (u_int)hdr->e_phentsize * hdr->e_phnum <= PAGE_SIZE - hdr->e_phoff);
 }
 
 static int
@@ -805,8 +818,7 @@ __elfN(load_file)(struct proc *p, const char *file, u_long *addr,
 	}
 
 	/* Only support headers that fit within first page for now      */
-	if ((hdr->e_phoff > PAGE_SIZE) ||
-	    (u_int)hdr->e_phentsize * hdr->e_phnum > PAGE_SIZE - hdr->e_phoff) {
+	if (!__elfN(phdr_in_zero_page)(hdr)) {
 		error = ENOEXEC;
 		goto fail;
 	}
@@ -902,7 +914,7 @@ __elfN(enforce_limits)(struct image_params *imgp, const Elf_Ehdr *hdr,
 		}
 		total_size += seg_size;
 	}
-	
+
 	if (data_addr == 0 && data_size == 0) {
 		data_addr = text_addr;
 		data_size = text_size;
@@ -1082,9 +1094,7 @@ __CONCAT(exec_, __elfN(imgact))(struct image_params *imgp)
 	 * detected an ELF file.
 	 */
 
-	if ((hdr->e_phoff > PAGE_SIZE) ||
-	    (u_int)hdr->e_phentsize * hdr->e_phnum > PAGE_SIZE - hdr->e_phoff) {
-		/* Only support headers in first page for now */
+	if (!__elfN(phdr_in_zero_page)(hdr)) {
 		uprintf("Program headers not in the first page\n");
 		return (ENOEXEC);
 	}
@@ -2657,6 +2667,7 @@ static Elf_Note fctl_note = {
 };
 
 struct fctl_cb_arg {
+	boolean_t *has_fctl0;
 	uint32_t *fctl0;
 };
 
@@ -2671,6 +2682,7 @@ note_fctl_cb(const Elf_Note *note, void *arg0, boolean_t *res)
 	p = (uintptr_t)(note + 1);
 	p += roundup2(note->n_namesz, ELF_NOTE_ROUNDSIZE);
 	desc = (const Elf32_Word *)p;
+	*arg->has_fctl0 = TRUE;
 	*arg->fctl0 = desc[0];
 	return (TRUE);
 }
@@ -2683,7 +2695,7 @@ note_fctl_cb(const Elf_Note *note, void *arg0, boolean_t *res)
  */
 static boolean_t
 __elfN(check_note)(struct image_params *imgp, Elf_Brandnote *brandnote,
-    int32_t *osrel, uint32_t *fctl0)
+    int32_t *osrel, boolean_t *has_fctl0, uint32_t *fctl0)
 {
 	const Elf_Phdr *phdr;
 	const Elf_Ehdr *hdr;
@@ -2695,6 +2707,7 @@ __elfN(check_note)(struct image_params *imgp, Elf_Brandnote *brandnote,
 	phdr = (const Elf_Phdr *)(imgp->image_header + hdr->e_phoff);
 	b_arg.brandnote = brandnote;
 	b_arg.osrel = osrel;
+	f_arg.has_fctl0 = has_fctl0;
 	f_arg.fctl0 = fctl0;
 
 	for (i = 0; i < hdr->e_phnum; i++) {

@@ -121,6 +121,9 @@ MAN=	accept_filter.9 \
 	DEVICE_SHUTDOWN.9 \
 	DEV_MODULE.9 \
 	dev_refthread.9 \
+	devctl_notify.9 \
+	devctl_process_running.9 \
+	devctl_safe_quote_sb.9 \
 	devstat.9 \
 	devtoname.9 \
 	disk.9 \
@@ -272,6 +275,7 @@ MAN=	accept_filter.9 \
 	printf.9 \
 	prison_check.9 \
 	priv.9 \
+	prng.9 \
 	proc_rwmem.9 \
 	pseudofs.9 \
 	psignal.9 \
@@ -360,7 +364,6 @@ MAN=	accept_filter.9 \
 	vm_fault_prefault.9 \
 	vm_map.9 \
 	vm_map_check_protection.9 \
-	vm_map_create.9 \
 	vm_map_delete.9 \
 	vm_map_entry_resize_free.9 \
 	vm_map_find.9 \
@@ -1092,6 +1095,9 @@ MLINKS+=getenv.9 freeenv.9 \
 	getenv.9 getenv_quad.9 \
 	getenv.9 getenv_uint.9 \
 	getenv.9 getenv_ulong.9 \
+	getenv.9 getenv_bool.9 \
+	getenv.9 getenv_is_true.9 \
+	getenv.9 getenv_is_false.9 \
 	getenv.9 kern_getenv.9 \
 	getenv.9 kern_setenv.9 \
 	getenv.9 kern_unsetenv.9 \
@@ -1745,6 +1751,10 @@ MLINKS+=printf.9 log.9 \
 	printf.9 uprintf.9
 MLINKS+=priv.9 priv_check.9 \
 	priv.9 priv_check_cred.9
+MLINKS+=prng.9 prng32.9 \
+	prng.9 prng32_bounded.9 \
+	prng.9 prng64.9 \
+	prng.9 prng64_bounded.9
 MLINKS+=proc_rwmem.9 proc_readmem.9 \
 	proc_rwmem.9 proc_writemem.9
 MLINKS+=psignal.9 gsignal.9 \
@@ -2308,7 +2318,8 @@ MLINKS+=vm_page_insert.9 vm_page_remove.9
 MLINKS+=vm_page_wire.9 vm_page_unwire.9
 MLINKS+=VOP_ACCESS.9 VOP_ACCESSX.9
 MLINKS+=VOP_ATTRIB.9 VOP_GETATTR.9 \
-	VOP_ATTRIB.9 VOP_SETATTR.9
+	VOP_ATTRIB.9 VOP_SETATTR.9 \
+	VOP_ATTRIB.9 VOP_STAT.9
 MLINKS+=VOP_CREATE.9 VOP_MKDIR.9 \
 	VOP_CREATE.9 VOP_MKNOD.9 \
 	VOP_CREATE.9 VOP_SYMLINK.9

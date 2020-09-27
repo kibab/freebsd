@@ -679,6 +679,9 @@ lagg_port_create(struct lagg_softc *sc, struct ifnet *ifp)
 		return (EINVAL);
 	}
 
+	if (sc->sc_destroying == 1)
+		return (ENXIO);
+
 	/* Limit the maximal number of lagg ports */
 	if (sc->sc_count >= LAGG_MAX_PORTS)
 		return (ENOSPC);
@@ -799,7 +802,6 @@ lagg_port_create(struct lagg_softc *sc, struct ifnet *ifp)
 	sc->sc_count++;
 
 	lagg_setmulti(lp);
-
 
 	if ((error = lagg_proto_addport(sc, lp)) != 0) {
 		/* Remove the port, without calling pr_delport. */
@@ -1043,7 +1045,6 @@ lagg_get_counter(struct ifnet *ifp, ift_counter cnt)
 	 */
 	vsum += sc->detached_counters.val[cnt];
 
-
 	return (vsum);
 }
 
@@ -1190,6 +1191,8 @@ lagg_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
 	int count, buflen, len, error = 0, oldmtu;
 
 	bzero(&rpbuf, sizeof(rpbuf));
+
+	/* XXX: This can race with lagg_clone_destroy. */
 
 	switch (cmd) {
 	case SIOCGLAGG:
@@ -2420,4 +2423,3 @@ lagg_lacp_input(struct lagg_softc *sc, struct lagg_port *lp, struct mbuf *m)
 	m->m_pkthdr.rcvif = ifp;
 	return (m);
 }
-

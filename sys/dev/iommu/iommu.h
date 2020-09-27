@@ -135,6 +135,7 @@ struct iommu_ctx {
 	u_long loads;			/* atomic updates, for stat only */
 	u_long unloads;			/* same */
 	u_int flags;			/* (u) */
+	uint16_t rid;			/* (c) pci RID */
 };
 
 /* struct iommu_ctx flags */
@@ -223,6 +224,9 @@ int iommu_gas_reserve_region(struct iommu_domain *domain, iommu_gaddr_t start,
 
 void iommu_set_buswide_ctx(struct iommu_unit *unit, u_int busno);
 bool iommu_is_buswide_ctx(struct iommu_unit *unit, u_int busno);
+void iommu_domain_init(struct iommu_unit *unit, struct iommu_domain *domain,
+    const struct iommu_domain_map_ops *ops);
+void iommu_domain_fini(struct iommu_domain *domain);
 
 bool bus_dma_iommu_set_buswide(device_t dev);
 int bus_dma_iommu_load_ident(bus_dma_tag_t dmat, bus_dmamap_t map,

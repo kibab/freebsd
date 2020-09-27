@@ -40,14 +40,17 @@
 #include <sys/queue.h>
 #include <sys/_uio.h>
 
+enum nameiop { LOOKUP, CREATE, DELETE, RENAME };
+
 struct componentname {
 	/*
 	 * Arguments to lookup.
 	 */
-	u_long	cn_nameiop;	/* namei operation */
+	u_int64_t cn_origflags;	/* flags to namei */
 	u_int64_t cn_flags;	/* flags to namei */
 	struct	thread *cn_thread;/* thread requesting lookup */
 	struct	ucred *cn_cred;	/* credentials */
+	enum nameiop cn_nameiop;	/* namei operation */
 	int	cn_lkflags;	/* Lock flags LK_EXCLUSIVE or LK_SHARED */
 	/*
 	 * Shared between lookup and commit routines.
@@ -115,13 +118,10 @@ int	cache_fplookup(struct nameidata *ndp, enum cache_fpl_status *status,
     struct pwd **pwdp);
 
 /*
- * namei operations
+ * Flags for namei.
+ *
+ * If modifying the list make sure to check whether NDVALIDATE needs updating.
  */
-#define	LOOKUP		0	/* perform name lookup only */
-#define	CREATE		1	/* setup for file creation */
-#define	DELETE		2	/* setup for file deletion */
-#define	RENAME		3	/* setup for file renaming */
-#define	OPMASK		3	/* mask for operation */
 /*
  * namei operational modifier flags, stored in ni_cnd.flags
  */
@@ -133,7 +133,8 @@ int	cache_fplookup(struct nameidata *ndp, enum cache_fpl_status *status,
 #define	BENEATH		0x0080	/* No escape from the start dir */
 #define	LOCKSHARED	0x0100	/* Shared lock leaf */
 #define	NOFOLLOW	0x0000	/* do not follow symbolic links (pseudo) */
-#define	MODMASK		0x01fc	/* mask of operational modifiers */
+#define	RBENEATH	0x100000000ULL /* No escape, even tmp, from start dir */
+#define	MODMASK		0xf000001fcULL	/* mask of operational modifiers */
 /*
  * Namei parameter descriptors.
  *
@@ -149,31 +150,41 @@ int	cache_fplookup(struct nameidata *ndp, enum cache_fpl_status *status,
  * buffer and for vrele'ing ni_startdir.
  */
 #define	RDONLY		0x00000200 /* lookup with read-only semantics */
-#define	HASBUF		0x00000400 /* has allocated pathname buffer */
-#define	SAVENAME	0x00000800 /* save pathname buffer */
-#define	SAVESTART	0x00001000 /* save starting directory */
-#define	ISDOTDOT	0x00002000 /* current component name is .. */
-#define	MAKEENTRY	0x00004000 /* entry is to be added to name cache */
-#define	ISLASTCN	0x00008000 /* this is last component of pathname */
-#define	ISSYMLINK	0x00010000 /* symlink needs interpretation */
-#define	ISWHITEOUT	0x00020000 /* found whiteout */
-#define	DOWHITEOUT	0x00040000 /* do whiteouts */
-#define	WILLBEDIR	0x00080000 /* new files will be dirs; allow trailing / */
-#define	ISUNICODE	0x00100000 /* current component name is unicode*/
-#define	ISOPEN		0x00200000 /* caller is opening; return a real vnode. */
-#define	NOCROSSMOUNT	0x00400000 /* do not cross mount points */
-#define	NOMACCHECK	0x00800000 /* do not perform MAC checks */
-#define	AUDITVNODE1	0x04000000 /* audit the looked up vnode information */
-#define	AUDITVNODE2	0x08000000 /* audit the looked up vnode information */
-#define	TRAILINGSLASH	0x10000000 /* path ended in a slash */
-#define	NOCAPCHECK	0x20000000 /* do not perform capability checks */
-#define	NOEXECCHECK	0x40000000 /* do not perform exec check on dir */
+#define	SAVENAME	0x00000400 /* save pathname buffer */
+#define	SAVESTART	0x00000800 /* save starting directory */
+#define	ISWHITEOUT	0x00001000 /* found whiteout */
+#define	DOWHITEOUT	0x00002000 /* do whiteouts */
+#define	WILLBEDIR	0x00004000 /* new files will be dirs; allow trailing / */
+#define	ISOPEN		0x00008000 /* caller is opening; return a real vnode. */
+#define	NOCROSSMOUNT	0x00010000 /* do not cross mount points */
+#define	NOMACCHECK	0x00020000 /* do not perform MAC checks */
+#define	AUDITVNODE1	0x00040000 /* audit the looked up vnode information */
+#define	AUDITVNODE2	0x00080000 /* audit the looked up vnode information */
+#define	NOCAPCHECK	0x00100000 /* do not perform capability checks */
+/* UNUSED		0x00200000 */
+/* UNUSED		0x00400000 */
+/* UNUSED		0x00800000 */
+#define	HASBUF		0x01000000 /* has allocated pathname buffer */
+#define	NOEXECCHECK	0x02000000 /* do not perform exec check on dir */
+#define	MAKEENTRY	0x04000000 /* entry is to be added to name cache */
+#define	ISSYMLINK	0x08000000 /* symlink needs interpretation */
+#define	ISLASTCN	0x10000000 /* this is last component of pathname */
+#define	ISDOTDOT	0x20000000 /* current component name is .. */
+#define	TRAILINGSLASH	0x40000000 /* path ended in a slash */
 #define	PARAMASK	0x7ffffe00 /* mask of parameter descriptors */
+
+/*
+ * Flags which must not be passed in by callers.
+ */
+#define NAMEI_INTERNAL_FLAGS	\
+	(HASBUF | NOEXECCHECK | MAKEENTRY | ISSYMLINK | ISLASTCN | ISDOTDOT | \
+	 TRAILINGSLASH)
 
 /*
  * Namei results flags
  */
 #define	NIRES_ABS	0x00000001 /* Path was absolute */
+#define	NIRES_STRICTREL	0x00000002 /* Restricted lookup result */
 
 /*
  * Flags in ni_lcf, valid for the duration of the namei call.
@@ -196,11 +207,21 @@ int	cache_fplookup(struct nameidata *ndp, enum cache_fpl_status *status,
 #define	NDINIT_ATVP(ndp, op, flags, segflg, namep, vp, td)		\
 	NDINIT_ALL(ndp, op, flags, segflg, namep, AT_FDCWD, vp, &cap_no_rights, td)
 
+/*
+ * Note the constant pattern may *hide* bugs.
+ */
+#ifdef INVARIANTS
+#define NDINIT_PREFILL(arg)	memset(arg, 0xff, sizeof(*arg))
+#else
+#define NDINIT_PREFILL(arg)	do { } while (0)
+#endif
+
 #define NDINIT_ALL(ndp, op, flags, segflg, namep, dirfd, startdir, rightsp, td)	\
 do {										\
 	struct nameidata *_ndp = (ndp);						\
 	cap_rights_t *_rightsp = (rightsp);					\
 	MPASS(_rightsp != NULL);						\
+	NDINIT_PREFILL(_ndp);							\
 	_ndp->ni_cnd.cn_nameiop = op;						\
 	_ndp->ni_cnd.cn_flags = flags;						\
 	_ndp->ni_segflg = segflg;						\
@@ -232,6 +253,12 @@ void NDFREE(struct nameidata *, const u_int);
 	else								\
 		NDFREE(_ndp, flags);					\
 } while (0)
+
+#ifdef INVARIANTS
+void NDVALIDATE(struct nameidata *);
+#else
+#define NDVALIDATE(ndp)	do { } while (0)
+#endif
 
 int	namei(struct nameidata *ndp);
 int	lookup(struct nameidata *ndp);

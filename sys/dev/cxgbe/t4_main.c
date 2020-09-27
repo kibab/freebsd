@@ -42,6 +42,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/priv.h>
 #include <sys/kernel.h>
 #include <sys/bus.h>
+#include <sys/eventhandler.h>
 #include <sys/module.h>
 #include <sys/malloc.h>
 #include <sys/queue.h>
@@ -590,6 +591,10 @@ static int t4_panic_on_fatal_err = 0;
 SYSCTL_INT(_hw_cxgbe, OID_AUTO, panic_on_fatal_err, CTLFLAG_RDTUN,
     &t4_panic_on_fatal_err, 0, "panic on fatal errors");
 
+static int t4_tx_vm_wr = 0;
+SYSCTL_INT(_hw_cxgbe, OID_AUTO, tx_vm_wr, CTLFLAG_RWTUN, &t4_tx_vm_wr, 0,
+    "Use VM work requests to transmit packets.");
+
 #ifdef TCP_OFFLOAD
 /*
  * TOE tunables.
@@ -694,6 +699,7 @@ static int sysctl_bitfield_8b(SYSCTL_HANDLER_ARGS);
 static int sysctl_bitfield_16b(SYSCTL_HANDLER_ARGS);
 static int sysctl_btphy(SYSCTL_HANDLER_ARGS);
 static int sysctl_noflowq(SYSCTL_HANDLER_ARGS);
+static int sysctl_tx_vm_wr(SYSCTL_HANDLER_ARGS);
 static int sysctl_holdoff_tmr_idx(SYSCTL_HANDLER_ARGS);
 static int sysctl_holdoff_pktc_idx(SYSCTL_HANDLER_ARGS);
 static int sysctl_qsize_rxq(SYSCTL_HANDLER_ARGS);
@@ -736,6 +742,7 @@ static int sysctl_ulprx_la(SYSCTL_HANDLER_ARGS);
 static int sysctl_wcwr_stats(SYSCTL_HANDLER_ARGS);
 static int sysctl_cpus(SYSCTL_HANDLER_ARGS);
 #ifdef TCP_OFFLOAD
+static int sysctl_tls(SYSCTL_HANDLER_ARGS);
 static int sysctl_tls_rx_ports(SYSCTL_HANDLER_ARGS);
 static int sysctl_tp_tick(SYSCTL_HANDLER_ARGS);
 static int sysctl_tp_dack_timer(SYSCTL_HANDLER_ARGS);
@@ -1067,6 +1074,8 @@ t4_attach(device_t dev)
 #ifdef TCP_OFFLOAD
 	TASK_INIT(&sc->async_event_task, 0, t4_async_event, sc);
 #endif
+
+	refcount_init(&sc->vxlan_refcount, 0);
 
 	rc = t4_map_bars_0_and_4(sc);
 	if (rc != 0)
@@ -1715,9 +1724,12 @@ cxgbe_vi_attach(device_t dev, struct vi_info *vi)
 	struct ifnet *ifp;
 	struct sbuf *sb;
 	struct pfil_head_args pa;
+	struct adapter *sc = vi->adapter;
 
 	vi->xact_addr_filt = -1;
 	callout_init(&vi->tick, 1);
+	if (sc->flags & IS_VF || t4_tx_vm_wr != 0)
+		vi->flags |= TX_USES_VM_WR;
 
 	/* Allocate an ifnet and set it up */
 	ifp = if_alloc_dev(IFT_ETHER, dev);
@@ -1748,28 +1760,39 @@ cxgbe_vi_attach(device_t dev, struct vi_info *vi)
 
 	ifp->if_capabilities = T4_CAP;
 	ifp->if_capenable = T4_CAP_ENABLE;
+	ifp->if_hwassist = CSUM_TCP | CSUM_UDP | CSUM_IP | CSUM_TSO |
+	    CSUM_UDP_IPV6 | CSUM_TCP_IPV6;
+	if (chip_id(sc) >= CHELSIO_T6) {
+		ifp->if_capabilities |= IFCAP_VXLAN_HWCSUM | IFCAP_VXLAN_HWTSO;
+		ifp->if_capenable |= IFCAP_VXLAN_HWCSUM | IFCAP_VXLAN_HWTSO;
+		ifp->if_hwassist |= CSUM_INNER_IP6_UDP | CSUM_INNER_IP6_TCP |
+		    CSUM_INNER_IP6_TSO | CSUM_INNER_IP | CSUM_INNER_IP_UDP |
+		    CSUM_INNER_IP_TCP | CSUM_INNER_IP_TSO | CSUM_ENCAP_VXLAN;
+	}
+
 #ifdef TCP_OFFLOAD
-	if (vi->nofldrxq != 0 && (vi->adapter->flags & KERN_TLS_OK) == 0)
+	if (vi->nofldrxq != 0 && (sc->flags & KERN_TLS_OK) == 0)
 		ifp->if_capabilities |= IFCAP_TOE;
 #endif
 #ifdef RATELIMIT
-	if (is_ethoffload(vi->adapter) && vi->nofldtxq != 0) {
+	if (is_ethoffload(sc) && vi->nofldtxq != 0) {
 		ifp->if_capabilities |= IFCAP_TXRTLMT;
 		ifp->if_capenable |= IFCAP_TXRTLMT;
 	}
 #endif
-	ifp->if_hwassist = CSUM_TCP | CSUM_UDP | CSUM_IP | CSUM_TSO |
-	    CSUM_UDP_IPV6 | CSUM_TCP_IPV6;
 
 	ifp->if_hw_tsomax = IP_MAXPACKET;
-	ifp->if_hw_tsomaxsegcount = TX_SGL_SEGS_TSO;
+	if (vi->flags & TX_USES_VM_WR)
+		ifp->if_hw_tsomaxsegcount = TX_SGL_SEGS_VM_TSO;
+	else
+		ifp->if_hw_tsomaxsegcount = TX_SGL_SEGS_TSO;
 #ifdef RATELIMIT
-	if (is_ethoffload(vi->adapter) && vi->nofldtxq != 0)
+	if (is_ethoffload(sc) && vi->nofldtxq != 0)
 		ifp->if_hw_tsomaxsegcount = TX_SGL_SEGS_EO_TSO;
 #endif
 	ifp->if_hw_tsomaxsegsize = 65536;
 #ifdef KERN_TLS
-	if (vi->adapter->flags & KERN_TLS_OK) {
+	if (sc->flags & KERN_TLS_OK) {
 		ifp->if_capabilities |= IFCAP_TXTLS;
 		ifp->if_capenable |= IFCAP_TXTLS;
 	}
@@ -2099,6 +2122,17 @@ cxgbe_ioctl(struct ifnet *ifp, unsigned long cmd, caddr_t data)
 		if (mask & IFCAP_TXTLS)
 			ifp->if_capenable ^= (mask & IFCAP_TXTLS);
 #endif
+		if (mask & IFCAP_VXLAN_HWCSUM) {
+			ifp->if_capenable ^= IFCAP_VXLAN_HWCSUM;
+			ifp->if_hwassist ^= CSUM_INNER_IP6_UDP |
+			    CSUM_INNER_IP6_TCP | CSUM_INNER_IP |
+			    CSUM_INNER_IP_UDP | CSUM_INNER_IP_TCP;
+		}
+		if (mask & IFCAP_VXLAN_HWTSO) {
+			ifp->if_capenable ^= IFCAP_VXLAN_HWTSO;
+			ifp->if_hwassist ^= CSUM_INNER_IP6_TSO |
+			    CSUM_INNER_IP_TSO;
+		}
 
 #ifdef VLAN_CAPABILITIES
 		VLAN_CAPABILITIES(ifp);
@@ -2150,7 +2184,7 @@ cxgbe_transmit(struct ifnet *ifp, struct mbuf *m)
 {
 	struct vi_info *vi = ifp->if_softc;
 	struct port_info *pi = vi->pi;
-	struct adapter *sc = pi->adapter;
+	struct adapter *sc;
 	struct sge_txq *txq;
 #ifdef RATELIMIT
 	struct cxgbe_snd_tag *cst;
@@ -2170,7 +2204,7 @@ cxgbe_transmit(struct ifnet *ifp, struct mbuf *m)
 		return (ENETDOWN);
 	}
 
-	rc = parse_pkt(sc, &m);
+	rc = parse_pkt(&m, vi->flags & TX_USES_VM_WR);
 	if (__predict_false(rc != 0)) {
 		MPASS(m == NULL);			/* was freed already */
 		atomic_add_int(&pi->tx_parse_error, 1);	/* rare, atomic is ok */
@@ -2185,6 +2219,7 @@ cxgbe_transmit(struct ifnet *ifp, struct mbuf *m)
 #endif
 
 	/* Select a txq. */
+	sc = vi->adapter;
 	txq = &sc->sge.txq[vi->first_txq];
 	if (M_HASHTYPE_GET(m) != M_HASHTYPE_NONE)
 		txq += ((m->m_pkthdr.flowid % (vi->ntxq - vi->rsrv_noflowq)) +
@@ -4410,6 +4445,19 @@ get_params__post_init(struct adapter *sc)
 			MPASS(sc->tids.hpftid_base == 0);
 			MPASS(sc->tids.tid_base == sc->tids.nhpftids);
 		}
+
+		param[0] = FW_PARAM_PFVF(RAWF_START);
+		param[1] = FW_PARAM_PFVF(RAWF_END);
+		rc = -t4_query_params(sc, sc->mbox, sc->pf, 0, 2, param, val);
+		if (rc != 0) {
+			device_printf(sc->dev,
+			   "failed to query rawf parameters: %d.\n", rc);
+			return (rc);
+		}
+		if ((int)val[1] > (int)val[0]) {
+			sc->rawf_base = val[0];
+			sc->nrawf = val[1] - val[0] + 1;
+		}
 	}
 
 	/*
@@ -5141,6 +5189,7 @@ update_mac_settings(struct ifnet *ifp, int flags)
 	struct port_info *pi = vi->pi;
 	struct adapter *sc = pi->adapter;
 	int mtu = -1, promisc = -1, allmulti = -1, vlanex = -1;
+	uint8_t match_all_mac[ETHER_ADDR_LEN] = {0};
 
 	ASSERT_SYNCHRONIZED_OP(sc);
 	KASSERT(flags, ("%s: not told what to update.", __func__));
@@ -5214,7 +5263,7 @@ update_mac_settings(struct ifnet *ifp, int flags)
 				rc = -rc;
 				for (j = 0; j < ctx.i; j++) {
 					if_printf(ifp,
-					    "failed to add mc address"
+					    "failed to add mcast address"
 					    " %02x:%02x:%02x:"
 					    "%02x:%02x:%02x rc=%d\n",
 					    ctx.mcaddr[j][0], ctx.mcaddr[j][1],
@@ -5224,12 +5273,34 @@ update_mac_settings(struct ifnet *ifp, int flags)
 				}
 				return (rc);
 			}
+			ctx.del = 0;
 		} else
 			NET_EPOCH_EXIT(et);
 
 		rc = -t4_set_addr_hash(sc, sc->mbox, vi->viid, 0, ctx.hash, 0);
 		if (rc != 0)
-			if_printf(ifp, "failed to set mc address hash: %d", rc);
+			if_printf(ifp, "failed to set mcast address hash: %d\n",
+			    rc);
+		if (ctx.del == 0) {
+			/* We clobbered the VXLAN entry if there was one. */
+			pi->vxlan_tcam_entry = false;
+		}
+	}
+
+	if (IS_MAIN_VI(vi) && sc->vxlan_refcount > 0 &&
+	    pi->vxlan_tcam_entry == false) {
+		rc = t4_alloc_raw_mac_filt(sc, vi->viid, match_all_mac,
+		    match_all_mac, sc->rawf_base + pi->port_id, 1, pi->port_id,
+		    true);
+		if (rc < 0) {
+			rc = -rc;
+			if_printf(ifp, "failed to add VXLAN TCAM entry: %d.\n",
+			    rc);
+		} else {
+			MPASS(rc == sc->rawf_base + pi->port_id);
+			rc = 0;
+			pi->vxlan_tcam_entry = true;
+		}
 	}
 
 	return (rc);
@@ -6607,8 +6678,9 @@ t4_sysctls(struct adapter *sc)
 		    CTLFLAG_RW, &sc->tt.rx_coalesce, 0, "receive coalescing");
 
 		sc->tt.tls = 0;
-		SYSCTL_ADD_INT(ctx, children, OID_AUTO, "tls", CTLFLAG_RW,
-		    &sc->tt.tls, 0, "Inline TLS allowed");
+		SYSCTL_ADD_PROC(ctx, children, OID_AUTO, "tls", CTLTYPE_INT |
+		    CTLFLAG_RW | CTLFLAG_NEEDGIANT, sc, 0, sysctl_tls, "I",
+		    "Inline TLS allowed");
 
 		SYSCTL_ADD_PROC(ctx, children, OID_AUTO, "tls_rx_ports",
 		    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT, sc, 0,
@@ -6755,6 +6827,16 @@ vi_sysctls(struct vi_info *vi)
 		    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT, vi, 0,
 		    sysctl_noflowq, "IU",
 		    "Reserve queue 0 for non-flowid packets");
+	}
+
+	if (vi->adapter->flags & IS_VF) {
+		MPASS(vi->flags & TX_USES_VM_WR);
+		SYSCTL_ADD_UINT(ctx, children, OID_AUTO, "tx_vm_wr", CTLFLAG_RD,
+		    NULL, 1, "use VM work requests for transmit");
+	} else {
+		SYSCTL_ADD_PROC(ctx, children, OID_AUTO, "tx_vm_wr",
+		    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT, vi, 0,
+		    sysctl_tx_vm_wr, "I", "use VM work requestes for transmit");
 	}
 
 #ifdef TCP_OFFLOAD
@@ -7184,6 +7266,63 @@ sysctl_noflowq(SYSCTL_HANDLER_ARGS)
 	else
 		vi->rsrv_noflowq = 0;
 
+	return (rc);
+}
+
+static int
+sysctl_tx_vm_wr(SYSCTL_HANDLER_ARGS)
+{
+	struct vi_info *vi = arg1;
+	struct adapter *sc = vi->adapter;
+	int rc, val, i;
+
+	MPASS(!(sc->flags & IS_VF));
+
+	val = vi->flags & TX_USES_VM_WR ? 1 : 0;
+	rc = sysctl_handle_int(oidp, &val, 0, req);
+	if (rc != 0 || req->newptr == NULL)
+		return (rc);
+
+	if (val != 0 && val != 1)
+		return (EINVAL);
+
+	rc = begin_synchronized_op(sc, vi, HOLD_LOCK | SLEEP_OK | INTR_OK,
+	    "t4txvm");
+	if (rc)
+		return (rc);
+	if (vi->ifp->if_drv_flags & IFF_DRV_RUNNING) {
+		/*
+		 * We don't want parse_pkt to run with one setting (VF or PF)
+		 * and then eth_tx to see a different setting but still use
+		 * stale information calculated by parse_pkt.
+		 */
+		rc = EBUSY;
+	} else {
+		struct port_info *pi = vi->pi;
+		struct sge_txq *txq;
+		uint32_t ctrl0;
+		uint8_t npkt = sc->params.max_pkts_per_eth_tx_pkts_wr;
+
+		if (val) {
+			vi->flags |= TX_USES_VM_WR;
+			vi->ifp->if_hw_tsomaxsegcount = TX_SGL_SEGS_VM_TSO;
+			ctrl0 = htobe32(V_TXPKT_OPCODE(CPL_TX_PKT_XT) |
+			    V_TXPKT_INTF(pi->tx_chan));
+			if (!(sc->flags & IS_VF))
+				npkt--;
+		} else {
+			vi->flags &= ~TX_USES_VM_WR;
+			vi->ifp->if_hw_tsomaxsegcount = TX_SGL_SEGS_TSO;
+			ctrl0 = htobe32(V_TXPKT_OPCODE(CPL_TX_PKT_XT) |
+			    V_TXPKT_INTF(pi->tx_chan) | V_TXPKT_PF(sc->pf) |
+			    V_TXPKT_VF(vi->vin) | V_TXPKT_VF_VLD(vi->vfvld));
+		}
+		for_each_txq(vi, i, txq) {
+			txq->cpl_ctrl0 = ctrl0;
+			txq->txp.max_npkt = npkt;
+		}
+	}
+	end_synchronized_op(sc, LOCK_HELD);
 	return (rc);
 }
 
@@ -9700,6 +9839,37 @@ sysctl_cpus(SYSCTL_HANDLER_ARGS)
 
 #ifdef TCP_OFFLOAD
 static int
+sysctl_tls(SYSCTL_HANDLER_ARGS)
+{
+	struct adapter *sc = arg1;
+	int i, j, v, rc;
+	struct vi_info *vi;
+
+	v = sc->tt.tls;
+	rc = sysctl_handle_int(oidp, &v, 0, req);
+	if (rc != 0 || req->newptr == NULL)
+		return (rc);
+
+	if (v != 0 && !(sc->cryptocaps & FW_CAPS_CONFIG_TLSKEYS))
+		return (ENOTSUP);
+
+	rc = begin_synchronized_op(sc, NULL, SLEEP_OK | INTR_OK, "t4stls");
+	if (rc)
+		return (rc);
+	sc->tt.tls = !!v;
+	for_each_port(sc, i) {
+		for_each_vi(sc->port[i], j, vi) {
+			if (vi->flags & VI_INIT_DONE)
+				t4_update_fl_bufsize(vi->ifp);
+		}
+	}
+	end_synchronized_op(sc, 0);
+
+	return (0);
+
+}
+
+static int
 sysctl_tls_rx_ports(SYSCTL_HANDLER_ARGS)
 {
 	struct adapter *sc = arg1;
@@ -10374,6 +10544,7 @@ clear_stats(struct adapter *sc, u_int port_id)
 #endif
 				rxq->rxcsum = 0;
 				rxq->vlan_extraction = 0;
+				rxq->vxlan_rxcsum = 0;
 
 				rxq->fl.cl_allocated = 0;
 				rxq->fl.cl_recycled = 0;
@@ -10392,6 +10563,8 @@ clear_stats(struct adapter *sc, u_int port_id)
 				txq->txpkts0_pkts = 0;
 				txq->txpkts1_pkts = 0;
 				txq->raw_wrs = 0;
+				txq->vxlan_tso_wrs = 0;
+				txq->vxlan_txcsum = 0;
 				txq->kern_tls_records = 0;
 				txq->kern_tls_short = 0;
 				txq->kern_tls_partial = 0;
@@ -11202,6 +11375,116 @@ DB_FUNC(tcb, db_show_t4tcb, db_t4_table, CS_OWN, NULL)
 }
 #endif
 
+static eventhandler_tag vxlan_start_evtag;
+static eventhandler_tag vxlan_stop_evtag;
+
+struct vxlan_evargs {
+	struct ifnet *ifp;
+	uint16_t port;
+};
+
+static void
+t4_vxlan_start(struct adapter *sc, void *arg)
+{
+	struct vxlan_evargs *v = arg;
+	struct port_info *pi;
+	uint8_t match_all_mac[ETHER_ADDR_LEN] = {0};
+	int i, rc;
+
+	if (sc->nrawf == 0 || chip_id(sc) <= CHELSIO_T5)
+		return;
+	if (begin_synchronized_op(sc, NULL, SLEEP_OK | INTR_OK, "t4vxst") != 0)
+		return;
+
+	if (sc->vxlan_refcount == 0) {
+		sc->vxlan_port = v->port;
+		sc->vxlan_refcount = 1;
+		t4_write_reg(sc, A_MPS_RX_VXLAN_TYPE,
+		    V_VXLAN(v->port) | F_VXLAN_EN);
+		for_each_port(sc, i) {
+			pi = sc->port[i];
+			if (pi->vxlan_tcam_entry == true)
+				continue;
+			rc = t4_alloc_raw_mac_filt(sc, pi->vi[0].viid,
+			    match_all_mac, match_all_mac,
+			    sc->rawf_base + pi->port_id, 1, pi->port_id, true);
+			if (rc < 0) {
+				rc = -rc;
+				log(LOG_ERR,
+				    "%s: failed to add VXLAN TCAM entry: %d.\n",
+				    device_get_name(pi->vi[0].dev), rc);
+			} else {
+				MPASS(rc == sc->rawf_base + pi->port_id);
+				rc = 0;
+				pi->vxlan_tcam_entry = true;
+			}
+		}
+	} else if (sc->vxlan_port == v->port) {
+		sc->vxlan_refcount++;
+	} else {
+		log(LOG_ERR, "%s: VXLAN already configured on port  %d; "
+		    "ignoring attempt to configure it on port %d\n",
+		    device_get_nameunit(sc->dev), sc->vxlan_port, v->port);
+	}
+	end_synchronized_op(sc, 0);
+}
+
+static void
+t4_vxlan_stop(struct adapter *sc, void *arg)
+{
+	struct vxlan_evargs *v = arg;
+
+	if (sc->nrawf == 0 || chip_id(sc) <= CHELSIO_T5)
+		return;
+	if (begin_synchronized_op(sc, NULL, SLEEP_OK | INTR_OK, "t4vxsp") != 0)
+		return;
+
+	/*
+	 * VXLANs may have been configured before the driver was loaded so we
+	 * may see more stops than starts.  This is not handled cleanly but at
+	 * least we keep the refcount sane.
+	 */
+	if (sc->vxlan_port != v->port)
+		goto done;
+	if (sc->vxlan_refcount == 0) {
+		log(LOG_ERR,
+		    "%s: VXLAN operation on port %d was stopped earlier; "
+		    "ignoring attempt to stop it again.\n",
+		    device_get_nameunit(sc->dev), sc->vxlan_port);
+	} else if (--sc->vxlan_refcount == 0) {
+		t4_set_reg_field(sc, A_MPS_RX_VXLAN_TYPE, F_VXLAN_EN, 0);
+	}
+done:
+	end_synchronized_op(sc, 0);
+}
+
+static void
+t4_vxlan_start_handler(void *arg __unused, struct ifnet *ifp,
+    sa_family_t family, u_int port)
+{
+	struct vxlan_evargs v;
+
+	MPASS(family == AF_INET || family == AF_INET6);
+	v.ifp = ifp;
+	v.port = port;
+
+	t4_iterate(t4_vxlan_start, &v);
+}
+
+static void
+t4_vxlan_stop_handler(void *arg __unused, struct ifnet *ifp, sa_family_t family,
+    u_int port)
+{
+	struct vxlan_evargs v;
+
+	MPASS(family == AF_INET || family == AF_INET6);
+	v.ifp = ifp;
+	v.port = port;
+
+	t4_iterate(t4_vxlan_stop, &v);
+}
+
+
 static struct sx mlu;	/* mod load unload */
 SX_SYSINIT(cxgbe_mlu, &mlu, "cxgbe mod load/unload");
 
@@ -11245,6 +11528,14 @@ mod_event(module_t mod, int cmd, void *arg)
 #endif
 			t4_tracer_modload();
 			tweak_tunables();
+			vxlan_start_evtag =
+			    EVENTHANDLER_REGISTER(vxlan_start,
+				t4_vxlan_start_handler, NULL,
+				EVENTHANDLER_PRI_ANY);
+			vxlan_stop_evtag =
+			    EVENTHANDLER_REGISTER(vxlan_stop,
+				t4_vxlan_stop_handler, NULL,
+				EVENTHANDLER_PRI_ANY);
 		}
 		sx_xunlock(&mlu);
 		break;
@@ -11281,6 +11572,10 @@ mod_event(module_t mod, int cmd, void *arg)
 			sx_sunlock(&t4_list_lock);
 
 			if (t4_sge_extfree_refs() == 0) {
+				EVENTHANDLER_DEREGISTER(vxlan_start,
+				    vxlan_start_evtag);
+				EVENTHANDLER_DEREGISTER(vxlan_stop,
+				    vxlan_stop_evtag);
 				t4_tracer_modunload();
 #ifdef KERN_TLS
 				t6_ktls_modunload();

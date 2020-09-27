@@ -2724,7 +2724,7 @@ brelse(struct buf *bp)
 	if ((bp->b_flags & B_VMIO) && (bp->b_flags & B_NOCACHE ||
 	    (bp->b_ioflags & BIO_ERROR && bp->b_iocmd == BIO_READ)) &&
 	    (v_mnt == NULL || (v_mnt->mnt_vfc->vfc_flags & VFCF_NETWORK) == 0 ||
-	    vn_isdisk(bp->b_vp, NULL) || (bp->b_flags & B_DELWRI) == 0)) {
+	    vn_isdisk(bp->b_vp) || (bp->b_flags & B_DELWRI) == 0)) {
 		vfs_vmio_invalidate(bp);
 		allocbuf(bp, 0);
 	}
@@ -3163,7 +3163,6 @@ vfs_bio_awrite(struct buf *bp)
 	if ((vp->v_type == VREG) && 
 	    (vp->v_mount != 0) && /* Only on nodes that have the size info */
 	    (bp->b_flags & (B_CLUSTEROK | B_INVAL)) == B_CLUSTEROK) {
-
 		size = vp->v_mount->mnt_stat.f_iosize;
 		maxcl = MAXPHYS / size;
 
@@ -3757,7 +3756,7 @@ bp_unmapped_get_kva(struct buf *bp, daddr_t blkno, int size, int gbflags)
 	 * Calculate the amount of the address space we would reserve
 	 * if the buffer was mapped.
 	 */
-	bsize = vn_isdisk(bp->b_vp, NULL) ? DEV_BSIZE : bp->b_bufobj->bo_bsize;
+	bsize = vn_isdisk(bp->b_vp) ? DEV_BSIZE : bp->b_bufobj->bo_bsize;
 	KASSERT(bsize != 0, ("bsize == 0, check bo->bo_bsize"));
 	offset = blkno * bsize;
 	maxsize = size + (offset & PAGE_MASK);
@@ -4013,7 +4012,7 @@ newbuf_unlocked:
 		if (flags & GB_NOCREAT)
 			return (EEXIST);
 
-		bsize = vn_isdisk(vp, NULL) ? DEV_BSIZE : bo->bo_bsize;
+		bsize = vn_isdisk(vp) ? DEV_BSIZE : bo->bo_bsize;
 		KASSERT(bsize != 0, ("bsize == 0, check bo->bo_bsize"));
 		offset = blkno * bsize;
 		vmio = vp->v_object != NULL;
@@ -4026,7 +4025,7 @@ newbuf_unlocked:
 		}
 		maxsize = imax(maxsize, bsize);
 		if ((flags & GB_NOSPARSE) != 0 && vmio &&
-		    !vn_isdisk(vp, NULL)) {
+		    !vn_isdisk(vp)) {
 			error = VOP_BMAP(vp, blkno, NULL, &d_blkno, 0, 0);
 			KASSERT(error != EOPNOTSUPP,
 			    ("GB_NOSPARSE from fs not supporting bmap, vp %p",

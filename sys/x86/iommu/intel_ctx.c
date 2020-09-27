@@ -74,7 +74,6 @@ __FBSDID("$FreeBSD$");
 static MALLOC_DEFINE(M_DMAR_CTX, "dmar_ctx", "Intel DMAR Context");
 static MALLOC_DEFINE(M_DMAR_DOMAIN, "dmar_dom", "Intel DMAR Domain");
 
-static void dmar_domain_unload_task(void *arg, int pending);
 static void dmar_unref_domain_locked(struct dmar_unit *dmar,
     struct dmar_domain *domain);
 static void dmar_domain_destroy(struct dmar_domain *domain);
@@ -119,9 +118,9 @@ dmar_map_ctx_entry(struct dmar_ctx *ctx, struct sf_buf **sfp)
 
 	dmar = CTX2DMAR(ctx);
 
-	ctxp = dmar_map_pgtbl(dmar->ctx_obj, 1 +
-	    PCI_RID2BUS(ctx->rid), IOMMU_PGF_NOALLOC | IOMMU_PGF_WAITOK, sfp);
-	ctxp += ctx->rid & 0xff;
+	ctxp = dmar_map_pgtbl(dmar->ctx_obj, 1 + PCI_RID2BUS(ctx->context.rid),
+	    IOMMU_PGF_NOALLOC | IOMMU_PGF_WAITOK, sfp);
+	ctxp += ctx->context.rid & 0xff;
 	return (ctxp);
 }
 
@@ -322,6 +321,7 @@ static struct dmar_domain *
 dmar_domain_alloc(struct dmar_unit *dmar, bool id_mapped)
 {
 	struct iommu_domain *iodom;
+	struct iommu_unit *unit;
 	struct dmar_domain *domain;
 	int error, id, mgaw;
 
@@ -330,16 +330,12 @@ dmar_domain_alloc(struct dmar_unit *dmar, bool id_mapped)
 		return (NULL);
 	domain = malloc(sizeof(*domain), M_DMAR_DOMAIN, M_WAITOK | M_ZERO);
 	iodom = DOM2IODOM(domain);
+	unit = DMAR2IOMMU(dmar);
 	domain->domain = id;
 	LIST_INIT(&domain->contexts);
-	RB_INIT(&domain->iodom.rb_root);
-	TAILQ_INIT(&domain->iodom.unload_entries);
-	TASK_INIT(&domain->iodom.unload_task, 0, dmar_domain_unload_task,
-	    domain);
-	mtx_init(&domain->iodom.lock, "dmardom", NULL, MTX_DEF);
+	iommu_domain_init(unit, iodom, &dmar_domain_map_ops);
+
 	domain->dmar = dmar;
-	domain->iodom.iommu = &dmar->iommu;
-	domain_pgtbl_init(domain);
 
 	/*
 	 * For now, use the maximal usable physical address of the
@@ -390,7 +386,7 @@ dmar_ctx_alloc(struct dmar_domain *domain, uint16_t rid)
 	ctx->context.domain = DOM2IODOM(domain);
 	ctx->context.tag = malloc(sizeof(struct bus_dma_tag_iommu),
 	    M_DMAR_CTX, M_WAITOK | M_ZERO);
-	ctx->rid = rid;
+	ctx->context.rid = rid;
 	ctx->refs = 1;
 	return (ctx);
 }
@@ -430,7 +426,10 @@ dmar_ctx_unlink(struct dmar_ctx *ctx)
 static void
 dmar_domain_destroy(struct dmar_domain *domain)
 {
+	struct iommu_domain *iodom;
 	struct dmar_unit *dmar;
+
+	iodom = DOM2IODOM(domain);
 
 	KASSERT(TAILQ_EMPTY(&domain->iodom.unload_entries),
 	    ("unfinished unloads %p", domain));
@@ -442,7 +441,7 @@ dmar_domain_destroy(struct dmar_domain *domain)
 	    ("destroying dom %p with refs %d", domain, domain->refs));
 	if ((domain->iodom.flags & IOMMU_DOMAIN_GAS_INITED) != 0) {
 		DMAR_DOMAIN_LOCK(domain);
-		iommu_gas_fini_domain(DOM2IODOM(domain));
+		iommu_gas_fini_domain(iodom);
 		DMAR_DOMAIN_UNLOCK(domain);
 	}
 	if ((domain->iodom.flags & IOMMU_DOMAIN_PGTBL_INITED) != 0) {
@@ -450,7 +449,7 @@ dmar_domain_destroy(struct dmar_domain *domain)
 			DMAR_DOMAIN_PGLOCK(domain);
 		domain_free_pgtbl(domain);
 	}
-	mtx_destroy(&domain->iodom.lock);
+	iommu_domain_fini(iodom);
 	dmar = DOM2DMAR(domain);
 	free_unr(dmar->domids, domain->domain);
 	free(domain, M_DMAR_DOMAIN);
@@ -644,8 +643,9 @@ dmar_move_ctx_to_domain(struct dmar_domain *domain, struct dmar_ctx *ctx)
 	error = dmar_flush_for_ctx_entry(dmar, true);
 	/* If flush failed, rolling back would not work as well. */
 	printf("dmar%d rid %x domain %d->%d %s-mapped\n",
-	    dmar->iommu.unit, ctx->rid, old_domain->domain, domain->domain,
-	    (domain->iodom.flags & IOMMU_DOMAIN_IDMAP) != 0 ? "id" : "re");
+	    dmar->iommu.unit, ctx->context.rid, old_domain->domain,
+	    domain->domain, (domain->iodom.flags & IOMMU_DOMAIN_IDMAP) != 0 ?
+	    "id" : "re");
 	dmar_unref_domain_locked(dmar, old_domain);
 	TD_PINNED_ASSERT;
 	return (error);
@@ -777,7 +777,7 @@ dmar_find_ctx_locked(struct dmar_unit *dmar, uint16_t rid)
 
 	LIST_FOREACH(domain, &dmar->domains, link) {
 		LIST_FOREACH(ctx, &domain->contexts, link) {
-			if (ctx->rid == rid)
+			if (ctx->context.rid == rid)
 				return (ctx);
 		}
 	}
@@ -873,26 +873,6 @@ dmar_domain_unload(struct dmar_domain *domain,
 	}
 	TAILQ_CONCAT(&unit->tlb_flush_entries, entries, dmamap_link);
 	DMAR_UNLOCK(unit);
-}	
-
-static void
-dmar_domain_unload_task(void *arg, int pending)
-{
-	struct dmar_domain *domain;
-	struct iommu_map_entries_tailq entries;
-
-	domain = arg;
-	TAILQ_INIT(&entries);
-
-	for (;;) {
-		DMAR_DOMAIN_LOCK(domain);
-		TAILQ_SWAP(&domain->iodom.unload_entries, &entries,
-		    iommu_map_entry, dmamap_link);
-		DMAR_DOMAIN_UNLOCK(domain);
-		if (TAILQ_EMPTY(&entries))
-			break;
-		dmar_domain_unload(domain, &entries, true);
-	}
 }
 
 struct iommu_ctx *

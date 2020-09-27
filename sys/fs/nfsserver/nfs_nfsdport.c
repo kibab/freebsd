@@ -210,7 +210,6 @@ static struct nfsheur {
 	int nh_seqcount;	/* heuristic */
 } nfsheur[NUM_HEURISTIC];
 
-
 /*
  * Heuristic to detect sequential operation.
  */
@@ -1052,7 +1051,6 @@ nfsvno_write(struct vnode *vp, off_t off, int retlen, int *stable,
 		*stable = NFSWRITE_FILESYNC;
 		return (error);
 	}
-
 
 	if (*stable == NFSWRITE_UNSTABLE)
 		ioflags = IO_NODELOCKED;
@@ -2510,7 +2508,7 @@ again:
 			bpos1 = nd->nd_bpos;
 			bextpg1 = nd->nd_bextpg;
 			bextpgsiz1 = nd->nd_bextpgsiz;
-	
+
 			/*
 			 * For readdir_and_lookup get the vnode using
 			 * the file number.
@@ -3284,6 +3282,19 @@ nfsd_fhtovp(struct nfsrv_descript *nd, struct nfsrvfh *nfp, int lktype,
 	}
 
 	/*
+	 * If TLS is required by the export, check the flags in nd_flag.
+	 */
+	if (nd->nd_repstat == 0 && ((NFSVNO_EXTLS(exp) &&
+	    (nd->nd_flag & ND_TLS) == 0) ||
+	     (NFSVNO_EXTLSCERT(exp) &&
+	      (nd->nd_flag & ND_TLSCERT) == 0) ||
+	     (NFSVNO_EXTLSCERTUSER(exp) &&
+	      (nd->nd_flag & ND_TLSCERTUSER) == 0))) {
+		vput(*vpp);
+		nd->nd_repstat = NFSERR_ACCES;
+	}
+
+	/*
 	 * Personally, I've never seen any point in requiring a
 	 * reserved port#, since only in the rare case where the
 	 * clients are all boxes with secure system privileges,
@@ -3545,6 +3556,15 @@ nfsvno_v4rootexport(struct nfsrv_descript *nd)
 			nd->nd_flag |= ND_EXGSSINTEGRITY;
 		else if (secflavors[i] == RPCSEC_GSS_KRB5P)
 			nd->nd_flag |= ND_EXGSSPRIVACY;
+	}
+
+	/* And set ND_EXxx flags for TLS. */
+	if ((exflags & MNT_EXTLS) != 0) {
+		nd->nd_flag |= ND_EXTLS;
+		if ((exflags & MNT_EXTLSCERT) != 0)
+			nd->nd_flag |= ND_EXTLSCERT;
+		if ((exflags & MNT_EXTLSCERTUSER) != 0)
+			nd->nd_flag |= ND_EXTLSCERTUSER;
 	}
 
 out:
@@ -5105,7 +5125,7 @@ nfsrv_readdsrpc(fhandle_t *fhp, off_t off, int len, struct ucred *cred,
 	st.other[2] = 0x55555555;
 	st.seqid = 0xffffffff;
 	nfscl_reqstart(nd, NFSPROC_READDS, nmp, (u_int8_t *)fhp, sizeof(*fhp),
-	    NULL, NULL, 0, 0, false);
+	    NULL, NULL, 0, 0);
 	nfsm_stateidtom(nd, &st, NFSSTATEID_PUTSTATEID);
 	NFSM_BUILD(tl, uint32_t *, NFSX_UNSIGNED * 3);
 	txdr_hyper(off, tl);
@@ -5135,7 +5155,7 @@ nfsrv_readdsrpc(fhandle_t *fhp, off_t off, int len, struct ucred *cred,
 				error = ENOENT;
 				goto nfsmout;
 			}
-	
+
 			/*
 			 * Now, adjust first mbuf so that any XDR before the
 			 * read data is skipped over.
@@ -5145,7 +5165,7 @@ nfsrv_readdsrpc(fhandle_t *fhp, off_t off, int len, struct ucred *cred,
 				m->m_len -= trimlen;
 				NFSM_DATAP(m, trimlen);
 			}
-	
+
 			/*
 			 * Truncate the mbuf chain at retlen bytes of data,
 			 * plus XDR padding that brings the length up to a
@@ -5213,7 +5233,7 @@ nfsrv_writedsdorpc(struct nfsmount *nmp, fhandle_t *fhp, off_t off, int len,
 
 	nd = malloc(sizeof(*nd), M_TEMP, M_WAITOK | M_ZERO);
 	nfscl_reqstart(nd, NFSPROC_WRITE, nmp, (u_int8_t *)fhp,
-	    sizeof(fhandle_t), NULL, NULL, 0, 0, false);
+	    sizeof(fhandle_t), NULL, NULL, 0, 0);
 
 	/*
 	 * Use a stateid where other is an alternating 01010 pattern and
@@ -5435,7 +5455,7 @@ nfsrv_allocatedsdorpc(struct nfsmount *nmp, fhandle_t *fhp, off_t off,
 
 	nd = malloc(sizeof(*nd), M_TEMP, M_WAITOK | M_ZERO);
 	nfscl_reqstart(nd, NFSPROC_ALLOCATE, nmp, (u_int8_t *)fhp,
-	    sizeof(fhandle_t), NULL, NULL, 0, 0, false);
+	    sizeof(fhandle_t), NULL, NULL, 0, 0);
 
 	/*
 	 * Use a stateid where other is an alternating 01010 pattern and
@@ -5589,7 +5609,7 @@ nfsrv_setattrdsdorpc(fhandle_t *fhp, struct ucred *cred, NFSPROC_T *p,
 	st.other[2] = 0x55555555;
 	st.seqid = 0xffffffff;
 	nfscl_reqstart(nd, NFSPROC_SETATTR, nmp, (u_int8_t *)fhp, sizeof(*fhp),
-	    NULL, NULL, 0, 0, false);
+	    NULL, NULL, 0, 0);
 	nfsm_stateidtom(nd, &st, NFSSTATEID_PUTSTATEID);
 	nfscl_fillsattr(nd, &nap->na_vattr, vp, NFSSATTR_FULL, 0);
 
@@ -5774,7 +5794,7 @@ nfsrv_setacldsdorpc(fhandle_t *fhp, struct ucred *cred, NFSPROC_T *p,
 	st.other[2] = 0x55555555;
 	st.seqid = 0xffffffff;
 	nfscl_reqstart(nd, NFSPROC_SETACL, nmp, (u_int8_t *)fhp, sizeof(*fhp),
-	    NULL, NULL, 0, 0, false);
+	    NULL, NULL, 0, 0);
 	nfsm_stateidtom(nd, &st, NFSSTATEID_PUTSTATEID);
 	NFSZERO_ATTRBIT(&attrbits);
 	NFSSETBIT_ATTRBIT(&attrbits, NFSATTRBIT_ACL);
@@ -5905,11 +5925,11 @@ nfsrv_getattrdsrpc(fhandle_t *fhp, struct ucred *cred, NFSPROC_T *p,
 	struct nfsrv_descript *nd;
 	int error;
 	nfsattrbit_t attrbits;
-	
+
 	NFSD_DEBUG(4, "in nfsrv_getattrdsrpc\n");
 	nd = malloc(sizeof(*nd), M_TEMP, M_WAITOK | M_ZERO);
 	nfscl_reqstart(nd, NFSPROC_GETATTR, nmp, (u_int8_t *)fhp,
-	    sizeof(fhandle_t), NULL, NULL, 0, 0, false);
+	    sizeof(fhandle_t), NULL, NULL, 0, 0);
 	NFSZERO_ATTRBIT(&attrbits);
 	NFSSETBIT_ATTRBIT(&attrbits, NFSATTRBIT_SIZE);
 	NFSSETBIT_ATTRBIT(&attrbits, NFSATTRBIT_CHANGE);
@@ -5963,7 +5983,7 @@ nfsrv_seekdsrpc(fhandle_t *fhp, off_t *offp, int content, bool *eofp,
 	struct nfsrv_descript *nd;
 	nfsv4stateid_t st;
 	int error;
-	
+
 	NFSD_DEBUG(4, "in nfsrv_seekdsrpc\n");
 	/*
 	 * Use a stateid where other is an alternating 01010 pattern and
@@ -5977,7 +5997,7 @@ nfsrv_seekdsrpc(fhandle_t *fhp, off_t *offp, int content, bool *eofp,
 	st.seqid = 0xffffffff;
 	nd = malloc(sizeof(*nd), M_TEMP, M_WAITOK | M_ZERO);
 	nfscl_reqstart(nd, NFSPROC_SEEKDS, nmp, (u_int8_t *)fhp,
-	    sizeof(fhandle_t), NULL, NULL, 0, 0, false);
+	    sizeof(fhandle_t), NULL, NULL, 0, 0);
 	nfsm_stateidtom(nd, &st, NFSSTATEID_PUTSTATEID);
 	NFSM_BUILD(tl, uint32_t *, NFSX_HYPER + NFSX_UNSIGNED);
 	txdr_hyper(*offp, tl); tl += 2;
@@ -6690,4 +6710,3 @@ MODULE_DEPEND(nfsd, nfscommon, 1, 1, 1);
 MODULE_DEPEND(nfsd, nfslockd, 1, 1, 1);
 MODULE_DEPEND(nfsd, krpc, 1, 1, 1);
 MODULE_DEPEND(nfsd, nfssvc, 1, 1, 1);
-

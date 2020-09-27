@@ -47,10 +47,10 @@ __FBSDID("$FreeBSD$");
 #include <sys/signalvar.h>
 #include <sys/vnode.h>
 #include <sys/acct.h>
-#include <sys/bus.h>
 #include <sys/capsicum.h>
 #include <sys/compressor.h>
 #include <sys/condvar.h>
+#include <sys/devctl.h>
 #include <sys/event.h>
 #include <sys/fcntl.h>
 #include <sys/imgact.h>
@@ -2961,7 +2961,6 @@ issignal(struct thread *td)
 		 * to clear it from the pending mask.
 		 */
 		switch ((intptr_t)p->p_sigacts->ps_sigact[_SIG_IDX(sig)]) {
-
 		case (intptr_t)SIG_DFL:
 			/*
 			 * Don't take default actions on system processes.
@@ -3731,7 +3730,7 @@ coredump(struct thread *td)
 	if (error != 0 || coredump_devctl == 0)
 		goto out;
 	sb = sbuf_new_auto();
-	if (vn_fullpath_global(td, p->p_textvp, &fullpath, &freepath) != 0)
+	if (vn_fullpath_global(p->p_textvp, &fullpath, &freepath) != 0)
 		goto out2;
 	sbuf_printf(sb, "comm=\"");
 	devctl_safe_quote_sb(sb, fullpath);
@@ -3746,7 +3745,7 @@ coredump(struct thread *td)
 	if (name[0] != '/') {
 		fullpathsize = MAXPATHLEN;
 		freepath = malloc(fullpathsize, M_TEMP, M_WAITOK);
-		if (vn_getcwd(td, freepath, &fullpath, &fullpathsize) != 0) {
+		if (vn_getcwd(freepath, &fullpath, &fullpathsize) != 0) {
 			free(freepath, M_TEMP);
 			goto out2;
 		}
@@ -3795,7 +3794,8 @@ nosys(struct thread *td, struct nosys_args *args)
 		uprintf("pid %d comm %s: nosys %d\n", p->p_pid, p->p_comm,
 		    td->td_sa.code);
 	}
-	if (kern_lognosys == 2 || kern_lognosys == 3) {
+	if (kern_lognosys == 2 || kern_lognosys == 3 ||
+	    (p->p_pid == 1 && (kern_lognosys & 3) == 0)) {
 		printf("pid %d comm %s: nosys %d\n", p->p_pid, p->p_comm,
 		    td->td_sa.code);
 	}

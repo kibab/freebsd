@@ -1892,7 +1892,6 @@ pcpu_page_free(void *mem, vm_size_t size, uint8_t flags)
 	kva_free(sva, size);
 }
 
-
 /*
  * Zero fill initializer
  *
@@ -3429,12 +3428,6 @@ cache_alloc(uma_zone_t zone, uma_cache_t cache, void *udata, int flags)
 		bucket_free(zone, bucket, udata);
 	}
 
-	/* Short-circuit for zones without buckets and low memory. */
-	if (zone->uz_bucket_size == 0 || bucketdisable) {
-		critical_enter();
-		return (false);
-	}
-
 	/*
 	 * Attempt to retrieve the item from the per-CPU cache has failed, so
 	 * we must go back to the zone.  This requires the zdom lock, so we
@@ -3449,11 +3442,12 @@ cache_alloc(uma_zone_t zone, uma_cache_t cache, void *udata, int flags)
 	    VM_DOMAIN_EMPTY(domain))
 		domain = zone_domain_highest(zone, domain);
 	bucket = cache_fetch_bucket(zone, cache, domain);
-	if (bucket == NULL) {
+	if (bucket == NULL && zone->uz_bucket_size != 0 && !bucketdisable) {
 		bucket = zone_alloc_bucket(zone, udata, domain, flags);
 		new = true;
-	} else
+	} else {
 		new = false;
+	}
 
 	CTR3(KTR_UMA, "uma_zalloc: zone %s(%p) bucket zone returned %p",
 	    zone->uz_name, zone, bucket);
@@ -3617,7 +3611,7 @@ restart:
 			break;
 		if (rr && vm_domainset_iter_policy(&di, &domain) != 0) {
 			if ((flags & M_WAITOK) != 0) {
-				vm_wait_doms(&keg->uk_dr.dr_policy->ds_mask);
+				vm_wait_doms(&keg->uk_dr.dr_policy->ds_mask, 0);
 				goto restart;
 			}
 			break;
@@ -3957,8 +3951,10 @@ zone_alloc_item(uma_zone_t zone, void *udata, int domain, int flags)
 {
 	void *item;
 
-	if (zone->uz_max_items > 0 && zone_alloc_limit(zone, 1, flags) == 0)
+	if (zone->uz_max_items > 0 && zone_alloc_limit(zone, 1, flags) == 0) {
+		counter_u64_add(zone->uz_fails, 1);
 		return (NULL);
+	}
 
 	/* Avoid allocs targeting empty domains. */
 	if (domain != UMA_ANYDOMAIN && VM_DOMAIN_EMPTY(domain))
@@ -4759,7 +4755,7 @@ uma_prealloc(uma_zone_t zone, int items)
 				break;
 			}
 			if (vm_domainset_iter_policy(&di, &domain) != 0)
-				vm_wait_doms(&keg->uk_dr.dr_policy->ds_mask);
+				vm_wait_doms(&keg->uk_dr.dr_policy->ds_mask, 0);
 		}
 	}
 }
@@ -4978,7 +4974,6 @@ uma_vm_zone_stats(struct uma_type_header *uth, uma_zone_t z, struct sbuf *sbuf,
 	uma_zone_domain_t zdom;
 	uma_cache_t cache;
 	int i;
-
 
 	for (i = 0; i < vm_ndomains; i++) {
 		zdom = ZDOM_GET(z, i);

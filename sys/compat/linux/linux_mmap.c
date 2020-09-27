@@ -57,7 +57,6 @@ __FBSDID("$FreeBSD$");
 #include <compat/linux/linux_persona.h>
 #include <compat/linux/linux_util.h>
 
-
 #define STACK_SIZE  (2 * 1024 * 1024)
 #define GUARD_SIZE  (4 * PAGE_SIZE)
 
@@ -281,6 +280,8 @@ linux_madvise_dontneed(struct thread *td, vm_offset_t start, vm_offset_t end)
 
 		object = entry->object.vm_object;
 		if (object == NULL)
+			continue;
+		if ((object->flags & (OBJ_UNMANAGED | OBJ_FICTITIOUS)) != 0)
 			continue;
 
 		pstart = OFF_TO_IDX(entry->offset);

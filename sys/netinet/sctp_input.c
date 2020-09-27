@@ -300,7 +300,6 @@ sctp_process_init(struct sctp_init_chunk *cp, struct sctp_tcb *stcb)
 			if (SCTP_BASE_SYSCTL(sctp_logging_level) & (SCTP_CWND_MONITOR_ENABLE | SCTP_CWND_LOGGING_ENABLE)) {
 				sctp_log_cwnd(stcb, lnet, 0, SCTP_CWND_INITIALIZATION);
 			}
-
 		}
 	}
 	SCTP_TCB_SEND_LOCK(stcb);
@@ -683,7 +682,6 @@ sctp_handle_heartbeat_ack(struct sctp_heartbeat_chunk *cp,
 		    SCTP_MOBILITY_FASTHANDOFF)) &&
 		    sctp_is_mobility_feature_on(stcb->sctp_ep,
 		    SCTP_MOBILITY_PRIM_DELETED)) {
-
 			sctp_timer_stop(SCTP_TIMER_TYPE_PRIM_DELETED,
 			    stcb->sctp_ep, stcb, NULL,
 			    SCTP_FROM_SCTP_INPUT + SCTP_LOC_6);
@@ -776,7 +774,6 @@ sctp_handle_nat_missing_state(struct sctp_tcb *stcb,
 	return (1);
 }
 
-
 /* Returns 1 if the stcb was aborted, 0 otherwise */
 static int
 sctp_handle_abort(struct sctp_abort_chunk *abort,
@@ -829,7 +826,6 @@ sctp_handle_abort(struct sctp_abort_chunk *abort,
 #ifdef SCTP_ASOCLOG_OF_TSNS
 	sctp_print_out_track_log(stcb);
 #endif
-	SCTP_ADD_SUBSTATE(stcb, SCTP_STATE_WAS_ABORTED);
 	(void)sctp_free_assoc(stcb->sctp_ep, stcb, SCTP_NORMAL_PROC,
 	    SCTP_FROM_SCTP_INPUT + SCTP_LOC_8);
 	SCTPDBG(SCTP_DEBUG_INPUT2, "sctp_handle_abort: finished\n");
@@ -863,7 +859,6 @@ sctp_start_net_timers(struct sctp_tcb *stcb)
 		    SCTP_SO_NOT_LOCKED);
 	}
 }
-
 
 static void
 sctp_handle_shutdown(struct sctp_shutdown_chunk *cp,
@@ -1417,7 +1412,6 @@ sctp_process_cookie_new(struct mbuf *m, int iphlen, int offset,
     uint8_t mflowtype, uint32_t mflowid,
     uint32_t vrf_id, uint16_t port);
 
-
 /*
  * handle a state cookie for an existing association m: input packet mbuf
  * chain-- assumes a pullup on IP/SCTP/COOKIE-ECHO chunk note: this is a
@@ -1525,7 +1519,6 @@ sctp_process_cookie_existing(struct mbuf *m, int iphlen, int offset,
 			if (how_indx < sizeof(asoc->cookie_how))
 				asoc->cookie_how[how_indx] = 17;
 			return (NULL);
-
 		}
 		switch (SCTP_GET_STATE(stcb)) {
 		case SCTP_STATE_COOKIE_WAIT:
@@ -1726,7 +1719,6 @@ sctp_process_cookie_existing(struct mbuf *m, int iphlen, int offset,
 					spec_flag++;
 				}
 			}
-
 		}
 		/* process the INIT info (peer's info) */
 		retval = sctp_process_init(init_cp, stcb);
@@ -1866,7 +1858,7 @@ sctp_process_cookie_existing(struct mbuf *m, int iphlen, int offset,
 		/* send up all the data */
 		SCTP_TCB_SEND_LOCK(stcb);
 
-		sctp_report_all_outbound(stcb, 0, 1, SCTP_SO_LOCKED);
+		sctp_report_all_outbound(stcb, 0, SCTP_SO_LOCKED);
 		for (i = 0; i < stcb->asoc.streamoutcnt; i++) {
 			stcb->asoc.strmout[i].chunks_on_queues = 0;
 #if defined(SCTP_DETAILED_STR_STATS)
@@ -1939,7 +1931,6 @@ sctp_process_cookie_existing(struct mbuf *m, int iphlen, int offset,
 	/* all other cases... */
 	return (NULL);
 }
-
 
 /*
  * handle a state cookie for a new association m: input packet mbuf chain--
@@ -2229,7 +2220,6 @@ sctp_process_cookie_new(struct mbuf *m, int iphlen, int offset,
 	    initack_limit - (initack_offset + sizeof(struct sctp_init_ack_chunk)),
 	    &store.sa, cookie->local_scope, cookie->site_scope,
 	    cookie->ipv4_scope, cookie->loopback_scope);
-
 
 	return (stcb);
 }
@@ -2688,7 +2678,6 @@ sctp_handle_cookie_echo(struct mbuf *m, int iphlen, int offset,
 			SCTP_TCB_LOCK((*stcb));
 			atomic_subtract_int(&(*stcb)->asoc.refcnt, 1);
 
-
 			/*
 			 * now we must check to see if we were aborted while
 			 * the move was going on and the lock/unlock
@@ -2763,7 +2752,6 @@ sctp_handle_cookie_ack(struct sctp_cookie_ack_chunk *cp SCTP_UNUSED,
 		if (asoc->state & SCTP_STATE_SHUTDOWN_PENDING) {
 			sctp_timer_start(SCTP_TIMER_TYPE_SHUTDOWNGUARD,
 			    stcb->sctp_ep, stcb, NULL);
-
 		}
 		/* update RTO */
 		SCTP_STAT_INCR_COUNTER32(sctps_activeestab);
@@ -2797,7 +2785,6 @@ sctp_handle_cookie_ack(struct sctp_cookie_ack_chunk *cp SCTP_UNUSED,
 
 		sctp_timer_start(SCTP_TIMER_TYPE_HEARTBEAT, stcb->sctp_ep,
 		    stcb, net);
-
 
 		if (stcb->asoc.sctp_autoclose_ticks &&
 		    sctp_is_feature_on(stcb->sctp_ep, SCTP_PCB_FLAGS_AUTOCLOSE)) {
@@ -3353,7 +3340,6 @@ sctp_reset_clear_pending(struct sctp_tcb *stcb, uint32_t number_entries, uint16_
 	}
 }
 
-
 struct sctp_stream_reset_request *
 sctp_find_stream_reset(struct sctp_tcb *stcb, uint32_t seq, struct sctp_tmit_chunk **bchk)
 {
@@ -3421,7 +3407,6 @@ sctp_clean_up_stream_reset(struct sctp_tcb *stcb)
 	}
 	sctp_free_a_chunk(stcb, chk, SCTP_SO_NOT_LOCKED);
 }
-
 
 static int
 sctp_handle_stream_reset_response(struct sctp_tcb *stcb,
@@ -3887,7 +3872,6 @@ sctp_handle_str_reset_add_strm(struct sctp_tcb *stcb, struct sctp_tmit_chunk *ch
 		sctp_add_stream_reset_result(chk, seq, asoc->last_reset_action[1]);
 	} else {
 		sctp_add_stream_reset_result(chk, seq, SCTP_STREAM_RESET_RESULT_ERR_BAD_SEQNO);
-
 	}
 }
 
@@ -5247,7 +5231,6 @@ process_control_chunks:
 			break;
 		}		/* switch (ch->chunk_type) */
 
-
 next_chunk:
 		/* get the next chunk */
 		*offset += SCTP_SIZE32(chk_length);
@@ -5268,7 +5251,6 @@ next_chunk:
 	}
 	return (stcb);
 }
-
 
 /*
  * common input chunk processing (v4 and v6)

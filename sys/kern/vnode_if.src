@@ -153,7 +153,6 @@ vop_close {
 vop_fplookup_vexec {
 	IN struct vnode *vp;
 	IN struct ucred *cred;
-	IN struct thread *td;
 };
 
 
@@ -173,6 +172,17 @@ vop_accessx {
 	IN struct vnode *vp;
 	IN accmode_t accmode;
 	IN struct ucred *cred;
+	IN struct thread *td;
+};
+
+
+%% stat	vp	L L L
+
+vop_stat {
+	IN struct vnode *vp;
+	OUT struct stat *sb;
+	IN struct ucred *active_cred;
+	IN struct ucred *file_cred;
 	IN struct thread *td;
 };
 
@@ -208,6 +218,17 @@ vop_mmapped {
 %! read		post	vop_read_post
 
 vop_read {
+	IN struct vnode *vp;
+	INOUT struct uio *uio;
+	IN int ioflag;
+	IN struct ucred *cred;
+};
+
+
+%% read_pgcache	vp	- - -
+%! read_pgcache	post	vop_read_pgcache_post
+
+vop_read_pgcache {
 	IN struct vnode *vp;
 	INOUT struct uio *uio;
 	IN int ioflag;
@@ -391,7 +412,6 @@ vop_need_inactive {
 
 vop_reclaim {
 	IN struct vnode *vp;
-	IN struct thread *td;
 };
 
 

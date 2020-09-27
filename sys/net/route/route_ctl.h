@@ -44,7 +44,6 @@ struct rib_cmd_info {
 	struct nhop_object	*rc_nh_new;	/* Target nhop OR mpath */
 };
 
-
 int rib_add_route(uint32_t fibnum, struct rt_addrinfo *info,
   struct rib_cmd_info *rc);
 int rib_del_route(uint32_t fibnum, struct rt_addrinfo *info,
@@ -78,8 +77,10 @@ typedef void rib_subscription_cb_t(struct rib_head *rnh, struct rib_cmd_info *rc
 
 struct rib_subscription *rib_subscribe(uint32_t fibnum, int family,
     rib_subscription_cb_t *f, void *arg, enum rib_subscription_type type,
-    int waitok);
+    bool waitok);
+struct rib_subscription *rib_subscribe_internal(struct rib_head *rnh,
+    rib_subscription_cb_t *f, void *arg, enum rib_subscription_type type,
+    bool waitok);
 int rib_unsibscribe(uint32_t fibnum, int family, struct rib_subscription *rs);
 
 #endif
-

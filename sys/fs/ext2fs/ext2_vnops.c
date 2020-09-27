@@ -348,7 +348,7 @@ ext2_access(struct vop_access_args *ap)
 		return (EPERM);
 
 	error = vaccess(vp->v_type, ip->i_mode, ip->i_uid, ip->i_gid,
-	    ap->a_accmode, ap->a_cred, NULL);
+	    ap->a_accmode, ap->a_cred);
 	return (error);
 }
 
@@ -1572,7 +1572,6 @@ ext2_strategy(struct vop_strategy_args *ap)
 	if (vp->v_type == VBLK || vp->v_type == VCHR)
 		panic("ext2_strategy: spec");
 	if (bp->b_blkno == bp->b_lblkno) {
-
 		if (VTOI(ap->a_vp)->i_flag & IN_E4EXTENTS)
 			error = ext4_bmapext(vp, bp->b_lblkno, &blkno, NULL, NULL);
 		else

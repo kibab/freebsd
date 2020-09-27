@@ -69,6 +69,8 @@
 #ifndef	_VM_PAGE_
 #define	_VM_PAGE_
 
+#include <sys/_bitset.h>
+#include <sys/bitset.h>
 #include <vm/pmap.h>
 
 /*
@@ -585,6 +587,69 @@ malloc2vm_flags(int malloc_flags)
 #define	PS_ALL_VALID	0x2
 #define	PS_NONE_BUSY	0x4
 
+extern struct bitset *vm_page_dump;
+extern long vm_page_dump_pages;
+extern vm_paddr_t dump_avail[];
+
+static inline void
+dump_add_page(vm_paddr_t pa)
+{
+	vm_pindex_t adj;
+	int i;
+
+	adj = 0;
+	for (i = 0; dump_avail[i + 1] != 0; i += 2) {
+		if (pa >= dump_avail[i] && pa < dump_avail[i + 1]) {
+			BIT_SET_ATOMIC(vm_page_dump_pages,
+			    (pa >> PAGE_SHIFT) - (dump_avail[i] >> PAGE_SHIFT) +
+			    adj, vm_page_dump);
+			return;
+		}
+		adj += howmany(dump_avail[i + 1], PAGE_SIZE) -
+		    dump_avail[i] / PAGE_SIZE;
+	}
+}
+
+static inline void
+dump_drop_page(vm_paddr_t pa)
+{
+	vm_pindex_t adj;
+	int i;
+
+	adj = 0;
+	for (i = 0; dump_avail[i + 1] != 0; i += 2) {
+		if (pa >= dump_avail[i] && pa < dump_avail[i + 1]) {
+			BIT_CLR_ATOMIC(vm_page_dump_pages,
+			    (pa >> PAGE_SHIFT) - (dump_avail[i] >> PAGE_SHIFT) +
+			    adj, vm_page_dump);
+			return;
+		}
+		adj += howmany(dump_avail[i + 1], PAGE_SIZE) -
+		    dump_avail[i] / PAGE_SIZE;
+	}
+}
+
+static inline vm_paddr_t
+vm_page_dump_index_to_pa(int bit)
+{
+	int i, tot;
+
+	for (i = 0; dump_avail[i + 1] != 0; i += 2) {
+		tot = howmany(dump_avail[i + 1], PAGE_SIZE) -
+		    dump_avail[i] / PAGE_SIZE;
+		if (bit < tot)
+			return ((vm_paddr_t)bit * PAGE_SIZE +
+			    dump_avail[i] & ~PAGE_MASK);
+		bit -= tot;
+	}
+	return ((vm_paddr_t)NULL);
+}
+
+#define VM_PAGE_DUMP_FOREACH(pa)						\
+	for (vm_pindex_t __b = BIT_FFS(vm_page_dump_pages, vm_page_dump);	\
+	    (pa) = vm_page_dump_index_to_pa(__b - 1), __b != 0;			\
+	    __b = BIT_FFS_AT(vm_page_dump_pages, vm_page_dump, __b))
+
 bool vm_page_busy_acquire(vm_page_t m, int allocflags);
 void vm_page_busy_downgrade(vm_page_t m);
 int vm_page_busy_tryupgrade(vm_page_t m);
@@ -630,6 +695,7 @@ vm_page_t vm_page_find_least(vm_object_t, vm_pindex_t);
 void vm_page_free_invalid(vm_page_t);
 vm_page_t vm_page_getfake(vm_paddr_t paddr, vm_memattr_t memattr);
 void vm_page_initfake(vm_page_t m, vm_paddr_t paddr, vm_memattr_t memattr);
+void vm_page_init_marker(vm_page_t marker, int queue, uint16_t aflags);
 int vm_page_insert (vm_page_t, vm_object_t, vm_pindex_t);
 void vm_page_invalid(vm_page_t m);
 void vm_page_launder(vm_page_t m);

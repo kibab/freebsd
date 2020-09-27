@@ -80,6 +80,7 @@ __DEFAULT_YES_OPTIONS = \
     CLANG \
     CLANG_BOOTSTRAP \
     CLANG_IS_CC \
+    CLEAN \
     CPP \
     CROSS_COMPILER \
     CRYPT \
@@ -210,9 +211,9 @@ __DEFAULT_NO_OPTIONS = \
     HESIOD \
     LIBSOFT \
     LOADER_FIREWIRE \
-    LOADER_FORCE_LE \
     LOADER_VERBOSE \
     LOADER_VERIEXEC_PASS_MANIFEST \
+    MALLOC_PRODUCTION \
     OFED_EXTRA \
     OPENLDAP \
     REPRODUCIBLE_BUILD \
@@ -353,16 +354,25 @@ BROKEN_OPTIONS+=MLX5TOOL
 BROKEN_OPTIONS+=HYPERV
 .endif
 
-# NVME is only aarch64, x86 and powerpc64
+# NVME is only aarch64, x86 and powerpc64*
 .if ${__T} != "aarch64" && ${__T} != "amd64" && ${__T} != "i386" && \
-    ${__T} != "powerpc64"
+    ${__T:Mpowerpc64*} == ""
 BROKEN_OPTIONS+=NVME
 .endif
 
-.if ${__T} == "amd64" || ${__T} == "i386" || ${__T} == "powerpc64"
+.if ${__T} == "aarch64" || ${__T} == "amd64" || ${__T} == "i386" || \
+    ${__T:Mpowerpc64*} != ""
 __DEFAULT_YES_OPTIONS+=OPENMP
 .else
 __DEFAULT_NO_OPTIONS+=OPENMP
+.endif
+
+.if ${.MAKE.OS} != "FreeBSD"
+# Building the target compiler requires building tablegen on the host
+# which is (currently) not possible on non-FreeBSD.
+BROKEN_OPTIONS+=CLANG LLD LLDB
+# The same also applies to the bootstrap LLVM.
+BROKEN_OPTIONS+=CLANG_BOOTSTRAP LLD_BOOTSTRAP
 .endif
 
 .include <bsd.mkopt.mk>
@@ -449,11 +459,6 @@ MK_AUTHPF:=	no
 
 .if ${MK_OFED} == "no"
 MK_OFED_EXTRA:=	no
-.endif
-
-.if ${MK_PORTSNAP} == "no"
-# freebsd-update depends on phttpget from portsnap
-MK_FREEBSD_UPDATE:=	no
 .endif
 
 .if ${MK_TESTS} == "no"

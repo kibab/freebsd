@@ -73,7 +73,7 @@ typedef	__sa_family_t	sa_family_t;
 typedef	__socklen_t	socklen_t;
 #define	_SOCKLEN_T_DECLARED
 #endif
- 
+
 #ifndef _SSIZE_T_DECLARED
 typedef	__ssize_t	ssize_t;
 #define	_SSIZE_T_DECLARED
@@ -468,6 +468,7 @@ struct msghdr {
 #endif
 #ifdef _KERNEL
 #define	MSG_MORETOCOME	 0x00100000	/* additional data pending */
+#define	MSG_TLSAPPDATA	 0x00200000	/* only soreceive() app. data (TLS) */
 #endif
 
 /*
@@ -617,7 +618,6 @@ struct omsghdr {
 #define PRU_FLUSH_WR     SHUT_WR
 #define PRU_FLUSH_RDWR   SHUT_RDWR
 #endif
-
 
 #if __BSD_VISIBLE
 /*

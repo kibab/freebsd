@@ -155,6 +155,9 @@ vm_page_t vm_page_array;
 long vm_page_array_size;
 long first_page;
 
+struct bitset *vm_page_dump;
+long vm_page_dump_pages;
+
 static TAILQ_HEAD(, vm_page) blacklist_head;
 static int sysctl_vm_page_blacklist(SYSCTL_HANDLER_ARGS);
 SYSCTL_PROC(_vm, OID_AUTO, page_blacklist, CTLTYPE_STRING | CTLFLAG_RD |
@@ -421,7 +424,7 @@ sysctl_vm_page_blacklist(SYSCTL_HANDLER_ARGS)
  * In principle, this function only needs to set the flag PG_MARKER.
  * Nonetheless, it write busies the page as a safety precaution.
  */
-static void
+void
 vm_page_init_marker(vm_page_t marker, int queue, uint16_t aflags)
 {
 
@@ -554,6 +557,9 @@ vm_page_startup(vm_offset_t vaddr)
 	vm_paddr_t page_range __unused;
 	vm_paddr_t last_pa, pa;
 	u_long pagecount;
+#if MINIDUMP_PAGE_TRACKING
+	u_long vm_page_dump_size;
+#endif
 	int biggestone, i, segind;
 #ifdef WITNESS
 	vm_offset_t mapped;
@@ -588,9 +594,7 @@ vm_page_startup(vm_offset_t vaddr)
 	witness_startup((void *)mapped);
 #endif
 
-#if defined(__aarch64__) || defined(__amd64__) || defined(__arm__) || \
-    defined(__i386__) || defined(__mips__) || defined(__riscv) || \
-    defined(__powerpc64__)
+#if MINIDUMP_PAGE_TRACKING
 	/*
 	 * Allocate a bitmap to indicate that a random physical page
 	 * needs to be included in a minidump.
@@ -603,11 +607,14 @@ vm_page_startup(vm_offset_t vaddr)
 	 * included should the sf_buf code decide to use them.
 	 */
 	last_pa = 0;
-	for (i = 0; dump_avail[i + 1] != 0; i += 2)
+	vm_page_dump_pages = 0;
+	for (i = 0; dump_avail[i + 1] != 0; i += 2) {
+		vm_page_dump_pages += howmany(dump_avail[i + 1], PAGE_SIZE) -
+		    dump_avail[i] / PAGE_SIZE;
 		if (dump_avail[i + 1] > last_pa)
 			last_pa = dump_avail[i + 1];
-	page_range = last_pa / PAGE_SIZE;
-	vm_page_dump_size = round_page(roundup2(page_range, NBBY) / NBBY);
+	}
+	vm_page_dump_size = round_page(BITSET_SIZE(vm_page_dump_pages));
 	new_end -= vm_page_dump_size;
 	vm_page_dump = (void *)(uintptr_t)pmap_map(&vaddr, new_end,
 	    new_end + vm_page_dump_size, VM_PROT_READ | VM_PROT_WRITE);
@@ -3147,9 +3154,12 @@ vm_wait_count(void)
 	return (vm_severe_waiters + vm_min_waiters + vm_pageproc_waiters);
 }
 
-void
-vm_wait_doms(const domainset_t *wdoms)
+int
+vm_wait_doms(const domainset_t *wdoms, int mflags)
 {
+	int error;
+
+	error = 0;
 
 	/*
 	 * We use racey wakeup synchronization to avoid expensive global
@@ -3162,8 +3172,8 @@ vm_wait_doms(const domainset_t *wdoms)
 	if (curproc == pageproc) {
 		mtx_lock(&vm_domainset_lock);
 		vm_pageproc_waiters++;
-		msleep(&vm_pageproc_waiters, &vm_domainset_lock, PVM | PDROP,
-		    "pageprocwait", 1);
+		error = msleep(&vm_pageproc_waiters, &vm_domainset_lock,
+		    PVM | PDROP | mflags, "pageprocwait", 1);
 	} else {
 		/*
 		 * XXX Ideally we would wait only until the allocation could
@@ -3173,11 +3183,12 @@ vm_wait_doms(const domainset_t *wdoms)
 		mtx_lock(&vm_domainset_lock);
 		if (vm_page_count_min_set(wdoms)) {
 			vm_min_waiters++;
-			msleep(&vm_min_domains, &vm_domainset_lock,
-			    PVM | PDROP, "vmwait", 0);
+			error = msleep(&vm_min_domains, &vm_domainset_lock,
+			    PVM | PDROP | mflags, "vmwait", 0);
 		} else
 			mtx_unlock(&vm_domainset_lock);
 	}
+	return (error);
 }
 
 /*
@@ -3208,20 +3219,12 @@ vm_wait_domain(int domain)
 			panic("vm_wait in early boot");
 		DOMAINSET_ZERO(&wdom);
 		DOMAINSET_SET(vmd->vmd_domain, &wdom);
-		vm_wait_doms(&wdom);
+		vm_wait_doms(&wdom, 0);
 	}
 }
 
-/*
- *	vm_wait:
- *
- *	Sleep until free pages are available for allocation in the
- *	affinity domains of the obj.  If obj is NULL, the domain set
- *	for the calling thread is used.
- *	Called in various places after failed memory allocations.
- */
-void
-vm_wait(vm_object_t obj)
+static int
+vm_wait_flags(vm_object_t obj, int mflags)
 {
 	struct domainset *d;
 
@@ -3236,7 +3239,27 @@ vm_wait(vm_object_t obj)
 	if (d == NULL)
 		d = curthread->td_domain.dr_policy;
 
-	vm_wait_doms(&d->ds_mask);
+	return (vm_wait_doms(&d->ds_mask, mflags));
+}
+
+/*
+ *	vm_wait:
+ *
+ *	Sleep until free pages are available for allocation in the
+ *	affinity domains of the obj.  If obj is NULL, the domain set
+ *	for the calling thread is used.
+ *	Called in various places after failed memory allocations.
+ */
+void
+vm_wait(vm_object_t obj)
+{
+	(void)vm_wait_flags(obj, 0);
+}
+
+int
+vm_wait_intr(vm_object_t obj)
+{
+	return (vm_wait_flags(obj, PCATCH));
 }
 
 /*
@@ -3854,18 +3877,19 @@ vm_page_free_pages_toq(struct spglist *free, bool update_wire_count)
 }
 
 /*
- * Mark this page as wired down, preventing reclamation by the page daemon
- * or when the containing object is destroyed.
+ * Mark this page as wired down.  For managed pages, this prevents reclamation
+ * by the page daemon, or when the containing object, if any, is destroyed.
  */
 void
 vm_page_wire(vm_page_t m)
 {
 	u_int old;
 
-	KASSERT(m->object != NULL,
-	    ("vm_page_wire: page %p does not belong to an object", m));
-	if (!vm_page_busied(m) && !vm_object_busied(m->object))
+#ifdef INVARIANTS
+	if (m->object != NULL && !vm_page_busied(m) &&
+	    !vm_object_busied(m->object))
 		VM_OBJECT_ASSERT_LOCKED(m->object);
+#endif
 	KASSERT((m->flags & PG_FICTITIOUS) == 0 ||
 	    VPRC_WIRE_COUNT(m->ref_count) >= 1,
 	    ("vm_page_wire: fictitious page %p has zero wirings", m));
@@ -4723,12 +4747,11 @@ vm_page_grab_pages(vm_object_t object, vm_pindex_t pindex, int allocflags,
 	VM_OBJECT_ASSERT_WLOCKED(object);
 	KASSERT(((u_int)allocflags >> VM_ALLOC_COUNT_SHIFT) == 0,
 	    ("vm_page_grap_pages: VM_ALLOC_COUNT() is not allowed"));
+	KASSERT(count > 0,
+	    ("vm_page_grab_pages: invalid page count %d", count));
 	vm_page_grab_check(allocflags);
 
 	pflags = vm_page_grab_pflags(allocflags);
-	if (count == 0)
-		return (0);
-
 	i = 0;
 retrylookup:
 	m = vm_radix_lookup_le(&object->rtree, pindex + i);
@@ -4782,6 +4805,8 @@ vm_page_grab_pages_unlocked(vm_object_t object, vm_pindex_t pindex,
 	int flags;
 	int i;
 
+	KASSERT(count > 0,
+	    ("vm_page_grab_pages_unlocked: invalid page count %d", count));
 	vm_page_grab_check(allocflags);
 
 	/*
@@ -4804,7 +4829,7 @@ vm_page_grab_pages_unlocked(vm_object_t object, vm_pindex_t pindex,
 		vm_page_grab_release(m, allocflags);
 		pred = ma[i] = m;
 	}
-	if ((allocflags & VM_ALLOC_NOCREAT) != 0)
+	if (i == count || (allocflags & VM_ALLOC_NOCREAT) != 0)
 		return (i);
 	count -= i;
 	VM_OBJECT_WLOCK(object);

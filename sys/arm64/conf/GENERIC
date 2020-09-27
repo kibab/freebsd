@@ -72,12 +72,14 @@ options 	CAPABILITIES		# Capsicum capabilities
 options 	MAC			# TrustedBSD MAC Framework
 options 	KDTRACE_FRAME		# Ensure frames are compiled in
 options 	KDTRACE_HOOKS		# Kernel DTrace hooks
+options 	DDB_CTF			# Kernel ELF linker loads CTF data
 options 	VFP			# Floating-point support
 options 	RACCT			# Resource accounting framework
 options 	RACCT_DEFAULT_TO_DISABLED # Set kern.racct.enable=0 by default
 options 	RCTL			# Resource limits
 options 	SMP
 options 	INTRNG
+options 	LINUX_BOOT_ABI		# Boot using booti command from U-Boot
 
 # Debugging support.  Always need this:
 options 	KDB			# Enable kernel debugger support.
@@ -217,10 +219,12 @@ device		uart_snps
 device		pl011
 
 # USB support
+options 	USB_HOST_ALIGN=64	# Align usb buffers to cache line size.
 device		aw_usbphy		# Allwinner USB PHY
 device		rk_usb2phy		# Rockchip USB2PHY
 device		rk_typec_phy		# Rockchip TypeC PHY
 device		dwcotg			# DWC OTG controller
+device		musb			# Mentor Graphics USB OTG controller
 device		ohci			# OHCI USB interface
 device		ehci			# EHCI USB interface (USB 2.0)
 device		ehci_mv			# Marvell EHCI USB interface
@@ -255,6 +259,7 @@ device		gpioregulator
 device		ls1046_gpio	# LS1046A GPIO controller
 device		mv_gpio		# Marvell GPIO controller
 device		mvebu_pinctrl	# Marvell Pinmux Controller
+device		pl061		# Arm PL061 GPIO controller
 device		rk_gpio		# RockChip GPIO Controller
 device		rk_pinctrl	# RockChip Pinmux Controller
 

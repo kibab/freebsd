@@ -167,7 +167,6 @@ typedef struct pci_vendor_info {
 	uint32_t	pvi_class_mask;
 	const char	*pvi_name;
 } pci_vendor_info_t;
-
 #define PVID(vendor, devid, name) {vendor, devid, 0, 0, 0, 0, name}
 #define PVID_OEM(vendor, devid, svid, sdevid, revid, name) {vendor, devid, svid, sdevid, revid, 0, name}
 #define PVID_END {0, 0, 0, 0, 0, 0, NULL}
@@ -297,7 +296,7 @@ typedef enum {
 } iflib_intr_type_t;
 
 /*
- * Interface has a separate command queue for RX
+ * Interface has a separate completion queue for RX
  */
 #define IFLIB_HAS_RXCQ		0x01
 /*
@@ -309,7 +308,7 @@ typedef enum {
  */
 #define IFLIB_IS_VF		0x04
 /*
- * Interface has a separate command queue for TX
+ * Interface has a separate completion queue for TX
  */
 #define IFLIB_HAS_TXCQ		0x08
 /*
@@ -379,7 +378,6 @@ typedef enum {
  * emulating ethernet
  */
 #define IFLIB_PSEUDO_ETHER	0x80000
-
 
 /*
  * These enum values are used in iflib_needs_restart to indicate to iflib

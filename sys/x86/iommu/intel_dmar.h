@@ -75,7 +75,6 @@ struct dmar_domain {
 
 struct dmar_ctx {
 	struct iommu_ctx context;
-	uint16_t rid;			/* (c) pci RID */
 	uint64_t last_fault_rec[2];	/* Last fault reported */
 	LIST_ENTRY(dmar_ctx) link;	/* (u) Member in the domain list */
 	u_int refs;			/* (u) References from tags */
@@ -264,7 +263,7 @@ void domain_flush_iotlb_sync(struct dmar_domain *domain, iommu_gaddr_t base,
     iommu_gaddr_t size);
 int domain_alloc_pgtbl(struct dmar_domain *domain);
 void domain_free_pgtbl(struct dmar_domain *domain);
-void domain_pgtbl_init(struct dmar_domain *domain);
+extern const struct iommu_domain_map_ops dmar_domain_map_ops;
 
 int dmar_dev_depth(device_t child);
 void dmar_dev_path(device_t child, int *busno, void *path1, int depth);

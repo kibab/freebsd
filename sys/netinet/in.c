@@ -755,7 +755,6 @@ in_scrubprefixlle(struct in_ifaddr *ia, int all, u_int flags)
 	ifp = ia->ia_ifp;
 
 	if (all) {
-
 		/*
 		 * Remove all L2 entries matching given prefix.
 		 * Convert address to host representation to avoid
@@ -998,6 +997,13 @@ in_ifdetach(struct ifnet *ifp)
 	in_pcbpurgeif0(&V_ulitecbinfo, ifp);
 	in_purgemaddrs(ifp);
 	IN_MULTI_UNLOCK();
+
+	/*
+	 * Make sure all multicast deletions invoking if_ioctl() are
+	 * completed before returning. Else we risk accessing a freed
+	 * ifnet structure pointer.
+	 */
+	inm_release_wait(NULL);
 }
 
 /*
@@ -1131,7 +1137,6 @@ in_lltable_match_prefix(const struct sockaddr *saddr,
 		return (0);
 
 	if (lle->la_flags & LLE_IFADDR) {
-
 		/*
 		 * Delete LLE_IFADDR records IFF address & flag matches.
 		 * Note that addr is the interface address within prefix

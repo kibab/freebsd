@@ -39,7 +39,6 @@ __FBSDID("$FreeBSD$");
 #include "opt_inet.h"
 #include "opt_inet6.h"
 #include "opt_sctp.h"
-#include "opt_mpath.h"
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -293,9 +292,6 @@ IPPROTOSPACER,
 	.pr_usrreqs =		&rip_usrreqs
 },
 };
-
-extern int in_inithead(void **, int, u_int);
-extern int in_detachhead(void **, int);
 
 struct domain inetdomain = {
 	.dom_family =		AF_INET,

@@ -64,7 +64,6 @@ struct linux_cdev;
 #define	S_IRUGO	(S_IRUSR | S_IRGRP | S_IROTH)
 #define	S_IWUGO	(S_IWUSR | S_IWGRP | S_IWOTH)
 
-
 typedef struct files_struct *fl_owner_t;
 
 struct file_operations;
@@ -260,7 +259,7 @@ igrab(struct inode *inode)
 {
 	int error;
 
-	error = vget(inode, 0, curthread);
+	error = vget(inode, 0);
 	if (error)
 		return (NULL);
 

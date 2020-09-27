@@ -185,7 +185,7 @@ CFLAGS.gcc+=	-mno-spe
 # Use dot symbols (or, better, the V2 ELF ABI) on powerpc64 to make
 # DDB happy. ELFv2, if available, has some other efficiency benefits.
 #
-.if ${MACHINE_ARCH} == "powerpc64"
+.if ${MACHINE_ARCH:Mpowerpc64*} != ""
 CFLAGS+=	-mabi=elfv2
 .endif
 
@@ -270,6 +270,23 @@ CFLAGS+=        -std=iso9899:1999
 CFLAGS+=        -std=${CSTD}
 .endif # CSTD
 
+# Please keep this if in sync with bsd.sys.mk
+.if ${LD} != "ld" && (${CC:[1]:H} != ${LD:[1]:H} || ${LD:[1]:T} != "ld")
+# Add -fuse-ld=${LD} if $LD is in a different directory or not called "ld".
+# Note: Clang 12+ will prefer --ld-path= over -fuse-ld=.
+.if ${COMPILER_TYPE} == "clang"
+# Note: unlike bsd.sys.mk we can't use LDFLAGS here since that is used for the
+# flags required when linking the kernel. We don't need those flags when
+# building the vdsos. However, we do need -fuse-ld, so use ${CCLDFLAGS} instead.
+# Note: Clang does not like relative paths in -fuse-ld so we map ld.lld -> lld.
+CCLDFLAGS+=	-fuse-ld=${LD:[1]:S/^ld.//1W}
+.else
+# GCC does not support an absolute path for -fuse-ld so we just print this
+# warning instead and let the user add the required symlinks.
+.warning LD (${LD}) is not the default linker for ${CC} but -fuse-ld= is not supported
+.endif
+.endif
+
 # Set target-specific linker emulation name.
 LD_EMULATION_aarch64=aarch64elf
 LD_EMULATION_amd64=elf_x86_64_fbsd
@@ -290,6 +307,7 @@ LD_EMULATION_mipsn32el= elf32btsmipn32_fbsd   # I don't think this is a thing th
 LD_EMULATION_powerpc= elf32ppc_fbsd
 LD_EMULATION_powerpcspe= elf32ppc_fbsd
 LD_EMULATION_powerpc64= elf64ppc_fbsd
+LD_EMULATION_powerpc64le= elf64lppc_fbsd
 LD_EMULATION_riscv64= elf64lriscv
 LD_EMULATION_riscv64sf= elf64lriscv
 LD_EMULATION=${LD_EMULATION_${MACHINE_ARCH}}

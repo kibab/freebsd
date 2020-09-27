@@ -723,7 +723,7 @@ mps_user_command(struct mps_softc *sc, struct mps_usr_command *cmd)
 		sz = rpl->MsgLength * 4;
 	else
 		sz = 0;
-	
+
 	if (sz > cmd->rpl_len) {
 		mps_printf(sc, "%s: user reply buffer (%d) smaller than "
 		    "returned buffer (%d)\n", __func__, cmd->rpl_len, sz);
@@ -866,7 +866,7 @@ mps_user_pass_thru(struct mps_softc *sc, mps_pass_thru_t *data)
 		if ((cm != NULL) && (cm->cm_reply != NULL)) {
 			rpl = (MPI2_DEFAULT_REPLY *)cm->cm_reply;
 			sz = rpl->MsgLength * 4;
-	
+
 			if (sz > data->ReplySize) {
 				mps_printf(sc, "%s: user reply buffer (%d) "
 				    "smaller than returned buffer (%d)\n",
@@ -1346,6 +1346,7 @@ static int
 mps_diag_register(struct mps_softc *sc, mps_fw_diag_register_t *diag_register,
     uint32_t *return_code)
 {
+	bus_dma_template_t		t;
 	mps_fw_diagnostic_buffer_t	*pBuffer;
 	struct mps_busdma_context	*ctx;
 	uint8_t				extended_type, buffer_type, i;
@@ -1408,17 +1409,10 @@ mps_diag_register(struct mps_softc *sc, mps_fw_diag_register_t *diag_register,
 		*return_code = MPS_FW_DIAG_ERROR_NO_BUFFER;
 		return (MPS_DIAG_FAILURE);
 	}
-	if (bus_dma_tag_create( sc->mps_parent_dmat,    /* parent */
-				1, 0,			/* algnmnt, boundary */
-				BUS_SPACE_MAXADDR_32BIT,/* lowaddr */
-				BUS_SPACE_MAXADDR,	/* highaddr */
-				NULL, NULL,		/* filter, filterarg */
-                                buffer_size,		/* maxsize */
-                                1,			/* nsegments */
-                                buffer_size,		/* maxsegsize */
-                                0,			/* flags */
-                                NULL, NULL,		/* lockfunc, lockarg */
-                                &sc->fw_diag_dmat)) {
+	bus_dma_template_init(&t, sc->mps_parent_dmat);
+	BUS_DMA_TEMPLATE_FILL(&t, BD_NSEGMENTS(1), BD_MAXSIZE(buffer_size),
+	    BD_MAXSEGSIZE(buffer_size), BD_LOWADDR(BUS_SPACE_MAXADDR_32BIT));
+	if (bus_dma_template_tag(&t, &sc->fw_diag_dmat)) {
 		mps_dprint(sc, MPS_ERROR,
 		    "Cannot allocate FW diag buffer DMA tag\n");
 		*return_code = MPS_FW_DIAG_ERROR_NO_BUFFER;
@@ -1445,7 +1439,6 @@ mps_diag_register(struct mps_softc *sc, mps_fw_diag_register_t *diag_register,
 	    ctx, 0);
 
 	if (error == EINPROGRESS) {
-
 		/* XXX KDM */
 		device_printf(sc->mps_dev, "%s: Deferred bus_dmamap_load\n",
 		    __func__);
