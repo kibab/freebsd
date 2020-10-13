@@ -34,12 +34,6 @@
 #ifndef _SYS_IOMMU_H_
 #define _SYS_IOMMU_H_
 
-#include <sys/queue.h>
-#include <sys/sysctl.h>
-#include <sys/taskqueue.h>
-#include <sys/tree.h>
-#include <sys/types.h>
-
 /* Host or physical memory address, after translation. */
 typedef uint64_t iommu_haddr_t;
 /* Guest or bus address, before translation. */
@@ -96,6 +90,21 @@ struct iommu_unit {
 	struct task dmamap_load_task;
 	TAILQ_HEAD(, bus_dmamap_iommu) delayed_maps;
 	struct taskqueue *delayed_taskqueue;
+
+	/*
+	 * Bitmap of buses for which context must ignore slot:func,
+	 * duplicating the page table pointer into all context table
+	 * entries.  This is a client-controlled quirk to support some
+	 * NTBs.
+	 */
+	uint32_t buswide_ctxs[(PCI_BUSMAX + 1) / NBBY / sizeof(uint32_t)];
+};
+
+struct iommu_domain_map_ops {
+	int (*map)(struct iommu_domain *domain, iommu_gaddr_t base,
+	    iommu_gaddr_t size, vm_page_t *ma, uint64_t pflags, int flags);
+	int (*unmap)(struct iommu_domain *domain, iommu_gaddr_t base,
+	    iommu_gaddr_t size, int flags);
 };
 
 /*
@@ -107,6 +116,7 @@ struct iommu_unit {
 
 struct iommu_domain {
 	struct iommu_unit *iommu;	/* (c) */
+	const struct iommu_domain_map_ops *ops;
 	struct mtx lock;		/* (c) */
 	struct task unload_task;	/* (c) */
 	u_int entries_cnt;		/* (d) */
@@ -125,6 +135,7 @@ struct iommu_ctx {
 	u_long loads;			/* atomic updates, for stat only */
 	u_long unloads;			/* same */
 	u_int flags;			/* (u) */
+	uint16_t rid;			/* (c) pci RID */
 };
 
 /* struct iommu_ctx flags */
@@ -210,6 +221,19 @@ int iommu_gas_map_region(struct iommu_domain *domain,
     struct iommu_map_entry *entry, u_int eflags, u_int flags, vm_page_t *ma);
 int iommu_gas_reserve_region(struct iommu_domain *domain, iommu_gaddr_t start,
     iommu_gaddr_t end);
+
+void iommu_set_buswide_ctx(struct iommu_unit *unit, u_int busno);
+bool iommu_is_buswide_ctx(struct iommu_unit *unit, u_int busno);
+void iommu_domain_init(struct iommu_unit *unit, struct iommu_domain *domain,
+    const struct iommu_domain_map_ops *ops);
+void iommu_domain_fini(struct iommu_domain *domain);
+
+bool bus_dma_iommu_set_buswide(device_t dev);
+int bus_dma_iommu_load_ident(bus_dma_tag_t dmat, bus_dmamap_t map,
+    vm_paddr_t start, vm_size_t length, int flags);
+
+bus_dma_tag_t iommu_get_dma_tag(device_t dev, device_t child);
+struct iommu_ctx *iommu_get_dev_ctx(device_t dev);
 
 SYSCTL_DECL(_hw_iommu);
 

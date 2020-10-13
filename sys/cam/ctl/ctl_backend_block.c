@@ -1317,7 +1317,6 @@ ctl_be_block_cw_dispatch_ws(struct ctl_be_block_lun *be_lun,
 		pbo = 0;
 	len_left = (uint64_t)lbalen->len * cbe_lun->blocksize;
 	for (i = 0, lba = 0; i < CTLBLK_MAX_SEGS && len_left > 0; i++) {
-
 		/*
 		 * Setup the S/G entry for this chunk.
 		 */
@@ -2184,7 +2183,7 @@ again:
 	be_lun->vn = nd.ni_vp;
 
 	/* We only support disks and files. */
-	if (vn_isdisk(be_lun->vn, &error)) {
+	if (vn_isdisk_error(be_lun->vn, &error)) {
 		error = ctl_be_block_open_dev(be_lun, req);
 	} else if (be_lun->vn->v_type == VREG) {
 		error = ctl_be_block_open_file(be_lun, req);
@@ -2547,7 +2546,7 @@ ctl_be_block_modify(struct ctl_be_block_softc *softc, struct ctl_lun_req *req)
 	    control_softc->ha_mode == CTL_HA_MODE_SER_ONLY) {
 		if (be_lun->vn == NULL)
 			error = ctl_be_block_open(be_lun, req);
-		else if (vn_isdisk(be_lun->vn, &error))
+		else if (vn_isdisk_error(be_lun->vn, &error))
 			error = ctl_be_block_open_dev(be_lun, req);
 		else if (be_lun->vn->v_type == VREG) {
 			vn_lock(be_lun->vn, LK_SHARED | LK_RETRY);
@@ -2782,7 +2781,6 @@ ctl_be_block_init(void)
 	SLIST_INIT(&softc->lun_list);
 	return (0);
 }
-
 
 static int
 ctl_be_block_shutdown(void)

@@ -180,6 +180,7 @@ static const struct {
 	{0x1f3e8086, 0x00, "Intel Avoton (RAID)",	0},
 	{0x1f3f8086, 0x00, "Intel Avoton (RAID)",	0},
 	{0x23a38086, 0x00, "Intel Coleto Creek",	0},
+	{0x5ae38086, 0x00, "Intel Apollo Lake",	0},
 	{0x8c028086, 0x00, "Intel Lynx Point",	0},
 	{0x8c038086, 0x00, "Intel Lynx Point",	0},
 	{0x8c048086, 0x00, "Intel Lynx Point (RAID)",	0},
@@ -543,7 +544,6 @@ ahci_pci_attach(device_t dev)
 			}
 		}
 	}
-
 
 	if (ctlr->quirks & AHCI_Q_NOMSIX)
 		msix_count = 0;

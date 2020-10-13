@@ -59,17 +59,12 @@ __FBSDID("$FreeBSD$");
 #include <vm/vm_object.h>
 #include <vm/vm_page.h>
 #include <vm/vm_map.h>
+#include <dev/iommu/iommu.h>
 #include <machine/atomic.h>
 #include <machine/bus.h>
 #include <machine/md_var.h>
-#if defined(__amd64__) || defined(__i386__)
-#include <machine/specialreg.h>
-#include <x86/include/busdma_impl.h>
-#include <x86/iommu/intel_reg.h>
+#include <machine/iommu.h>
 #include <dev/iommu/busdma_iommu.h>
-#include <dev/iommu/iommu.h>
-#include <x86/iommu/intel_dmar.h>
-#endif
 
 /*
  * busdma_iommu.c, the implementation of the busdma(9) interface using
@@ -274,14 +269,12 @@ iommu_instantiate_ctx(struct iommu_unit *unit, device_t dev, bool rmrr)
 	return (ctx);
 }
 
-bus_dma_tag_t
-acpi_iommu_get_dma_tag(device_t dev, device_t child)
+struct iommu_ctx *
+iommu_get_dev_ctx(device_t dev)
 {
 	struct iommu_unit *unit;
-	struct iommu_ctx *ctx;
-	bus_dma_tag_t res;
 
-	unit = iommu_find(child, bootverbose);
+	unit = iommu_find(dev, bootverbose);
 	/* Not in scope of any IOMMU ? */
 	if (unit == NULL)
 		return (NULL);
@@ -293,13 +286,25 @@ acpi_iommu_get_dma_tag(device_t dev, device_t child)
 	dmar_instantiate_rmrr_ctxs(unit);
 #endif
 
-	ctx = iommu_instantiate_ctx(unit, child, false);
-	res = ctx == NULL ? NULL : (bus_dma_tag_t)ctx->tag;
+	return (iommu_instantiate_ctx(unit, dev, false));
+}
+
+bus_dma_tag_t
+iommu_get_dma_tag(device_t dev, device_t child)
+{
+	struct iommu_ctx *ctx;
+	bus_dma_tag_t res;
+
+	ctx = iommu_get_dev_ctx(child);
+	if (ctx == NULL)
+		return (NULL);
+
+	res = (bus_dma_tag_t)ctx->tag;
 	return (res);
 }
 
 bool
-bus_dma_dmar_set_buswide(device_t dev)
+bus_dma_iommu_set_buswide(device_t dev)
 {
 	struct iommu_unit *unit;
 	device_t parent;
@@ -317,13 +322,33 @@ bus_dma_dmar_set_buswide(device_t dev)
 	if (slot != 0 || func != 0) {
 		if (bootverbose) {
 			device_printf(dev,
-			    "dmar%d pci%d:%d:%d requested buswide busdma\n",
+			    "iommu%d pci%d:%d:%d requested buswide busdma\n",
 			    unit->unit, busno, slot, func);
 		}
 		return (false);
 	}
-	dmar_set_buswide_ctx(unit, busno);
+	iommu_set_buswide_ctx(unit, busno);
 	return (true);
+}
+
+void
+iommu_set_buswide_ctx(struct iommu_unit *unit, u_int busno)
+{
+
+	MPASS(busno <= PCI_BUSMAX);
+	IOMMU_LOCK(unit);
+	unit->buswide_ctxs[busno / NBBY / sizeof(uint32_t)] |=
+	    1 << (busno % (NBBY * sizeof(uint32_t)));
+	IOMMU_UNLOCK(unit);
+}
+
+bool
+iommu_is_buswide_ctx(struct iommu_unit *unit, u_int busno)
+{
+
+	MPASS(busno <= PCI_BUSMAX);
+	return ((unit->buswide_ctxs[busno / NBBY / sizeof(uint32_t)] &
+	    (1U << (busno % (NBBY * sizeof(uint32_t))))) != 0);
 }
 
 static MALLOC_DEFINE(M_IOMMU_DMAMAP, "iommu_dmamap", "IOMMU DMA Map");
@@ -390,7 +415,7 @@ iommu_bus_dma_tag_destroy(bus_dma_tag_t dmat1)
 			    1) {
 				if (dmat == dmat->ctx->tag)
 					iommu_free_ctx(dmat->ctx);
-				free_domain(dmat->segments, M_IOMMU_DMAMAP);
+				free(dmat->segments, M_IOMMU_DMAMAP);
 				free(dmat, M_DEVBUF);
 				dmat = parent;
 			} else
@@ -427,7 +452,7 @@ iommu_bus_dmamap_create(bus_dma_tag_t dmat, int flags, bus_dmamap_t *mapp)
 		    tag->common.nsegments, M_IOMMU_DMAMAP,
 		    DOMAINSET_PREF(tag->common.domain), M_NOWAIT);
 		if (tag->segments == NULL) {
-			free_domain(map, M_IOMMU_DMAMAP);
+			free(map, M_IOMMU_DMAMAP);
 			*mapp = NULL;
 			return (ENOMEM);
 		}
@@ -459,7 +484,7 @@ iommu_bus_dmamap_destroy(bus_dma_tag_t dmat, bus_dmamap_t map1)
 			return (EBUSY);
 		}
 		IOMMU_DOMAIN_UNLOCK(domain);
-		free_domain(map, M_IOMMU_DMAMAP);
+		free(map, M_IOMMU_DMAMAP);
 	}
 	tag->map_count--;
 	return (0);
@@ -517,7 +542,7 @@ iommu_bus_dmamem_free(bus_dma_tag_t dmat, void *vaddr, bus_dmamap_t map1)
 	map = (struct bus_dmamap_iommu *)map1;
 
 	if ((map->flags & BUS_DMAMAP_IOMMU_MALLOC) != 0) {
-		free_domain(vaddr, M_DEVBUF);
+		free(vaddr, M_DEVBUF);
 		map->flags &= ~BUS_DMAMAP_IOMMU_MALLOC;
 	} else {
 		KASSERT((map->flags & BUS_DMAMAP_IOMMU_KMEM_ALLOC) != 0,
@@ -987,7 +1012,7 @@ iommu_fini_busdma(struct iommu_unit *unit)
 }
 
 int
-bus_dma_dmar_load_ident(bus_dma_tag_t dmat, bus_dmamap_t map1,
+bus_dma_iommu_load_ident(bus_dma_tag_t dmat, bus_dmamap_t map1,
     vm_paddr_t start, vm_size_t length, int flags)
 {
 	struct bus_dma_tag_common *tc;
@@ -1047,4 +1072,45 @@ bus_dma_dmar_load_ident(bus_dma_tag_t dmat, bus_dmamap_t map1,
 		vm_page_putfake(ma[i]);
 	free(ma, M_TEMP);
 	return (error);
+}
+
+static void
+iommu_domain_unload_task(void *arg, int pending)
+{
+	struct iommu_domain *domain;
+	struct iommu_map_entries_tailq entries;
+
+	domain = arg;
+	TAILQ_INIT(&entries);
+
+	for (;;) {
+		IOMMU_DOMAIN_LOCK(domain);
+		TAILQ_SWAP(&domain->unload_entries, &entries,
+		    iommu_map_entry, dmamap_link);
+		IOMMU_DOMAIN_UNLOCK(domain);
+		if (TAILQ_EMPTY(&entries))
+			break;
+		iommu_domain_unload(domain, &entries, true);
+	}
+}
+
+void
+iommu_domain_init(struct iommu_unit *unit, struct iommu_domain *domain,
+    const struct iommu_domain_map_ops *ops)
+{
+
+	domain->ops = ops;
+	domain->iommu = unit;
+
+	TASK_INIT(&domain->unload_task, 0, iommu_domain_unload_task, domain);
+	RB_INIT(&domain->rb_root);
+	TAILQ_INIT(&domain->unload_entries);
+	mtx_init(&domain->lock, "iodom", NULL, MTX_DEF);
+}
+
+void
+iommu_domain_fini(struct iommu_domain *domain)
+{
+
+	mtx_destroy(&domain->lock);
 }

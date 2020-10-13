@@ -54,11 +54,6 @@ __FBSDID("$FreeBSD$");
 #include <sys/taskqueue.h>
 #include <sys/tree.h>
 #include <sys/vmem.h>
-#include <machine/bus.h>
-#include <machine/pci_cfgreg.h>
-#include <contrib/dev/acpica/include/acpi.h>
-#include <contrib/dev/acpica/include/accommon.h>
-#include <dev/acpica/acpivar.h>
 #include <vm/vm.h>
 #include <vm/vm_extern.h>
 #include <vm/vm_kern.h>
@@ -66,11 +61,16 @@ __FBSDID("$FreeBSD$");
 #include <vm/vm_page.h>
 #include <vm/vm_pager.h>
 #include <vm/vm_map.h>
-#include <x86/include/busdma_impl.h>
-#include <x86/iommu/intel_reg.h>
-#include <dev/iommu/busdma_iommu.h>
+#include <contrib/dev/acpica/include/acpi.h>
+#include <contrib/dev/acpica/include/accommon.h>
+#include <dev/acpica/acpivar.h>
 #include <dev/pci/pcireg.h>
 #include <dev/pci/pcivar.h>
+#include <machine/bus.h>
+#include <machine/pci_cfgreg.h>
+#include <x86/include/busdma_impl.h>
+#include <dev/iommu/busdma_iommu.h>
+#include <x86/iommu/intel_reg.h>
 #include <x86/iommu/intel_dmar.h>
 
 #ifdef DEV_APIC
@@ -592,29 +592,6 @@ static driver_t	dmar_driver = {
 DRIVER_MODULE(dmar, acpi, dmar_driver, dmar_devclass, 0, 0);
 MODULE_DEPEND(dmar, acpi, 1, 1, 1);
 
-void
-dmar_set_buswide_ctx(struct iommu_unit *unit, u_int busno)
-{
-	struct dmar_unit *dmar;
-
-	dmar = (struct dmar_unit *)unit;
-
-	MPASS(busno <= PCI_BUSMAX);
-	DMAR_LOCK(dmar);
-	dmar->buswide_ctxs[busno / NBBY / sizeof(uint32_t)] |=
-	    1 << (busno % (NBBY * sizeof(uint32_t)));
-	DMAR_UNLOCK(dmar);
-}
-
-bool
-dmar_is_buswide_ctx(struct dmar_unit *unit, u_int busno)
-{
-
-	MPASS(busno <= PCI_BUSMAX);
-	return ((unit->buswide_ctxs[busno / NBBY / sizeof(uint32_t)] &
-	    (1U << (busno % (NBBY * sizeof(uint32_t))))) != 0);
-}
-
 static void
 dmar_print_path(int busno, int depth, const ACPI_DMAR_PCI_PATH *path)
 {
@@ -889,7 +866,6 @@ dmar_find_nonpci(u_int id, u_int entry_type, uint16_t *rid)
 	return (NULL);
 }
 
-
 struct dmar_unit *
 dmar_find_hpet(device_t dev, uint16_t *rid)
 {
@@ -942,8 +918,7 @@ dmar_rmrr_iter(ACPI_DMAR_HEADER *dmarh, void *arg)
 		match = dmar_match_devscope(devscope, ria->dev_busno,
 		    ria->dev_path, ria->dev_path_len);
 		if (match == 1) {
-			entry = iommu_gas_alloc_entry(
-			    (struct iommu_domain *)ria->domain,
+			entry = iommu_gas_alloc_entry(DOM2IODOM(ria->domain),
 			    IOMMU_PGF_WAITOK);
 			entry->start = resmem->BaseAddress;
 			/* The RMRR entry end address is inclusive. */
@@ -1079,7 +1054,7 @@ dmar_instantiate_rmrr_ctxs(struct iommu_unit *unit)
 	struct inst_rmrr_iter_args iria;
 	int error;
 
-	dmar = (struct dmar_unit *)unit;
+	dmar = IOMMU2DMAR(unit);
 
 	if (!dmar_barrier_enter(dmar, DMAR_BARRIER_RMRR))
 		return (0);
@@ -1154,7 +1129,7 @@ dmar_print_domain(struct dmar_domain *domain, bool show_mappings)
 	struct iommu_map_entry *entry;
 	struct dmar_ctx *ctx;
 
-	iodom = (struct iommu_domain *)domain;
+	iodom = DOM2IODOM(domain);
 
 	db_printf(
 	    "  @%p dom %d mgaw %d agaw %d pglvl %d end %jx refs %d\n"

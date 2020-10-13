@@ -159,9 +159,6 @@ void bc_parse_expr(BcParse *p, uint8_t flags);
 void bc_parse_parse(BcParse *p);
 void bc_parse_expr_status(BcParse *p, uint8_t flags, BcParseNext next);
 
-// This is necessary to clear up for if statements at the end of files.
-void bc_parse_noElse(BcParse *p);
-
 extern const char bc_sig_msg[];
 extern const uchar bc_sig_msg_len;
 
@@ -175,6 +172,10 @@ extern const BcParseNext bc_parse_next_rel;
 extern const BcParseNext bc_parse_next_elem;
 extern const BcParseNext bc_parse_next_for;
 extern const BcParseNext bc_parse_next_read;
+
+#else // BC_ENABLED
+
+#define BC_PARSE_NO_EXEC(p) (0)
 
 #endif // BC_ENABLED
 

@@ -796,6 +796,7 @@ typedef struct {
 #define	NT_FREEBSD_FCTL_PROTMAX_DISABLE	0x00000002
 #define	NT_FREEBSD_FCTL_STKGAP_DISABLE	0x00000004
 #define	NT_FREEBSD_FCTL_WXNEEDED	0x00000008
+#define	NT_FREEBSD_FCTL_LA48		0x00000010
 
 /* Values for n_type.  Used in core files. */
 #define	NT_PRSTATUS	1	/* Process status. */
@@ -966,8 +967,9 @@ typedef struct {
 #define	AT_ENVC		30	/* Environment count */
 #define	AT_ENVV		31	/* Environment vector */
 #define	AT_PS_STRINGS	32	/* struct ps_strings */
+#define	AT_FXRNG	33	/* Pointer to root RNG seed version. */
 
-#define	AT_COUNT	33	/* Count of defined aux entry types. */
+#define	AT_COUNT	34	/* Count of defined aux entry types. */
 
 /*
  * Relocation types.

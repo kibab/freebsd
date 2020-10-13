@@ -45,8 +45,8 @@ __FBSDID("$FreeBSD$");
 #include <sys/kernel.h>
 #include <sys/sysctl.h>
 #include <sys/bio.h>
-#include <sys/bus.h>
 #include <sys/ctype.h>
+#include <sys/devctl.h>
 #include <sys/fcntl.h>
 #include <sys/malloc.h>
 #include <sys/sbuf.h>
@@ -1081,7 +1081,7 @@ sysctl_disks(SYSCTL_HANDLER_ARGS)
 	sbuf_delete(sb);
 	return error;
 }
- 
+
 SYSCTL_PROC(_kern, OID_AUTO, disks,
     CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_MPSAFE, NULL, 0,
     sysctl_disks, "A", "names of available disks");

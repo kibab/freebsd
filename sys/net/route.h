@@ -104,6 +104,10 @@ struct rt_metrics {
 /* lle state is exported in rmx_state rt_metrics field */
 #define	rmx_state	rmx_weight
 
+/* default route weight */
+#define	RT_DEFAULT_WEIGHT	1
+#define	RT_MAX_WEIGHT		16777215	/* 3 bytes */
+
 /*
  * Keep a generation count of routing table, incremented on route addition,
  * so we can invalidate caches.  This is accessed without a lock, as precision
@@ -115,7 +119,10 @@ typedef volatile u_int rt_gen_t;	/* tree generation (for adds) */
 #define	RT_DEFAULT_FIB	0	/* Explicitly mark fib=0 restricted cases */
 #define	RT_ALL_FIBS	-1	/* Announce event for every fib */
 #ifdef _KERNEL
-extern u_int rt_numfibs;	/* number of usable routing tables */
+VNET_DECLARE(uint32_t, _rt_numfibs);	/* number of existing route tables */
+#define	V_rt_numfibs		VNET(_rt_numfibs)
+/* temporary compat arg */
+#define	rt_numfibs		V_rt_numfibs
 VNET_DECLARE(u_int, rt_add_addr_allfibs); /* Announce interfaces to all fibs */
 #define	V_rt_add_addr_allfibs	VNET(rt_add_addr_allfibs)
 #endif
@@ -171,6 +178,7 @@ VNET_DECLARE(u_int, rt_add_addr_allfibs); /* Announce interfaces to all fibs */
  */
 
 /* Consumer-visible nexthop info flags */
+#define	NHF_MULTIPATH		0x0008	/* Nexhop is a nexthop group */
 #define	NHF_REJECT		0x0010	/* RTF_REJECT */
 #define	NHF_BLACKHOLE		0x0020	/* RTF_BLACKHOLE */
 #define	NHF_REDIRECT		0x0040	/* RTF_DYNAMIC|RTF_MODIFIED */
@@ -201,6 +209,10 @@ struct rtstat {
 	uint64_t rts_wildcard;		/* lookups satisfied by a wildcard */
 	uint64_t rts_nh_idx_alloc_failure;	/* nexthop index alloc failure*/
 	uint64_t rts_nh_alloc_failure;	/* nexthop allocation failure*/
+	uint64_t rts_add_failure;	/* # of route addition failures */
+	uint64_t rts_add_retry;		/* # of route addition retries */
+	uint64_t rts_del_failure;	/* # of route deletion failure */
+	uint64_t rts_del_retry;		/* # of route deletion retries */
 };
 
 /*
@@ -379,7 +391,7 @@ void	 rt_newmaddrmsg(int, struct ifmultiaddr *);
 void 	 rt_maskedcopy(struct sockaddr *, struct sockaddr *, struct sockaddr *);
 struct rib_head *rt_table_init(int, int, u_int);
 void	rt_table_destroy(struct rib_head *);
-u_int	rt_tables_get_gen(int table, int fam);
+u_int	rt_tables_get_gen(uint32_t table, sa_family_t family);
 
 int	rtsock_addrmsg(int, struct ifaddr *, int);
 int	rtsock_routemsg(int, struct rtentry *, struct ifnet *ifp, int, int);
@@ -387,16 +399,7 @@ int	rtsock_routemsg_info(int, struct rt_addrinfo *, int);
 
 struct sockaddr *rtsock_fix_netmask(const struct sockaddr *dst,
 	    const struct sockaddr *smask, struct sockaddr_storage *dmask);
-/*
- * Note the following locking behavior:
- *
- *    rtfree() and RTFREE_LOCKED() require a locked rtentry
- *
- *    RTFREE() uses an unlocked entry.
- */
 
-void	 rtfree(struct rtentry *);
-void	 rtfree_func(struct rtentry *);
 void	rt_updatemtu(struct ifnet *);
 
 void	rt_flushifroutes_af(struct ifnet *, int);

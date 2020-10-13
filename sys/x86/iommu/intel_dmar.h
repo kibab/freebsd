@@ -75,7 +75,6 @@ struct dmar_domain {
 
 struct dmar_ctx {
 	struct iommu_ctx context;
-	uint16_t rid;			/* (c) pci RID */
 	uint64_t last_fault_rec[2];	/* Last fault reported */
 	LIST_ENTRY(dmar_ctx) link;	/* (u) Member in the domain list */
 	u_int refs;			/* (u) References from tags */
@@ -90,6 +89,22 @@ struct dmar_ctx {
 #define	DMAR_DOMAIN_LOCK(dom)	mtx_lock(&(dom)->iodom.lock)
 #define	DMAR_DOMAIN_UNLOCK(dom)	mtx_unlock(&(dom)->iodom.lock)
 #define	DMAR_DOMAIN_ASSERT_LOCKED(dom) mtx_assert(&(dom)->iodom.lock, MA_OWNED)
+
+#define	DMAR2IOMMU(dmar)	&((dmar)->iommu)
+#define	IOMMU2DMAR(dmar)	\
+	__containerof((dmar), struct dmar_unit, iommu)
+
+#define	DOM2IODOM(domain)	&((domain)->iodom)
+#define	IODOM2DOM(domain)	\
+	__containerof((domain), struct dmar_domain, iodom)
+
+#define	CTX2IOCTX(ctx)		&((ctx)->context)
+#define	IOCTX2CTX(ctx)		\
+	__containerof((ctx), struct dmar_ctx, context)
+
+#define	CTX2DOM(ctx)		IODOM2DOM((ctx)->context.domain)
+#define	CTX2DMAR(ctx)		(CTX2DOM(ctx)->dmar)
+#define	DOM2DMAR(domain)	((domain)->dmar)
 
 struct dmar_msi_data {
 	int irq;
@@ -167,15 +182,6 @@ struct dmar_unit {
 	struct iommu_map_entries_tailq tlb_flush_entries;
 	struct task qi_task;
 	struct taskqueue *qi_taskqueue;
-
-	/*
-	 * Bitmap of buses for which context must ignore slot:func,
-	 * duplicating the page table pointer into all context table
-	 * entries.  This is a client-controlled quirk to support some
-	 * NTBs.
-	 */
-	uint32_t buswide_ctxs[(PCI_BUSMAX + 1) / NBBY / sizeof(uint32_t)];
-
 };
 
 #define	DMAR_LOCK(dmar)		mtx_lock(&(dmar)->iommu.lock)
@@ -253,14 +259,11 @@ void dmar_qi_invalidate_iec(struct dmar_unit *unit, u_int start, u_int cnt);
 vm_object_t domain_get_idmap_pgtbl(struct dmar_domain *domain,
     iommu_gaddr_t maxaddr);
 void put_idmap_pgtbl(vm_object_t obj);
-int domain_map_buf(struct iommu_domain *domain, iommu_gaddr_t base,
-    iommu_gaddr_t size, vm_page_t *ma, uint64_t pflags, int flags);
-int domain_unmap_buf(struct dmar_domain *domain, iommu_gaddr_t base,
-    iommu_gaddr_t size, int flags);
 void domain_flush_iotlb_sync(struct dmar_domain *domain, iommu_gaddr_t base,
     iommu_gaddr_t size);
 int domain_alloc_pgtbl(struct dmar_domain *domain);
 void domain_free_pgtbl(struct dmar_domain *domain);
+extern const struct iommu_domain_map_ops dmar_domain_map_ops;
 
 int dmar_dev_depth(device_t child);
 void dmar_dev_path(device_t child, int *busno, void *path1, int depth);
@@ -289,9 +292,6 @@ void dmar_quirks_pre_use(struct iommu_unit *dmar);
 
 int dmar_init_irt(struct dmar_unit *unit);
 void dmar_fini_irt(struct dmar_unit *unit);
-
-void dmar_set_buswide_ctx(struct iommu_unit *unit, u_int busno);
-bool dmar_is_buswide_ctx(struct dmar_unit *unit, u_int busno);
 
 extern iommu_haddr_t dmar_high;
 extern int haw;

@@ -108,6 +108,8 @@ extern struct nfsdevicehead nfsrv_devidhead;
 
 static int nfsrv_createiovec(int, struct mbuf **, struct mbuf **,
     struct iovec **);
+static int nfsrv_createiovec_extpgs(int, int, struct mbuf **,
+    struct mbuf **, struct iovec **);
 static int nfsrv_createiovecw(int, struct mbuf *, char *, struct iovec **,
     int *);
 static void nfsrv_pnfscreate(struct vnode *, struct vattr *, struct ucred *,
@@ -144,6 +146,8 @@ static int nfsrv_dsremove(struct vnode *, char *, struct ucred *, NFSPROC_T *);
 static int nfsrv_dssetacl(struct vnode *, struct acl *, struct ucred *,
     NFSPROC_T *);
 static int nfsrv_pnfsstatfs(struct statfs *, struct mount *);
+static void nfsm_trimtrailing(struct nfsrv_descript *, struct mbuf *,
+    char *, int, int);
 
 int nfs_pnfsio(task_fn_t *, void *);
 
@@ -205,7 +209,6 @@ static struct nfsheur {
 	int nh_use;		/* use count for selection */
 	int nh_seqcount;	/* heuristic */
 } nfsheur[NUM_HEURISTIC];
-
 
 /*
  * Heuristic to detect sequential operation.
@@ -736,8 +739,8 @@ nfsvno_relpathbuf(struct nameidata *ndp)
  * Readlink vnode op into an mbuf list.
  */
 int
-nfsvno_readlink(struct vnode *vp, struct ucred *cred, struct thread *p,
-    struct mbuf **mpp, struct mbuf **mpendp, int *lenp)
+nfsvno_readlink(struct vnode *vp, struct ucred *cred, int maxextsiz,
+    struct thread *p, struct mbuf **mpp, struct mbuf **mpendp, int *lenp)
 {
 	struct iovec *iv;
 	struct uio io, *uiop = &io;
@@ -745,7 +748,11 @@ nfsvno_readlink(struct vnode *vp, struct ucred *cred, struct thread *p,
 	int len, tlen, error = 0;
 
 	len = NFS_MAXPATHLEN;
-	uiop->uio_iovcnt = nfsrv_createiovec(len, &mp3, &mp, &iv);
+	if (maxextsiz > 0)
+		uiop->uio_iovcnt = nfsrv_createiovec_extpgs(len, maxextsiz,
+		    &mp3, &mp, &iv);
+	else
+		uiop->uio_iovcnt = nfsrv_createiovec(len, &mp3, &mp, &iv);
 	uiop->uio_iov = iv;
 	uiop->uio_offset = 0;
 	uiop->uio_resid = len;
@@ -817,7 +824,7 @@ nfsrv_createiovec(int len, struct mbuf **mpp, struct mbuf **mpendp,
 	i = 0;
 	while (left > 0) {
 		if (m == NULL)
-			panic("nfsvno_read iov");
+			panic("nfsrv_createiovec iov");
 		siz = min(M_TRAILINGSPACE(m), left);
 		if (siz > 0) {
 			iv->iov_base = mtod(m, caddr_t) + m->m_len;
@@ -835,11 +842,76 @@ nfsrv_createiovec(int len, struct mbuf **mpp, struct mbuf **mpendp,
 }
 
 /*
+ * Create an mbuf chain and an associated iovec that can be used to Read
+ * or Getextattr of data.
+ * Upon success, return pointers to the first and last mbufs in the chain
+ * plus the malloc'd iovec and its iovlen.
+ * Same as above, but creates ext_pgs mbuf(s).
+ */
+static int
+nfsrv_createiovec_extpgs(int len, int maxextsiz, struct mbuf **mpp,
+    struct mbuf **mpendp, struct iovec **ivp)
+{
+	struct mbuf *m, *m2 = NULL, *m3;
+	struct iovec *iv;
+	int i, left, pgno, siz;
+
+	left = len;
+	m3 = NULL;
+	/*
+	 * Generate the mbuf list with the uio_iov ref. to it.
+	 */
+	i = 0;
+	while (left > 0) {
+		siz = min(left, maxextsiz);
+		m = mb_alloc_ext_plus_pages(siz, M_WAITOK);
+		left -= siz;
+		i += m->m_epg_npgs;
+		if (m3 != NULL)
+			m2->m_next = m;
+		else
+			m3 = m;
+		m2 = m;
+	}
+	*ivp = iv = malloc(i * sizeof (struct iovec), M_TEMP, M_WAITOK);
+	m = m3;
+	left = len;
+	i = 0;
+	pgno = 0;
+	while (left > 0) {
+		if (m == NULL)
+			panic("nfsvno_createiovec_extpgs iov");
+		siz = min(PAGE_SIZE, left);
+		if (siz > 0) {
+			iv->iov_base = (void *)PHYS_TO_DMAP(m->m_epg_pa[pgno]);
+			iv->iov_len = siz;
+			m->m_len += siz;
+			if (pgno == m->m_epg_npgs - 1)
+				m->m_epg_last_len = siz;
+			left -= siz;
+			iv++;
+			i++;
+			pgno++;
+		}
+		if (pgno == m->m_epg_npgs && left > 0) {
+			m = m->m_next;
+			if (m == NULL)
+				panic("nfsvno_createiovec_extpgs iov");
+			pgno = 0;
+		}
+	}
+	*mpp = m3;
+	*mpendp = m2;
+	return (i);
+}
+
+/*
  * Read vnode op call into mbuf list.
  */
 int
 nfsvno_read(struct vnode *vp, off_t off, int cnt, struct ucred *cred,
-    struct thread *p, struct mbuf **mpp, struct mbuf **mpendp)
+    int maxextsiz, struct thread *p, struct mbuf **mpp,
+    struct mbuf **mpendp)
 {
 	struct mbuf *m;
 	struct iovec *iv;
@@ -858,7 +930,11 @@ nfsvno_read(struct vnode *vp, off_t off, int cnt, struct ucred *cred,
 		return (error);
 
 	len = NFSM_RNDUP(cnt);
-	uiop->uio_iovcnt = nfsrv_createiovec(len, &m3, &m, &iv);
+	if (maxextsiz > 0)
+		uiop->uio_iovcnt = nfsrv_createiovec_extpgs(len, maxextsiz,
+		    &m3, &m, &iv);
+	else
+		uiop->uio_iovcnt = nfsrv_createiovec(len, &m3, &m, &iv);
 	uiop->uio_iov = iv;
 	uiop->uio_offset = off;
 	uiop->uio_resid = len;
@@ -936,7 +1012,7 @@ nfsrv_createiovecw(int retlen, struct mbuf *m, char *cp, struct iovec **ivpp,
 	len = retlen;
 	while (len > 0) {
 		if (mp == NULL)
-			panic("nfsvno_write");
+			panic("nfsrv_createiovecw");
 		if (i > 0) {
 			i = min(i, len);
 			ivp->iov_base = cp;
@@ -975,7 +1051,6 @@ nfsvno_write(struct vnode *vp, off_t off, int retlen, int *stable,
 		*stable = NFSWRITE_FILESYNC;
 		return (error);
 	}
-
 
 	if (*stable == NFSWRITE_UNSTABLE)
 		ioflags = IO_NODELOCKED;
@@ -2043,6 +2118,17 @@ again:
 	vput(vp);
 
 	/*
+	 * If cnt > MCLBYTES and the reply will not be saved, use
+	 * ext_pgs mbufs for TLS.
+	 * For NFSv4.0, we do not know for sure if the reply will
+	 * be saved, so do not use ext_pgs mbufs for NFSv4.0.
+	 */
+	if (cnt > MCLBYTES && siz > MCLBYTES &&
+	    (nd->nd_flag & (ND_TLS | ND_EXTPG | ND_SAVEREPLY)) == ND_TLS &&
+	    (nd->nd_flag & (ND_NFSV4 | ND_NFSV41)) != ND_NFSV4)
+		nd->nd_flag |= ND_EXTPG;
+
+	/*
 	 * dirlen is the size of the reply, including all XDR and must
 	 * not exceed cnt. For NFSv2, RFC1094 didn't clearly indicate
 	 * if the XDR should be included in "count", but to be safe, we do.
@@ -2146,6 +2232,7 @@ nfsrvd_readdirplus(struct nfsrv_descript *nd, int isdgram,
 	struct mount *mp, *new_mp;
 	uint64_t mounted_on_fileno;
 	struct thread *p = curthread;
+	int bextpg0, bextpg1, bextpgsiz0, bextpgsiz1;
 
 	if (nd->nd_repstat) {
 		nfsrv_postopattr(nd, getret, &at);
@@ -2359,11 +2446,27 @@ again:
 	}
 
 	/*
+	 * If the reply is likely to exceed MCLBYTES and the reply will
+	 * not be saved, use ext_pgs mbufs for TLS.
+	 * It is difficult to predict how large each entry will be and
+	 * how many entries have been read, so just assume the directory
+	 * entries grow by a factor of 4 when attributes are included.
+	 * For NFSv4.0, we do not know for sure if the reply will
+	 * be saved, so do not use ext_pgs mbufs for NFSv4.0.
+	 */
+	if (cnt > MCLBYTES && siz > MCLBYTES / 4 &&
+	    (nd->nd_flag & (ND_TLS | ND_EXTPG | ND_SAVEREPLY)) == ND_TLS &&
+	    (nd->nd_flag & (ND_NFSV4 | ND_NFSV41)) != ND_NFSV4)
+		nd->nd_flag |= ND_EXTPG;
+
+	/*
 	 * Save this position, in case there is an error before one entry
 	 * is created.
 	 */
 	mb0 = nd->nd_mb;
 	bpos0 = nd->nd_bpos;
+	bextpg0 = nd->nd_bextpg;
+	bextpgsiz0 = nd->nd_bextpgsiz;
 
 	/*
 	 * Fill in the first part of the reply.
@@ -2385,6 +2488,8 @@ again:
 	 */
 	mb1 = nd->nd_mb;
 	bpos1 = nd->nd_bpos;
+	bextpg1 = nd->nd_bextpg;
+	bextpgsiz1 = nd->nd_bextpgsiz;
 
 	/* Loop through the records and build reply */
 	entrycnt = 0;
@@ -2401,7 +2506,9 @@ again:
 			 */
 			mb1 = nd->nd_mb;
 			bpos1 = nd->nd_bpos;
-	
+			bextpg1 = nd->nd_bextpg;
+			bextpgsiz1 = nd->nd_bextpgsiz;
+
 			/*
 			 * For readdir_and_lookup get the vnode using
 			 * the file number.
@@ -2626,11 +2733,11 @@ invalid:
 		if (!nd->nd_repstat && entrycnt == 0)
 			nd->nd_repstat = NFSERR_TOOSMALL;
 		if (nd->nd_repstat) {
-			newnfs_trimtrailing(nd, mb0, bpos0);
+			nfsm_trimtrailing(nd, mb0, bpos0, bextpg0, bextpgsiz0);
 			if (nd->nd_flag & ND_NFSV3)
 				nfsrv_postopattr(nd, getret, &at);
 		} else
-			newnfs_trimtrailing(nd, mb1, bpos1);
+			nfsm_trimtrailing(nd, mb1, bpos1, bextpg1, bextpgsiz1);
 		eofflag = 0;
 	} else if (cpos < cend)
 		eofflag = 0;
@@ -3175,6 +3282,19 @@ nfsd_fhtovp(struct nfsrv_descript *nd, struct nfsrvfh *nfp, int lktype,
 	}
 
 	/*
+	 * If TLS is required by the export, check the flags in nd_flag.
+	 */
+	if (nd->nd_repstat == 0 && ((NFSVNO_EXTLS(exp) &&
+	    (nd->nd_flag & ND_TLS) == 0) ||
+	     (NFSVNO_EXTLSCERT(exp) &&
+	      (nd->nd_flag & ND_TLSCERT) == 0) ||
+	     (NFSVNO_EXTLSCERTUSER(exp) &&
+	      (nd->nd_flag & ND_TLSCERTUSER) == 0))) {
+		vput(*vpp);
+		nd->nd_repstat = NFSERR_ACCES;
+	}
+
+	/*
 	 * Personally, I've never seen any point in requiring a
 	 * reserved port#, since only in the rare case where the
 	 * clients are all boxes with secure system privileges,
@@ -3436,6 +3556,15 @@ nfsvno_v4rootexport(struct nfsrv_descript *nd)
 			nd->nd_flag |= ND_EXGSSINTEGRITY;
 		else if (secflavors[i] == RPCSEC_GSS_KRB5P)
 			nd->nd_flag |= ND_EXGSSPRIVACY;
+	}
+
+	/* And set ND_EXxx flags for TLS. */
+	if ((exflags & MNT_EXTLS) != 0) {
+		nd->nd_flag |= ND_EXTLS;
+		if ((exflags & MNT_EXTLSCERT) != 0)
+			nd->nd_flag |= ND_EXTLSCERT;
+		if ((exflags & MNT_EXTLSCERTUSER) != 0)
+			nd->nd_flag |= ND_EXTLSCERTUSER;
 	}
 
 out:
@@ -4996,7 +5125,7 @@ nfsrv_readdsrpc(fhandle_t *fhp, off_t off, int len, struct ucred *cred,
 	st.other[2] = 0x55555555;
 	st.seqid = 0xffffffff;
 	nfscl_reqstart(nd, NFSPROC_READDS, nmp, (u_int8_t *)fhp, sizeof(*fhp),
-	    NULL, NULL, 0, 0, false);
+	    NULL, NULL, 0, 0);
 	nfsm_stateidtom(nd, &st, NFSSTATEID_PUTSTATEID);
 	NFSM_BUILD(tl, uint32_t *, NFSX_UNSIGNED * 3);
 	txdr_hyper(off, tl);
@@ -5026,7 +5155,7 @@ nfsrv_readdsrpc(fhandle_t *fhp, off_t off, int len, struct ucred *cred,
 				error = ENOENT;
 				goto nfsmout;
 			}
-	
+
 			/*
 			 * Now, adjust first mbuf so that any XDR before the
 			 * read data is skipped over.
@@ -5036,7 +5165,7 @@ nfsrv_readdsrpc(fhandle_t *fhp, off_t off, int len, struct ucred *cred,
 				m->m_len -= trimlen;
 				NFSM_DATAP(m, trimlen);
 			}
-	
+
 			/*
 			 * Truncate the mbuf chain at retlen bytes of data,
 			 * plus XDR padding that brings the length up to a
@@ -5104,7 +5233,7 @@ nfsrv_writedsdorpc(struct nfsmount *nmp, fhandle_t *fhp, off_t off, int len,
 
 	nd = malloc(sizeof(*nd), M_TEMP, M_WAITOK | M_ZERO);
 	nfscl_reqstart(nd, NFSPROC_WRITE, nmp, (u_int8_t *)fhp,
-	    sizeof(fhandle_t), NULL, NULL, 0, 0, false);
+	    sizeof(fhandle_t), NULL, NULL, 0, 0);
 
 	/*
 	 * Use a stateid where other is an alternating 01010 pattern and
@@ -5326,7 +5455,7 @@ nfsrv_allocatedsdorpc(struct nfsmount *nmp, fhandle_t *fhp, off_t off,
 
 	nd = malloc(sizeof(*nd), M_TEMP, M_WAITOK | M_ZERO);
 	nfscl_reqstart(nd, NFSPROC_ALLOCATE, nmp, (u_int8_t *)fhp,
-	    sizeof(fhandle_t), NULL, NULL, 0, 0, false);
+	    sizeof(fhandle_t), NULL, NULL, 0, 0);
 
 	/*
 	 * Use a stateid where other is an alternating 01010 pattern and
@@ -5480,7 +5609,7 @@ nfsrv_setattrdsdorpc(fhandle_t *fhp, struct ucred *cred, NFSPROC_T *p,
 	st.other[2] = 0x55555555;
 	st.seqid = 0xffffffff;
 	nfscl_reqstart(nd, NFSPROC_SETATTR, nmp, (u_int8_t *)fhp, sizeof(*fhp),
-	    NULL, NULL, 0, 0, false);
+	    NULL, NULL, 0, 0);
 	nfsm_stateidtom(nd, &st, NFSSTATEID_PUTSTATEID);
 	nfscl_fillsattr(nd, &nap->na_vattr, vp, NFSSATTR_FULL, 0);
 
@@ -5665,7 +5794,7 @@ nfsrv_setacldsdorpc(fhandle_t *fhp, struct ucred *cred, NFSPROC_T *p,
 	st.other[2] = 0x55555555;
 	st.seqid = 0xffffffff;
 	nfscl_reqstart(nd, NFSPROC_SETACL, nmp, (u_int8_t *)fhp, sizeof(*fhp),
-	    NULL, NULL, 0, 0, false);
+	    NULL, NULL, 0, 0);
 	nfsm_stateidtom(nd, &st, NFSSTATEID_PUTSTATEID);
 	NFSZERO_ATTRBIT(&attrbits);
 	NFSSETBIT_ATTRBIT(&attrbits, NFSATTRBIT_ACL);
@@ -5796,11 +5925,11 @@ nfsrv_getattrdsrpc(fhandle_t *fhp, struct ucred *cred, NFSPROC_T *p,
 	struct nfsrv_descript *nd;
 	int error;
 	nfsattrbit_t attrbits;
-	
+
 	NFSD_DEBUG(4, "in nfsrv_getattrdsrpc\n");
 	nd = malloc(sizeof(*nd), M_TEMP, M_WAITOK | M_ZERO);
 	nfscl_reqstart(nd, NFSPROC_GETATTR, nmp, (u_int8_t *)fhp,
-	    sizeof(fhandle_t), NULL, NULL, 0, 0, false);
+	    sizeof(fhandle_t), NULL, NULL, 0, 0);
 	NFSZERO_ATTRBIT(&attrbits);
 	NFSSETBIT_ATTRBIT(&attrbits, NFSATTRBIT_SIZE);
 	NFSSETBIT_ATTRBIT(&attrbits, NFSATTRBIT_CHANGE);
@@ -5854,7 +5983,7 @@ nfsrv_seekdsrpc(fhandle_t *fhp, off_t *offp, int content, bool *eofp,
 	struct nfsrv_descript *nd;
 	nfsv4stateid_t st;
 	int error;
-	
+
 	NFSD_DEBUG(4, "in nfsrv_seekdsrpc\n");
 	/*
 	 * Use a stateid where other is an alternating 01010 pattern and
@@ -5868,7 +5997,7 @@ nfsrv_seekdsrpc(fhandle_t *fhp, off_t *offp, int content, bool *eofp,
 	st.seqid = 0xffffffff;
 	nd = malloc(sizeof(*nd), M_TEMP, M_WAITOK | M_ZERO);
 	nfscl_reqstart(nd, NFSPROC_SEEKDS, nmp, (u_int8_t *)fhp,
-	    sizeof(fhandle_t), NULL, NULL, 0, 0, false);
+	    sizeof(fhandle_t), NULL, NULL, 0, 0);
 	nfsm_stateidtom(nd, &st, NFSSTATEID_PUTSTATEID);
 	NFSM_BUILD(tl, uint32_t *, NFSX_HYPER + NFSX_UNSIGNED);
 	txdr_hyper(*offp, tl); tl += 2;
@@ -6207,8 +6336,8 @@ nfsvno_allocate(struct vnode *vp, off_t off, off_t len, struct ucred *cred,
  */
 int
 nfsvno_getxattr(struct vnode *vp, char *name, uint32_t maxresp,
-    struct ucred *cred, struct thread *p, struct mbuf **mpp,
-    struct mbuf **mpendp, int *lenp)
+    struct ucred *cred, uint64_t flag, int maxextsiz, struct thread *p,
+    struct mbuf **mpp, struct mbuf **mpendp, int *lenp)
 {
 	struct iovec *iv;
 	struct uio io, *uiop = &io;
@@ -6226,7 +6355,21 @@ nfsvno_getxattr(struct vnode *vp, char *name, uint32_t maxresp,
 	len = siz;
 	tlen = NFSM_RNDUP(len);
 	if (tlen > 0) {
-		uiop->uio_iovcnt = nfsrv_createiovec(tlen, &m, &m2, &iv);
+		/*
+		 * If cnt > MCLBYTES and the reply will not be saved, use
+		 * ext_pgs mbufs for TLS.
+		 * For NFSv4.0, we do not know for sure if the reply will
+		 * be saved, so do not use ext_pgs mbufs for NFSv4.0.
+		 * Always use ext_pgs mbufs if ND_EXTPG is set.
+		 */
+		if ((flag & ND_EXTPG) != 0 || (tlen > MCLBYTES &&
+		    (flag & (ND_TLS | ND_SAVEREPLY)) == ND_TLS &&
+		    (flag & (ND_NFSV4 | ND_NFSV41)) != ND_NFSV4))
+			uiop->uio_iovcnt = nfsrv_createiovec_extpgs(tlen,
+			    maxextsiz, &m, &m2, &iv);
+		else
+			uiop->uio_iovcnt = nfsrv_createiovec(tlen, &m, &m2,
+			    &iv);
 		uiop->uio_iov = iv;
 	} else {
 		uiop->uio_iovcnt = 0;
@@ -6418,6 +6561,44 @@ out:
 	return (error);
 }
 
+/*
+ * Trim trailing data off the mbuf list being built.
+ */
+static void
+nfsm_trimtrailing(struct nfsrv_descript *nd, struct mbuf *mb, char *bpos,
+    int bextpg, int bextpgsiz)
+{
+	vm_page_t pg;
+	int fullpgsiz, i;
+
+	if (mb->m_next != NULL) {
+		m_freem(mb->m_next);
+		mb->m_next = NULL;
+	}
+	if ((mb->m_flags & M_EXTPG) != 0) {
+		/* First, get rid of any pages after this position. */
+		for (i = mb->m_epg_npgs - 1; i > bextpg; i--) {
+			pg = PHYS_TO_VM_PAGE(mb->m_epg_pa[i]);
+			vm_page_unwire_noq(pg);
+			vm_page_free(pg);
+		}
+		mb->m_epg_npgs = bextpg + 1;
+		if (bextpg == 0)
+			fullpgsiz = PAGE_SIZE - mb->m_epg_1st_off;
+		else
+			fullpgsiz = PAGE_SIZE;
+		mb->m_epg_last_len = fullpgsiz - bextpgsiz;
+		mb->m_len = m_epg_pagelen(mb, 0, mb->m_epg_1st_off);
+		for (i = 1; i < mb->m_epg_npgs; i++)
+			mb->m_len += m_epg_pagelen(mb, i, 0);
+		nd->nd_bextpgsiz = bextpgsiz;
+		nd->nd_bextpg = bextpg;
+	} else
+		mb->m_len = bpos - mtod(mb, char *);
+	nd->nd_mb = mb;
+	nd->nd_bpos = bpos;
+}
+
 extern int (*nfsd_call_nfsd)(struct thread *, struct nfssvc_args *);
 
 /*
@@ -6529,4 +6710,3 @@ MODULE_DEPEND(nfsd, nfscommon, 1, 1, 1);
 MODULE_DEPEND(nfsd, nfslockd, 1, 1, 1);
 MODULE_DEPEND(nfsd, krpc, 1, 1, 1);
 MODULE_DEPEND(nfsd, nfssvc, 1, 1, 1);
-

@@ -208,7 +208,7 @@ fuse_internal_access(struct vnode *vp,
 
 		fuse_internal_getattr(vp, &va, cred, td);
 		return vaccess(vp->v_type, va.va_mode, va.va_uid,
-		    va.va_gid, mode, cred, NULL);
+		    va.va_gid, mode, cred);
 	}
 
 	if (mode & VADMIN) {
@@ -311,7 +311,6 @@ fuse_internal_cache_attrs(struct vnode *vp, struct fuse_attr *attr,
 	if (vap != vp_cache_at && vap != NULL)
 		memcpy(vap, vp_cache_at, sizeof(*vap));
 }
-
 
 /* fsync */
 

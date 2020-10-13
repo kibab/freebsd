@@ -70,8 +70,6 @@ NETBSD_ATF_TESTS_C+=		wait_noproc_test
 NETBSD_ATF_TESTS_C+=		wait_noproc_wnohang_test
 NETBSD_ATF_TESTS_C+=		write_test
 
-CSTD?=				c99
-
 LIBADD.getpid_test+=		pthread
 LIBADD.timer_create_test+=	rt
 
@@ -79,12 +77,6 @@ LIBADD.timer_create_test+=	rt
 
 SRCS.mlock_test+=		mlock_helper.c
 SRCS.setrlimit_test+=		mlock_helper.c
-
-.if ${COMPILER_TYPE} == "gcc"
-WARNS?=			3
-.else
-WARNS?=			4
-.endif
 
 FILESGROUPS+=		truncate_test_FILES
 

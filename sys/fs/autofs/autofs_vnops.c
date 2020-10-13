@@ -204,7 +204,6 @@ autofs_vget_callback(struct mount *mp, void *arg, int flags,
     struct vnode **vpp)
 {
 
-
 	return (autofs_node_vn(arg, mp, flags, vpp));
 }
 
@@ -656,7 +655,7 @@ autofs_node_vn(struct autofs_node *anp, struct mount *mp, int flags,
 
 	vp = anp->an_vnode;
 	if (vp != NULL) {
-		error = vget(vp, flags | LK_RETRY, curthread);
+		error = vget(vp, flags | LK_RETRY);
 		if (error != 0) {
 			AUTOFS_WARN("vget failed with error %d", error);
 			sx_xunlock(&anp->an_vnode_lock);

@@ -1461,9 +1461,6 @@ dwmmc_cam_action(struct cam_sim *sim, union ccb *ccb)
 	{
 		struct ccb_trans_settings *cts = &ccb->cts;
 
-		if (bootverbose)
-			device_printf(sc->dev, "Got XPT_GET_TRAN_SETTINGS\n");
-
 		cts->protocol = PROTO_MMCSD;
 		cts->protocol_version = 1;
 		cts->transport = XPORT_MMCSD;

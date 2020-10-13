@@ -10,6 +10,26 @@ newline.  Entries should be separated by a newline.
 
 Changes to this file should not be MFCed.
 
+r364896:
+	A series of commits ending with r364896 added NFS over TLS
+	to the kernel.  This is believed to be compatible with
+	the Internet Draft titled "Towards Remote Procedure Call Encryption
+	By Default" (expected to soon become an RFC).
+	The mount_nfs(8) and exports(5) man pages describe the mount and
+	export option(s) related to NFS over TLS.
+	For NFS over TLS to work, the rpctlscd(8) { client } or rpctlssd(8)
+	{ server } must be running on a kernel built with "options KERN_TLS"
+	on an architecture where PMAP_HAS_DMAP != 0.
+
+r364725:
+	Changes to one obscure devd event generated on resume need to
+	be documented. The old form will still be generated in 13, but not
+	in 14.
+
+r363679:
+	Applications using regex(3), e.g. sed/grep, will no longer accept
+	redundant escapes for most ordinary characters.
+
 r363253:
 	SCTP support has been removed from GENERIC kernel configurations.
 	The SCTP stack is now built as sctp.ko and can be dynamically loaded.
@@ -22,6 +42,13 @@ r363180:
 
 r363084:
 	nc(1) now implements SCTP mode, enabled by specifying the --sctp option.
+
+r362681:
+	A new implementation of bc and dc has been imported. It offers
+	better standards compliance, performance, localization and comes
+	with extensive test cases that are optionally installed.
+	Use WITHOUT_GH_BC=yes to build and install the world with the
+	previous version instead of the new one, if required.
 
 r362158, r362163:
 	struct export_args has changed so that the "user" specified for

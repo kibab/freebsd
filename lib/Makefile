@@ -23,10 +23,14 @@ SUBDIR_BOOTSTRAP= \
 	msun
 
 # The main list; please keep these sorted alphabetically.
+# The only exception is sqlite3: we place it at the start of the list since it
+# takes a long time to build and starting it first improves parallelism.
 
 SUBDIR=	${SUBDIR_BOOTSTRAP} \
 	.WAIT \
+	libsqlite3 \
 	geom \
+	lib9p \
 	libalias \
 	libarchive \
 	libauditd \
@@ -68,6 +72,7 @@ SUBDIR=	${SUBDIR_BOOTSTRAP} \
 	libmt \
 	lib80211 \
 	libnetbsd \
+	libnetmap \
 	libnv \
 	libopenbsd \
 	libopie \
@@ -84,7 +89,6 @@ SUBDIR=	${SUBDIR_BOOTSTRAP} \
 	librtld_db \
 	libsbuf \
 	libsmb \
-	libsqlite3 \
 	libstdbuf \
 	libstdthreads \
 	libsysdecode \
@@ -107,6 +111,7 @@ SUBDIR=	${SUBDIR_BOOTSTRAP} \
 # libraries, those libraries should be listed as build order dependencies here.
 
 SUBDIR_DEPEND_geom=	libufs
+SUBDIR_DEPEND_googletest= libregex
 SUBDIR_DEPEND_libarchive= libz libbz2 libexpat liblzma libmd libzstd
 SUBDIR_DEPEND_libauditdm= libbsm
 SUBDIR_DEPEND_libbsnmp= ${_libnetgraph}

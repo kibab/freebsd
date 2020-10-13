@@ -46,6 +46,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/malloc.h>
 #include <sys/mutex.h>
 #include <sys/priv.h>
+#include <sys/kenv.h>
 #include <sys/kernel.h>
 #include <sys/systm.h>
 #include <sys/sysent.h>
@@ -58,6 +59,9 @@ __FBSDID("$FreeBSD$");
 
 static char *_getenv_dynamic_locked(const char *name, int *idx);
 static char *_getenv_dynamic(const char *name, int *idx);
+
+static char *kenv_acquire(const char *name);
+static void kenv_release(const char *buf);
 
 static MALLOC_DEFINE(M_KENV, "kenv", "kernel environment");
 
@@ -87,8 +91,6 @@ bool	dynamic_kenv;
 
 #define KENV_CHECK	if (!dynamic_kenv) \
 			    panic("%s: called before SI_SUB_KMEM", __func__)
-
-static char	*getenv_string_buffer(const char *);
 
 int
 sys_kenv(td, uap)
@@ -252,7 +254,6 @@ done:
 void
 init_static_kenv(char *buf, size_t len)
 {
-	char *eval;
 
 	KASSERT(!dynamic_kenv, ("kenv: dynamic_kenv already initialized"));
 	/*
@@ -300,20 +301,17 @@ init_static_kenv(char *buf, size_t len)
 	 * if the static environment has disabled the loader environment.
 	 */
 	kern_envp = static_env;
-	eval = kern_getenv("loader_env.disabled");
-	if (eval == NULL || strcmp(eval, "1") != 0) {
+	if (!getenv_is_true("loader_env.disabled")) {
 		md_envp = buf;
 		md_env_len = len;
 		md_env_pos = 0;
 
-		eval = kern_getenv("static_env.disabled");
-		if (eval != NULL && strcmp(eval, "1") == 0) {
+		if (getenv_is_true("static_env.disabled")) {
 			kern_envp[0] = '\0';
 			kern_envp[1] = '\0';
 		}
 	}
-	eval = kern_getenv("static_hints.disabled");
-	if (eval != NULL && strcmp(eval, "1") == 0) {
+	if (getenv_is_true("static_hints.disabled")) {
 		static_hints[0] = '\0';
 		static_hints[1] = '\0';
 	}
@@ -482,16 +480,24 @@ _getenv_static(const char *name)
 char *
 kern_getenv(const char *name)
 {
-	char *ret;
+	char *cp, *ret;
+	int len;
 
 	if (dynamic_kenv) {
-		ret = getenv_string_buffer(name);
-		if (ret == NULL) {
-			WITNESS_WARN(WARN_GIANTOK | WARN_SLEEPOK, NULL,
-			    "getenv");
+		len = KENV_MNAMELEN + 1 + kenv_mvallen + 1;
+		ret = uma_zalloc(kenv_zone, M_WAITOK | M_ZERO);
+		mtx_lock(&kenv_lock);
+		cp = _getenv_dynamic(name, NULL);
+		if (cp != NULL)
+			strlcpy(ret, cp, len);
+		mtx_unlock(&kenv_lock);
+		if (cp == NULL) {
+			uma_zfree(kenv_zone, ret);
+			ret = NULL;
 		}
 	} else
 		ret = _getenv_static(name);
+
 	return (ret);
 }
 
@@ -503,12 +509,9 @@ testenv(const char *name)
 {
 	char *cp;
 
-	if (dynamic_kenv) {
-		mtx_lock(&kenv_lock);
-		cp = _getenv_dynamic(name, NULL);
-		mtx_unlock(&kenv_lock);
-	} else
-		cp = _getenv_static(name);
+	cp = kenv_acquire(name);
+	kenv_release(cp);
+
 	if (cp != NULL)
 		return (1);
 	return (0);
@@ -615,30 +618,33 @@ kern_unsetenv(const char *name)
 }
 
 /*
- * Return a buffer containing the string value from an environment variable
+ * Return the internal kenv buffer for the variable name, if it exists.
+ * If the dynamic kenv is initialized and the name is present, return
+ * with kenv_lock held.
  */
 static char *
-getenv_string_buffer(const char *name)
+kenv_acquire(const char *name)
 {
-	char *cp, *ret;
-	int len;
+	char *value;
 
 	if (dynamic_kenv) {
-		len = KENV_MNAMELEN + 1 + kenv_mvallen + 1;
-		ret = uma_zalloc(kenv_zone, M_WAITOK | M_ZERO);
 		mtx_lock(&kenv_lock);
-		cp = _getenv_dynamic(name, NULL);
-		if (cp != NULL)
-			strlcpy(ret, cp, len);
-		mtx_unlock(&kenv_lock);
-		if (cp == NULL) {
-			uma_zfree(kenv_zone, ret);
-			ret = NULL;
-		}
+		value = _getenv_dynamic(name, NULL);
+		if (value == NULL)
+			mtx_unlock(&kenv_lock);
+		return (value);
 	} else
-		ret = _getenv_static(name);
+		return (_getenv_static(name));
+}
 
-	return (ret);
+/*
+ * Undo a previous kenv_acquire() operation
+ */
+static void
+kenv_release(const char *buf)
+{
+	if ((buf != NULL) && dynamic_kenv)
+		mtx_unlock(&kenv_lock);
 }
 
 /*
@@ -649,17 +655,13 @@ getenv_string(const char *name, char *data, int size)
 {
 	char *cp;
 
-	if (dynamic_kenv) {
-		mtx_lock(&kenv_lock);
-		cp = _getenv_dynamic(name, NULL);
-		if (cp != NULL)
-			strlcpy(data, cp, size);
-		mtx_unlock(&kenv_lock);
-	} else {
-		cp = _getenv_static(name);
-		if (cp != NULL)
-			strlcpy(data, cp, size);
-	}
+	cp = kenv_acquire(name);
+
+	if (cp != NULL)
+		strlcpy(data, cp, size);
+
+	kenv_release(cp);
+
 	return (cp != NULL);
 }
 
@@ -673,23 +675,24 @@ getenv_array(const char *name, void *pdata, int size, int *psize,
 	uint8_t shift;
 	int64_t value;
 	int64_t old;
-	char *buf;
+	const char *buf;
 	char *end;
-	char *ptr;
+	const char *ptr;
 	int n;
 	int rc;
 
-	if ((buf = getenv_string_buffer(name)) == NULL)
-		return (0);
-
 	rc = 0;			  /* assume failure */
+
+	buf = kenv_acquire(name);
+	if (buf == NULL)
+		goto error;
+
 	/* get maximum number of elements */
 	size /= type_size;
 
 	n = 0;
 
 	for (ptr = buf; *ptr != 0; ) {
-
 		value = strtoq(ptr, &end, 0);
 
 		/* check if signed numbers are allowed */
@@ -797,8 +800,7 @@ getenv_array(const char *name, void *pdata, int size, int *psize,
 	if (n != 0)
 		rc = 1;	/* success */
 error:
-	if (dynamic_kenv)
-		uma_zfree(kenv_zone, buf);
+	kenv_release(buf);
 	return (rc);
 }
 
@@ -898,18 +900,21 @@ getenv_ulong(const char *name, unsigned long *data)
 int
 getenv_quad(const char *name, quad_t *data)
 {
-	char	*value, *vtp;
-	quad_t	iv;
+	const char	*value;
+	char		suffix, *vtp;
+	quad_t		iv;
 
-	value = getenv_string_buffer(name);
-	if (value == NULL)
-		return (0);
+	value = kenv_acquire(name);
+	if (value == NULL) {
+		goto error;
+	}
 	iv = strtoq(value, &vtp, 0);
 	if (vtp == value || (vtp[0] != '\0' && vtp[1] != '\0')) {
-		freeenv(value);
-		return (0);
+		goto error;
 	}
-	switch (vtp[0]) {
+	suffix = vtp[0];
+	kenv_release(value);
+	switch (suffix) {
 	case 't': case 'T':
 		iv *= 1024;
 		/* FALLTHROUGH */
@@ -924,12 +929,72 @@ getenv_quad(const char *name, quad_t *data)
 	case '\0':
 		break;
 	default:
-		freeenv(value);
 		return (0);
 	}
-	freeenv(value);
 	*data = iv;
 	return (1);
+error:
+	kenv_release(value);
+	return (0);
+}
+
+/*
+ * Return a boolean value from an environment variable. This can be in
+ * numerical or string form, i.e. "1" or "true".
+ */
+int
+getenv_bool(const char *name, bool *data)
+{
+	char *val;
+	int ret = 0;
+
+	if (name == NULL)
+		return (0);
+
+	val = kern_getenv(name);
+	if (val == NULL)
+		return (0);
+
+	if ((strcmp(val, "1") == 0) || (strcasecmp(val, "true") == 0)) {
+		*data = true;
+		ret = 1;
+	} else if ((strcmp(val, "0") == 0) || (strcasecmp(val, "false") == 0)) {
+		*data = false;
+		ret = 1;
+	} else {
+		/* Spit out a warning for malformed boolean variables. */
+		printf("Environment variable %s has non-boolean value \"%s\"\n",
+		    name, val);
+	}
+	freeenv(val);
+
+	return (ret);
+}
+
+/*
+ * Wrapper around getenv_bool to easily check for true.
+ */
+bool
+getenv_is_true(const char *name)
+{
+	bool val;
+
+	if (getenv_bool(name, &val) != 0)
+		return (val);
+	return (false);
+}
+
+/*
+ * Wrapper around getenv_bool to easily check for false.
+ */
+bool
+getenv_is_false(const char *name)
+{
+	bool val;
+
+	if (getenv_bool(name, &val) != 0)
+		return (!val);
+	return (false);
 }
 
 /*
@@ -996,6 +1061,14 @@ tunable_quad_init(void *data)
 	struct tunable_quad *d = (struct tunable_quad *)data;
 
 	TUNABLE_QUAD_FETCH(d->path, d->var);
+}
+
+void
+tunable_bool_init(void *data)
+{
+	struct tunable_bool *d = (struct tunable_bool *)data;
+
+	TUNABLE_BOOL_FETCH(d->path, d->var);
 }
 
 void

@@ -181,13 +181,6 @@ VNET_DEFINE_STATIC(vifi_t, numvifs);
 #define	V_numvifs		VNET(numvifs)
 VNET_DEFINE_STATIC(struct vif *, viftable);
 #define	V_viftable		VNET(viftable)
-/*
- * No one should be able to "query" this before initialisation happened in
- * vnet_mroute_init(), so we should still be fine.
- */
-SYSCTL_OPAQUE(_net_inet_ip, OID_AUTO, viftable, CTLFLAG_VNET | CTLFLAG_RD,
-    &VNET_NAME(viftable), sizeof(*V_viftable) * MAXVIFS, "S,vif[MAXVIFS]",
-    "IPv4 Multicast Interfaces (struct vif[MAXVIFS], netinet/ip_mroute.h)");
 
 static struct mtx vif_mtx;
 #define	VIF_LOCK()		mtx_lock(&vif_mtx)
@@ -1533,7 +1526,6 @@ ip_mdq(struct mbuf *m, struct ifnet *ifp, struct mfc *rt, vifi_t xmt_vif)
 	 */
 	if (V_pim_assert_enabled && (vifi < V_numvifs) &&
 	    V_viftable[vifi].v_ifp) {
-
 	    if (ifp == &V_multicast_register_if)
 		PIMSTAT_INC(pims_rcv_registers_wrongiif);
 
@@ -1575,7 +1567,6 @@ ip_mdq(struct mbuf *m, struct ifnet *ifp, struct mfc *rt, vifi_t xmt_vif)
 	}
 	return 0;
     }
-
 
     /* If I sourced this packet, it counts as output, else it was input. */
     if (in_hosteq(ip->ip_src, V_viftable[vifi].v_lcl_addr)) {
@@ -2192,7 +2183,6 @@ unschedule_bw_meter(struct bw_meter *x)
     x->bm_time_hash = BW_METER_BUCKETS;
 }
 
-
 /*
  * Process all "<=" type of bw_meter that should be processed now,
  * and for each entry prepare an upcall if necessary. Each processed
@@ -2808,6 +2798,30 @@ static SYSCTL_NODE(_net_inet_ip, OID_AUTO, mfctable,
     CTLFLAG_RD | CTLFLAG_MPSAFE, sysctl_mfctable,
     "IPv4 Multicast Forwarding Table "
     "(struct *mfc[mfchashsize], netinet/ip_mroute.h)");
+
+static int
+sysctl_viflist(SYSCTL_HANDLER_ARGS)
+{
+	int error;
+
+	if (req->newptr)
+		return (EPERM);
+	if (V_viftable == NULL)		/* XXX unlocked */
+		return (0);
+	error = sysctl_wire_old_buffer(req, sizeof(*V_viftable) * MAXVIFS);
+	if (error)
+		return (error);
+
+	VIF_LOCK();
+	error = SYSCTL_OUT(req, V_viftable, sizeof(*V_viftable) * MAXVIFS);
+	VIF_UNLOCK();
+	return (error);
+}
+
+SYSCTL_PROC(_net_inet_ip, OID_AUTO, viftable,
+    CTLTYPE_OPAQUE | CTLFLAG_VNET | CTLFLAG_RD | CTLFLAG_MPSAFE, NULL, 0,
+    sysctl_viflist, "S,vif[MAXVIFS]",
+    "IPv4 Multicast Interfaces (struct vif[MAXVIFS], netinet/ip_mroute.h)");
 
 static void
 vnet_mroute_init(const void *unused __unused)

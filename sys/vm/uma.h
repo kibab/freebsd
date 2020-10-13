@@ -154,7 +154,6 @@ typedef void (*uma_release)(void *arg, void **store, int count);
  *
  */
 
-
 /* Function proto types */
 
 /*
@@ -385,16 +384,6 @@ void uma_zfree_pcpu_arg(uma_zone_t zone, void *item, void *arg);
 
 /* Use with SMR zones. */
 void uma_zfree_smr(uma_zone_t zone, void *item);
-
-/*
- * Frees an item back to the specified zone's domain specific pool.
- *
- * Arguments:
- *	zone  The zone the item was originally allocated out of.
- *	item  The memory to be freed.
- *	arg   Argument passed to the destructor
- */
-void uma_zfree_domain(uma_zone_t zone, void *item, void *arg);
 
 /*
  * Frees an item back to a zone without supplying an argument

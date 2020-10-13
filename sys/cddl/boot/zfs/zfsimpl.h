@@ -527,20 +527,20 @@ typedef struct vdev_phys {
 } vdev_phys_t;
 
 typedef enum vbe_vers {
- 	/* The bootenv file is stored as ascii text in the envblock */
- 	VB_RAW = 0,
+	/* The bootenv file is stored as ascii text in the envblock */
+	VB_RAW = 0,
 
-  	/*
- 	 * The bootenv file is converted to an nvlist and then packed into the
- 	 * envblock.
- 	 */
- 	VB_NVLIST = 1
+	/*
+	 * The bootenv file is converted to an nvlist and then packed into the
+	 * envblock.
+	 */
+	VB_NVLIST = 1
 } vbe_vers_t;
 
 typedef struct vdev_boot_envblock {
- 	uint64_t	vbe_version;
- 	char		vbe_bootenv[VDEV_PAD_SIZE - sizeof (uint64_t) -
- 			sizeof (zio_eck_t)];
+	uint64_t	vbe_version;
+	char		vbe_bootenv[VDEV_PAD_SIZE - sizeof (uint64_t) -
+			sizeof (zio_eck_t)];
  	zio_eck_t	vbe_zbt;
 } vdev_boot_envblock_t;
 
@@ -1351,6 +1351,7 @@ typedef struct dsl_dataset_phys {
 #define	DMU_POOL_REMOVING		"com.delphix:removing"
 #define	DMU_POOL_OBSOLETE_BPOBJ		"com.delphix:obsolete_bpobj"
 #define	DMU_POOL_CONDENSING_INDIRECT	"com.delphix:condensing_indirect"
+#define	DMU_POOL_ZPOOL_CHECKPOINT       "com.delphix:zpool_checkpoint"
 
 #define	ZAP_MAGIC 0x2F52AB2ABULL
 
@@ -1662,10 +1663,9 @@ typedef struct znode_phys {
  */
 struct vdev;
 struct spa;
-typedef int vdev_phys_read_t(struct vdev *vdev, void *priv,
-    off_t offset, void *buf, size_t bytes);
-typedef int vdev_read_t(struct vdev *vdev, const blkptr_t *bp,
-    void *buf, off_t offset, size_t bytes);
+typedef int vdev_phys_read_t(struct vdev *, void *, off_t, void *, size_t);
+typedef int vdev_phys_write_t(struct vdev *, off_t, void *, size_t);
+typedef int vdev_read_t(struct vdev *, const blkptr_t *, void *, off_t, size_t);
 
 typedef STAILQ_HEAD(vdev_list, vdev) vdev_list_t;
 
@@ -1793,8 +1793,9 @@ typedef struct vdev {
 	size_t		v_nchildren;	/* # children */
 	vdev_state_t	v_state;	/* current state */
 	vdev_phys_read_t *v_phys_read;	/* read from raw leaf vdev */
+	vdev_phys_write_t *v_phys_write; /* write to raw leaf vdev */
 	vdev_read_t	*v_read;	/* read from vdev */
-	void		*v_read_priv;	/* private data for read function */
+	void		*v_priv;	/* data for read/write function */
 	boolean_t	v_islog;
 	struct spa	*v_spa;		/* link to spa */
 	/*
@@ -1814,12 +1815,18 @@ typedef struct spa {
 	char		*spa_name;	/* pool name */
 	uint64_t	spa_guid;	/* pool guid */
 	uint64_t	spa_txg;	/* most recent transaction */
-	struct uberblock spa_uberblock;	/* best uberblock so far */
+	struct uberblock *spa_uberblock;	/* best uberblock so far */
 	vdev_t		*spa_root_vdev;	/* toplevel vdev container */
-	objset_phys_t	spa_mos;	/* MOS for this pool */
+	objset_phys_t	*spa_mos;	/* MOS for this pool */
 	zio_cksum_salt_t spa_cksum_salt;	/* secret salt for cksum */
 	void		*spa_cksum_tmpls[ZIO_CHECKSUM_FUNCTIONS];
 	boolean_t	spa_with_log;	/* this pool has log */
+
+	struct uberblock spa_uberblock_master;	/* best uberblock so far */
+	objset_phys_t	spa_mos_master;		/* MOS for this pool */
+	struct uberblock spa_uberblock_checkpoint; /* checkpoint uberblock */
+	objset_phys_t	spa_mos_checkpoint;	/* Checkpoint MOS */
+	void		*spa_bootenv;		/* bootenv from pool label */
 } spa_t;
 
 /* IO related arguments. */

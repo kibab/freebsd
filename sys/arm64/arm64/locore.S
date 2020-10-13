@@ -46,8 +46,6 @@
 
 /* U-Boot booti related constants. */
 #if defined(LINUX_BOOT_ABI)
-#define FDT_MAGIC		0xEDFE0DD0	/* FDT blob Magic */
-
 #ifndef UBOOT_IMAGE_OFFSET
 #define	UBOOT_IMAGE_OFFSET	0		/* Image offset from start of */
 #endif						/*  2 MiB page */
@@ -128,6 +126,9 @@ _start:
 	/* Enable the mmu */
 	bl	start_mmu
 
+	/* Load the new ttbr0 pagetable */
+	adr	x27, pagetable_l0_ttbr0
+
 	/* Jump to the virtual address space */
 	ldr	x15, .Lvirtdone
 	br	x15
@@ -166,6 +167,7 @@ virtdone:
 	str	x25, [x0, #BP_KERN_STACK]
 	str	x24, [x0, #BP_KERN_L0PT]
 	str	x23, [x0, #BP_BOOT_EL]
+	str	x27, [x0, 40]	/* kern_ttbr0 */
 
 	/* trace back starts here */
 	mov	fp, #0
@@ -204,10 +206,13 @@ ENTRY(mpentry)
 	/* Load the kernel page table */
 	adr	x24, pagetable_l0_ttbr1
 	/* Load the identity page table */
-	adr	x27, pagetable_l0_ttbr0
+	adr	x27, pagetable_l0_ttbr0_boostrap
 
 	/* Enable the mmu */
 	bl	start_mmu
+
+	/* Load the new ttbr0 pagetable */
+	adr	x27, pagetable_l0_ttbr0
 
 	/* Jump to the virtual address space */
 	ldr	x15, =mp_virtdone
@@ -218,6 +223,16 @@ mp_virtdone:
 	ldr	x4, =bootstack
 	ldr	x4, [x4]
 	mov	sp, x4
+
+	/* Load the kernel ttbr0 pagetable */
+	msr	ttbr0_el1, x27
+	isb
+
+	/* Invalidate the TLB */
+	tlbi	vmalle1
+	dsb	sy
+	isb
+
 	b	init_secondary
 END(mpentry)
 #endif
@@ -391,11 +406,12 @@ create_pagetables:
 	/* No modules or FDT pointer ? */
 	cbz	x0, booti_no_fdt
 
-	/* Test if modulep points to modules descriptor or to FDT */
-	ldr	w8, [x0]
-	ldr	w7, =FDT_MAGIC
-	cmp	w7, w8
-	b.eq	booti_fdt
+	/*
+	 * Test if x0 points to modules descriptor(virtual address) or
+	 * to FDT (physical address)
+	 */
+	cmp	x0, x6		/* x6 is #(KERNBASE) */
+	b.lo	booti_fdt
 #endif
 
 	/* Booted with modules pointer */
@@ -481,7 +497,7 @@ common:
 	cbz	x19, 1f
 
 	/* Create the identity mapping for FDT data (2 MiB max) */
-	mov	x7, #(ATTR_S1_nG | ATTR_S1_IDX(VM_MEMATTR_UNCACHEABLE))
+	mov	x7, #(ATTR_S1_nG | ATTR_S1_IDX(VM_MEMATTR_WRITE_BACK))
 	mov	x9, x0
 	mov	x8, x0		/* VA start (== PA start) */
 	mov	x10, #1
@@ -491,7 +507,7 @@ common:
 #endif
 
 	/* Create the VA = PA map */
-	mov	x7, #(ATTR_S1_nG | ATTR_S1_IDX(VM_MEMATTR_UNCACHEABLE))
+	mov	x7, #(ATTR_S1_nG | ATTR_S1_IDX(VM_MEMATTR_WRITE_BACK))
 	mov	x9, x27
 	mov	x8, x9		/* VA start (== PA start) */
 	mov	x10, #1
@@ -597,10 +613,7 @@ build_l1_block_pagetable:
 
 	/* Build the L1 block entry */
 	orr	x12, x7, #L1_BLOCK
-	orr	x12, x12, #(ATTR_AF)
-#ifdef SMP
-	orr	x12, x12, ATTR_SH(ATTR_SH_IS)
-#endif
+	orr	x12, x12, #(ATTR_DEFAULT)
 
 	/* Only use the output address bits */
 	lsr	x9, x9, #L1_SHIFT
@@ -638,11 +651,8 @@ build_l2_block_pagetable:
 	/* Build the L2 block entry */
 	lsl	x12, x7, #2
 	orr	x12, x12, #L2_BLOCK
-	orr	x12, x12, #(ATTR_AF)
+	orr	x12, x12, #(ATTR_DEFAULT)
 	orr	x12, x12, #(ATTR_S1_UXN)
-#ifdef SMP
-	orr	x12, x12, ATTR_SH(ATTR_SH_IS)
-#endif
 
 	/* Only use the output address bits */
 	lsr	x9, x9, #L2_SHIFT
@@ -677,6 +687,8 @@ start_mmu:
 
 	/* Invalidate the TLB */
 	tlbi	vmalle1is
+	dsb	ish
+	isb
 
 	ldr	x2, mair
 	msr	mair_el1, x2
@@ -758,10 +770,13 @@ abort:
 	//.section .init_pagetable
 	.align 12 /* 4KiB aligned */
 	/*
-	 * 3 initial tables (in the following order):
+	 * 6 initial tables (in the following order):
 	 *           L2 for kernel (High addresses)
 	 *           L1 for kernel
-	 *           L1 for user   (Low addresses)
+	 *           L0 for kernel
+	 *           L1 bootstrap for user   (Low addresses)
+	 *           L0 bootstrap for user
+	 *           L0 for user
 	 */
 pagetable:
 	.space	PAGE_SIZE
@@ -769,7 +784,9 @@ pagetable_l1_ttbr1:
 	.space	PAGE_SIZE
 pagetable_l0_ttbr1:
 	.space	PAGE_SIZE
-pagetable_l1_ttbr0:
+pagetable_l1_ttbr0_bootstrap:
+	.space	PAGE_SIZE
+pagetable_l0_ttbr0_boostrap:
 	.space	PAGE_SIZE
 pagetable_l0_ttbr0:
 	.space	PAGE_SIZE

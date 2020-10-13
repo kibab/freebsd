@@ -104,7 +104,7 @@ SYSCTL_INT(_kern_smp, OID_AUTO, threads_per_core, CTLFLAG_RD|CTLFLAG_CAPRD,
 
 int mp_ncores = -1;	/* how many physical cores running */
 SYSCTL_INT(_kern_smp, OID_AUTO, cores, CTLFLAG_RD|CTLFLAG_CAPRD, &mp_ncores, 0,
-    "Number of CPUs online");
+    "Number of physical cores online");
 
 int smp_topology = 0;	/* Which topology we're using. */
 SYSCTL_INT(_kern_smp, OID_AUTO, topology, CTLFLAG_RDTUN, &smp_topology, 0,
@@ -493,7 +493,7 @@ smp_rendezvous_action(void)
 #ifdef INVARIANTS
 	owepreempt = td->td_owepreempt;
 #endif
-	
+
 	/*
 	 * If requested, run a setup function before the main action
 	 * function.  Ensure all CPUs have completed the setup
@@ -720,7 +720,7 @@ smp_topo_none(void)
 	top->cg_children = 0;
 	top->cg_level = CG_SHARE_NONE;
 	top->cg_flags = 0;
-	
+
 	return (top);
 }
 
@@ -1302,4 +1302,3 @@ topo_analyze(struct topo_node *topo_root, int all,
 }
 
 #endif /* SMP */
-

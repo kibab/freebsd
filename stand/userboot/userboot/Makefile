@@ -20,7 +20,6 @@ SRCS+=		bootinfo.c
 SRCS+=		bootinfo32.c
 SRCS+=		bootinfo64.c
 SRCS+=		conf.c
-SRCS+=		console.c
 SRCS+=		copy.c
 SRCS+=		devicename.c
 SRCS+=		elf32_freebsd.c
@@ -33,8 +32,9 @@ SRCS+=		vers.c
 
 CFLAGS+=	-Wall
 CFLAGS+=	-I${BOOTSRC}/userboot
-
-CFLAGS+=	-I${SYSDIR}/cddl/contrib/opensolaris/uts/common
+CFLAGS.main.c+=	-I${BOOTSRC}/libsa/zfs
+CFLAGS.main.c+=	-I${SYSDIR}/contrib/openzfs/include
+CFLAGS.main.c+=	-I${SYSDIR}/contrib/openzfs/include/os/freebsd/zfs
 CWARNFLAGS.main.c += -Wno-implicit-function-declaration
 
 LDFLAGS+=	-nostdlib -Wl,-Bsymbolic

@@ -128,7 +128,7 @@ _CPUCFLAGS = -Wa,-me500 -msoft-float
 .  else
 _CPUCFLAGS = -mcpu=${CPUTYPE} -mno-powerpc64
 .  endif
-. elif ${MACHINE_ARCH} == "powerpc64"
+. elif ${MACHINE_ARCH:Mpowerpc64*} != ""
 _CPUCFLAGS = -mcpu=${CPUTYPE}
 . elif ${MACHINE_CPUARCH} == "mips"
 # mips[1234], mips32, mips64, and all later releases need to have mips
@@ -145,7 +145,13 @@ _CPUCFLAGS = -march=${CPUTYPE}
 _CPUCFLAGS = -march=${CPUTYPE:S/^mips//}
 . endif
 . elif ${MACHINE_CPUARCH} == "aarch64"
+.  if ${CPUTYPE:Marmv*} != ""
+# Use -march when the CPU type is an architecture value, e.g. armv8.1-a
+_CPUCFLAGS = -march=${CPUTYPE}
+.  else
+# Otherwise assume we have a CPU type
 _CPUCFLAGS = -mcpu=${CPUTYPE}
+.  endif
 . endif
 
 # Set up the list of CPU features based on the CPU type.  This is an

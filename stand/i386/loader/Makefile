@@ -37,6 +37,11 @@ CFLAGS+=	-DLOADER_FIREWIRE_SUPPORT
 LIBFIREWIRE=	${BOOTOBJ}/i386/libfirewire/libfirewire.a
 .endif
 
+.if ${MK_LOADER_ZFS} == "yes"
+CFLAGS.main.c+=	-I${SYSDIR}/contrib/openzfs/include
+CFLAGS.main.c+=	-I${SYSDIR}/contrib/openzfs/include/os/freebsd/zfs
+.endif
+
 .if exists(${.CURDIR}/help.i386)
 HELP_FILES=	${.CURDIR}/help.i386
 .endif
@@ -64,7 +69,7 @@ ${LOADER}: ${LOADER}.bin ${BTXLDR} ${BTXKERN}
 		-b ${BTXKERN} ${LOADER}.bin
 
 ${LOADER}.bin: ${LOADER}.sym
-	strip -R .comment -R .note -o ${.TARGET} ${.ALLSRC}
+	${STRIPBIN} -R .comment -R .note -o ${.TARGET} ${.ALLSRC}
 
 .if ${MK_LOADER_ZFS} == "yes" && ${LOADER_INTERP} == ${LOADER_DEFAULT_INTERP}
 LINKS+=		${BINDIR}/${LOADER} ${BINDIR}/zfsloader

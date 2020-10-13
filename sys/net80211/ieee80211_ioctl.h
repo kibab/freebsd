@@ -371,7 +371,6 @@ enum {
 	IEEE80211_HWMP_ROOTMODE_RANN		= 3,	/* use RANN elemid */
 };
 
-
 /*
  * Set the active channel list by IEEE channel #: each channel
  * to be marked active is set in a bit vector.  Note this list is
@@ -743,6 +742,9 @@ struct ieee80211req {
 #define	IEEE80211_IOC_QUIET_OFFSET	207	/* Quiet Offset */
 #define	IEEE80211_IOC_QUIET_DUR		208	/* Quiet Duration */
 #define	IEEE80211_IOC_QUIET_COUNT	209	/* Quiet Count */
+
+#define	IEEE80211_IOC_IC_NAME		210	/* HW device name. */
+
 /*
  * Parameters for controlling a scan requested with
  * IEEE80211_IOC_SCAN_REQ.

@@ -180,7 +180,7 @@ static inline BcVec* bc_program_vec(const BcProgram *p, size_t idx, BcType type)
 
 static BcNum* bc_program_num(BcProgram *p, BcResult *r) {
 
-	BcNum *n = NULL;
+	BcNum *n;
 
 	switch (r->t) {
 
@@ -1271,11 +1271,12 @@ static void bc_program_divmod(BcProgram *p) {
 	BcNum *n1, *n2;
 	size_t req;
 
+	bc_vec_expand(&p->results, p->results.len + 2);
+
+	// We don't need to update the pointer because
+	// the capacity is enough due to the line above.
 	res2 = bc_program_prepResult(p);
 	res = bc_program_prepResult(p);
-
-	// Update the pointer, just in case.
-	res2 = bc_vec_item_rev(&p->results, 1);
 
 	bc_program_binOpPrep(p, &opd1, &n1, &opd2, &n2, 2);
 

@@ -127,7 +127,8 @@ extern char pmc_cpuid[PMC_CPUID_LEN];
 	__PMC_CPU(ARMV7_CORTEX_A15,	0x504,	"ARMv7 Cortex A15")	\
 	__PMC_CPU(ARMV7_CORTEX_A17,	0x505,	"ARMv7 Cortex A17")	\
 	__PMC_CPU(ARMV8_CORTEX_A53,	0x600,	"ARMv8 Cortex A53")	\
-	__PMC_CPU(ARMV8_CORTEX_A57,	0x601,	"ARMv8 Cortex A57")
+	__PMC_CPU(ARMV8_CORTEX_A57,	0x601,	"ARMv8 Cortex A57")	\
+	__PMC_CPU(ARMV8_CORTEX_A76,	0x602,	"ARMv8 Cortex A76")
 
 enum pmc_cputype {
 #undef	__PMC_CPU
@@ -355,13 +356,11 @@ enum pmc_event {
 	__PMC_OP(CLOSELOG, "Close log file")				\
 	__PMC_OP(GETDYNEVENTINFO, "Get dynamic events list")
 
-
 enum pmc_ops {
 #undef	__PMC_OP
 #define	__PMC_OP(N, D)	PMC_OP_##N,
 	__PMC_OPS()
 };
-
 
 /*
  * Flags used in operations on PMCs.
@@ -412,7 +411,6 @@ typedef uint64_t	pmc_value_t;
  * The 'ROW INDEX' ranges over 0..NWPMCS where NHWPMCS is the total
  * number of hardware PMCs on this cpu.
  */
-
 
 #define	PMC_ID_TO_ROWINDEX(ID)	((ID) & 0xFF)
 #define	PMC_ID_TO_CLASS(ID)	(((ID) & 0xF00) >> 8)
@@ -486,7 +484,6 @@ struct pmc_op_pmcsetcount {
 	pmc_id_t	pm_pmcid;	/* PMC id to set */
 };
 
-
 /*
  * OP PMCRW
  *
@@ -494,13 +491,11 @@ struct pmc_op_pmcsetcount {
  * to have been previously allocated using PMCALLOCATE.
  */
 
-
 struct pmc_op_pmcrw {
 	uint32_t	pm_flags;	/* PMC_F_{OLD,NEW}VALUE*/
 	pmc_id_t	pm_pmcid;	/* pmc id */
 	pmc_value_t	pm_value;	/* new&returned value */
 };
-
 
 /*
  * OP GETPMCINFO
@@ -527,13 +522,11 @@ struct pmc_op_getpmcinfo {
 	struct pmc_info	pm_pmcs[];	/* space for 'npmc' structures */
 };
 
-
 /*
  * OP GETCPUINFO
  *
  * Retrieve system CPU information.
  */
-
 
 struct pmc_classinfo {
 	enum pmc_class	pm_class;	/* class id */
@@ -999,7 +992,6 @@ struct pmc_binding {
 	int	pb_cpu;		/* if so, to which CPU */
 };
 
-
 struct pmc_mdep;
 
 /*
@@ -1136,7 +1128,7 @@ extern struct pmc_debugflags pmc_debugflags;
 		CTR6(KTR_PMC, #M ":" #N ":" #L  ": " F, p1, p2, p3, p4,	\
 		    p5, p6);						\
 } while (0)
-	
+
 /* Major numbers */
 #define	PMC_DEBUG_MAJ_CPU		0 /* cpu switches */
 #define	PMC_DEBUG_MAJ_CSW		1 /* context switches */

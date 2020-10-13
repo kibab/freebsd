@@ -754,7 +754,7 @@ mqfs_allocv(struct mount *mp, struct vnode **vpp, struct mqfs_node *pn)
 found:
 		*vpp = vd->mv_vnode;
 		sx_xunlock(&mqfs->mi_lock);
-		error = vget(*vpp, LK_RETRY | LK_EXCLUSIVE, curthread);
+		error = vget(*vpp, LK_RETRY | LK_EXCLUSIVE);
 		vdrop(*vpp);
 		return (error);
 	}
@@ -907,7 +907,7 @@ mqfs_lookupx(struct vop_cachedlookup_args *ap)
 	if (pn != NULL)
 		mqnode_addref(pn);
 	sx_xunlock(&mqfs->mi_lock);
-	
+
 	/* found */
 	if (pn != NULL) {
 		/* DELETE */
@@ -932,7 +932,7 @@ mqfs_lookupx(struct vop_cachedlookup_args *ap)
 			cache_enter(dvp, *vpp, cnp);
 		return (error);
 	}
-	
+
 	/* not found */
 
 	/* will create a new entry in the directory ? */
@@ -1099,7 +1099,6 @@ mqfs_inactive(struct vop_inactive_args *ap)
 struct vop_reclaim_args {
 	struct vop_generic_args a_gen;
 	struct vnode *a_vp;
-	struct thread *a_td;
 };
 #endif
 
@@ -1178,8 +1177,8 @@ mqfs_access(struct vop_access_args *ap)
 	error = VOP_GETATTR(vp, &vattr, ap->a_cred);
 	if (error)
 		return (error);
-	error = vaccess(vp->v_type, vattr.va_mode, vattr.va_uid,
-	    vattr.va_gid, ap->a_accmode, ap->a_cred, NULL);
+	error = vaccess(vp->v_type, vattr.va_mode, vattr.va_uid, vattr.va_gid,
+	    ap->a_accmode, ap->a_cred);
 	return (error);
 }
 
@@ -1917,7 +1916,7 @@ static int
 _mqueue_recv(struct mqueue *mq, struct mqueue_msg **msg, int timo)
 {	
 	int error = 0;
-	
+
 	mtx_lock(&mq->mq_mutex);
 	while ((*msg = TAILQ_FIRST(&mq->mq_msgq)) == NULL && error == 0) {
 		if (timo < 0) {
@@ -2088,7 +2087,7 @@ kern_kmq_open(struct thread *td, const char *upath, int flags, mode_t mode,
 			if (flags & FWRITE)
 				accmode |= VWRITE;
 			error = vaccess(VREG, pn->mn_mode, pn->mn_uid,
-				    pn->mn_gid, accmode, td->td_ucred, NULL);
+			    pn->mn_gid, accmode, td->td_ucred);
 		}
 	}
 
@@ -2448,7 +2447,7 @@ mqueue_fdclose(struct thread *td, int fd, struct file *fp)
 	struct mqueue *mq;
 #ifdef INVARIANTS
 	struct filedesc *fdp;
- 
+
 	fdp = td->td_proc->p_fd;
 	FILEDESC_LOCK_ASSERT(fdp);
 #endif
@@ -2566,7 +2565,7 @@ mqf_chmod(struct file *fp, mode_t mode, struct ucred *active_cred,
 	pn = fp->f_data;
 	sx_xlock(&mqfs_data.mi_lock);
 	error = vaccess(VREG, pn->mn_mode, pn->mn_uid, pn->mn_gid, VADMIN,
-	    active_cred, NULL);
+	    active_cred);
 	if (error != 0)
 		goto out;
 	pn->mn_mode = mode & ACCESSPERMS;

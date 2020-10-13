@@ -319,7 +319,7 @@ static int nfs_bigrequest[NFSV42_NPROCS] = {
 void
 nfscl_reqstart(struct nfsrv_descript *nd, int procnum, struct nfsmount *nmp,
     u_int8_t *nfhp, int fhlen, u_int32_t **opcntpp, struct nfsclsession *sep,
-    int vers, int minorvers, bool use_ext)
+    int vers, int minorvers)
 {
 	struct mbuf *mb;
 	u_int32_t *tl;
@@ -352,27 +352,19 @@ nfscl_reqstart(struct nfsrv_descript *nd, int procnum, struct nfsmount *nmp,
 	}
 	nd->nd_procnum = procnum;
 	nd->nd_repstat = 0;
-	nd->nd_maxextsiz = 16384;
-	if (use_ext && mb_use_ext_pgs && PMAP_HAS_DMAP != 0)
-		nd->nd_flag |= ND_EXTPG;
+	nd->nd_maxextsiz = 0;
 
 	/*
 	 * Get the first mbuf for the request.
 	 */
-	if ((nd->nd_flag & ND_EXTPG) != 0) {
-		mb = mb_alloc_ext_plus_pages(PAGE_SIZE, M_WAITOK);
-		nd->nd_mreq = nd->nd_mb = mb;
-		nfsm_set(nd, 0);
-	} else {
-		if (nfs_bigrequest[procnum])
-			NFSMCLGET(mb, M_WAITOK);
-		else
-			NFSMGET(mb);
-		mb->m_len = 0;
-		nd->nd_mreq = nd->nd_mb = mb;
-		nd->nd_bpos = mtod(mb, char *);
-	}
-	
+	if (nfs_bigrequest[procnum])
+		NFSMCLGET(mb, M_WAITOK);
+	else
+		NFSMGET(mb);
+	mb->m_len = 0;
+	nd->nd_mreq = nd->nd_mb = mb;
+	nd->nd_bpos = mtod(mb, char *);
+
 	/*
 	 * And fill the first file handle into the request.
 	 */
@@ -1055,25 +1047,6 @@ nfsaddr2_match(NFSSOCKADDR_T nam1, NFSSOCKADDR_T nam2)
 #endif
 	}
 	return (0);
-}
-
-/*
- * Trim trailing data off the mbuf list being built.
- */
-void
-newnfs_trimtrailing(nd, mb, bpos)
-	struct nfsrv_descript *nd;
-	struct mbuf *mb;
-	caddr_t bpos;
-{
-
-	if (mb->m_next) {
-		m_freem(mb->m_next);
-		mb->m_next = NULL;
-	}
-	mb->m_len = bpos - mtod(mb, caddr_t);
-	nd->nd_mb = mb;
-	nd->nd_bpos = bpos;
 }
 
 /*
@@ -2586,7 +2559,7 @@ nfsv4_fillattr(struct nfsrv_descript *nd, struct mount *mp, vnode_t vp,
 				xattrsupp = true;
 		}
 	}
-	
+
 	/*
 	 * Put out the attribute bitmap for the ones being filled in
 	 * and get the field for the number of attributes returned.
@@ -3299,7 +3272,7 @@ tryagain:
 			len -= (nfsrv_dnsnamelen + 1);
 			*(cp - 1) = '\0';
 		}
-	
+
 		/*
 		 * Check for the special case of "nobody".
 		 */
@@ -3308,7 +3281,7 @@ tryagain:
 			error = 0;
 			goto out;
 		}
-	
+
 		hp = NFSUSERNAMEHASH(str, len);
 		mtx_lock(&hp->mtx);
 		TAILQ_FOREACH(usrp, &hp->lughead, lug_namehash) {
@@ -3511,7 +3484,7 @@ tryagain:
 			len -= (nfsrv_dnsnamelen + 1);
 			*(cp - 1) = '\0';
 		}
-	
+
 		/*
 		 * Check for the special case of "nogroup".
 		 */
@@ -3520,7 +3493,7 @@ tryagain:
 			error = 0;
 			goto out;
 		}
-	
+
 		hp = NFSGROUPNAMEHASH(str, len);
 		mtx_lock(&hp->mtx);
 		TAILQ_FOREACH(usrp, &hp->lughead, lug_namehash) {
@@ -3650,7 +3623,7 @@ nfsrv_nfsuserdport(struct nfsuserd_args *nargs, NFSPROC_T *p)
  	}
 	rp->nr_vers = RPCNFSUSERD_VERS;
 	if (error == 0)
-		error = newnfs_connect(NULL, rp, NFSPROCCRED(p), p, 0);
+		error = newnfs_connect(NULL, rp, NFSPROCCRED(p), p, 0, false);
 	if (error == 0) {
 		NFSLOCKNAMEID();
 		nfsrv_nfsuserd = RUNNING;

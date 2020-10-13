@@ -934,11 +934,12 @@ TAILQ_HEAD(sysctl_ctx_list, sysctl_ctx_entry);
  */
 #define	CTL_SYSCTL_DEBUG	0	/* printf all nodes */
 #define	CTL_SYSCTL_NAME		1	/* string name of OID */
-#define	CTL_SYSCTL_NEXT		2	/* next OID */
+#define	CTL_SYSCTL_NEXT		2	/* next OID, honoring CTLFLAG_SKIP */
 #define	CTL_SYSCTL_NAME2OID	3	/* int array of name */
 #define	CTL_SYSCTL_OIDFMT	4	/* OID's kind and format */
 #define	CTL_SYSCTL_OIDDESCR	5	/* OID's description */
 #define	CTL_SYSCTL_OIDLABEL	6	/* aggregation label */
+#define	CTL_SYSCTL_NEXTNOSKIP	7	/* next OID, ignoring CTLFLAG_SKIP */
 
 /*
  * CTL_KERN identifiers
@@ -1096,9 +1097,9 @@ TAILQ_HEAD(sysctl_ctx_list, sysctl_ctx_entry);
 #define	CTL_P1003_1B_SIGQUEUE_MAX		24	/* int */
 #define	CTL_P1003_1B_TIMER_MAX			25	/* int */
 
-#define	CTL_P1003_1B_MAXID		26
-
 #ifdef _KERNEL
+
+#define	CTL_P1003_1B_MAXID		26
 
 /*
  * Declare some common oids.

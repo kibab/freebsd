@@ -107,6 +107,8 @@ arm/broadcom/bcm2835/bcm2835_wdog.c		optional soc_brcm_bcm2837 fdt | soc_brcm_bc
 arm/broadcom/bcm2835/bcm2836.c			optional soc_brcm_bcm2837 fdt | soc_brcm_bcm2838 fdt
 arm/broadcom/bcm2835/bcm283x_dwc_fdt.c		optional dwcotg fdt soc_brcm_bcm2837 | dwcotg fdt soc_brcm_bcm2838
 arm/broadcom/bcm2835/bcm2838_pci.c		optional soc_brcm_bcm2838 fdt pci
+arm/broadcom/bcm2835/bcm2838_xhci.c		optional soc_brcm_bcm2838 fdt pci xhci
+arm/broadcom/bcm2835/raspberrypi_gpio.c		optional soc_brcm_bcm2837 gpio | soc_brcm_bcm2838 gpio
 arm/freescale/vybrid/vf_i2c.c			optional vf_i2c iicbus SOC_NXP_LS
 arm/mv/a37x0_gpio.c				optional a37x0_gpio gpio fdt
 arm/mv/a37x0_iic.c				optional a37x0_iic iicbus fdt
@@ -247,12 +249,21 @@ dev/acpica/acpi_pxm.c		optional	acpi
 dev/ahci/ahci_fsl_fdt.c		optional	SOC_NXP_LS ahci fdt
 dev/ahci/ahci_generic.c		optional	ahci
 dev/altera/dwc/if_dwc_socfpga.c	optional	fdt dwc_socfpga
-dev/axgbe/if_axgbe.c		optional	axgbe
-dev/axgbe/xgbe-desc.c		optional	axgbe
-dev/axgbe/xgbe-dev.c		optional	axgbe
-dev/axgbe/xgbe-drv.c		optional	axgbe
-dev/axgbe/xgbe-mdio.c		optional	axgbe
+dev/axgbe/if_axgbe.c		optional	axa
+dev/axgbe/xgbe-desc.c		optional	axa
+dev/axgbe/xgbe-dev.c		optional	axa
+dev/axgbe/xgbe-drv.c		optional	axa
+dev/axgbe/xgbe-mdio.c		optional	axa
+dev/axgbe/xgbe-sysctl.c		optional	axa
+dev/axgbe/xgbe-txrx.c		optional	axa
+dev/axgbe/xgbe_osdep.c		optional	axa
+dev/axgbe/xgbe-phy-v1.c		optional	axa
 dev/cpufreq/cpufreq_dt.c	optional	cpufreq fdt
+dev/gpio/pl061.c		optional	pl061 gpio
+dev/gpio/pl061_acpi.c		optional	pl061 gpio acpi
+dev/gpio/pl061_fdt.c		optional	pl061 gpio fdt
+dev/hwpmc/hwpmc_arm64.c		optional	hwpmc
+dev/hwpmc/hwpmc_arm64_md.c	optional	hwpmc
 dev/ice/if_ice_iflib.c		optional	ice pci \
 	compile-with "${NORMAL_C} -I$S/dev/ice"
 dev/ice/ice_lib.c		optional	ice pci \
@@ -286,7 +297,7 @@ dev/ice/ice_sriov.c		optional	ice pci \
 dev/ice/ice_switch.c		optional	ice pci \
 	compile-with "${NORMAL_C} -I$S/dev/ice"
 ice_ddp.c			optional ice_ddp	\
-	compile-with	"${AWK} -f $S/tools/fw_stub.awk ice_ddp.fw:ice_ddp:0x01030900 -mice_ddp -c${.TARGET}"	\
+	compile-with	"${AWK} -f $S/tools/fw_stub.awk ice_ddp.fw:ice_ddp:0x01031000 -mice_ddp -c${.TARGET}"	\
 	no-implicit-rule before-depend local		\
 	clean		"ice_ddp.c"
 ice_ddp.fwo			optional ice_ddp	\
@@ -295,16 +306,14 @@ ice_ddp.fwo			optional ice_ddp	\
 	no-implicit-rule				\
 	clean		"ice_ddp.fwo"
 ice_ddp.fw			optional ice_ddp	\
-	dependency	"$S/contrib/dev/ice/ice-1.3.9.0.pkg" \
-	compile-with	"${CP} $S/contrib/dev/ice/ice-1.3.9.0.pkg ice_ddp.fw" \
+	dependency	"$S/contrib/dev/ice/ice-1.3.16.0.pkg" \
+	compile-with	"${CP} $S/contrib/dev/ice/ice-1.3.16.0.pkg ice_ddp.fw" \
 	no-obj no-implicit-rule				\
 	clean		"ice_ddp.fw"
 dev/iicbus/sy8106a.c		optional	sy8106a fdt
 dev/iicbus/twsi/mv_twsi.c	optional	twsi fdt
 dev/iicbus/twsi/a10_twsi.c	optional	twsi fdt
 dev/iicbus/twsi/twsi.c		optional	twsi fdt
-dev/hwpmc/hwpmc_arm64.c		optional	hwpmc
-dev/hwpmc/hwpmc_arm64_md.c	optional	hwpmc
 dev/mbox/mbox_if.m		optional	soc_brcm_bcm2837
 dev/mmc/host/dwmmc.c		optional	dwmmc fdt
 dev/mmc/host/dwmmc_altera.c	optional	dwmmc dwmmc_altera fdt
@@ -337,6 +346,7 @@ dev/usb/controller/generic_ehci_acpi.c optional	ehci acpi
 dev/usb/controller/generic_ehci_fdt.c optional	ehci fdt
 dev/usb/controller/generic_ohci.c optional	ohci fdt
 dev/usb/controller/generic_usb_if.m optional	ohci fdt
+dev/usb/controller/musb_otg_allwinner.c	optional musb fdt soc_allwinner_a64
 dev/usb/controller/usb_nop_xceiv.c	optional fdt ext_resources
 dev/usb/controller/generic_xhci.c	optional	xhci
 dev/usb/controller/generic_xhci_acpi.c	optional	xhci acpi

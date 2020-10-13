@@ -12,6 +12,8 @@
         ..
         chmod
         ..
+        cp
+        ..
         date
         ..
         dd
@@ -1001,6 +1003,8 @@
         fold
         ..
         getconf
+        ..
+        gh-bc
         ..
         grep
         ..

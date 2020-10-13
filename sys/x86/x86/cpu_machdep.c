@@ -194,17 +194,6 @@ SYSCTL_BOOL(_machdep, OID_AUTO, mwait_cpustop_broken, CTLFLAG_RDTUN,
     "Can not reliably wake MONITOR/MWAIT cpus without interrupts");
 
 /*
- * Machine dependent boot() routine
- *
- * I haven't seen anything to put here yet
- * Possibly some stuff might be grafted back here from boot()
- */
-void
-cpu_boot(int howto)
-{
-}
-
-/*
  * Flush the D-cache for non-DMA I/O so that the I-cache can
  * be made coherent later.
  */
@@ -831,6 +820,7 @@ int nmi_is_broadcast = 1;
 SYSCTL_INT(_machdep, OID_AUTO, nmi_is_broadcast, CTLFLAG_RWTUN,
     &nmi_is_broadcast, 0,
     "Chipset NMI is broadcast");
+int (*apei_nmi)(void);
 
 void
 nmi_call_kdb(u_int cpu, u_int type, struct trapframe *frame)
@@ -845,6 +835,10 @@ nmi_call_kdb(u_int cpu, u_int type, struct trapframe *frame)
 			panic("NMI indicates hardware failure");
 	}
 #endif /* DEV_ISA */
+
+	/* ACPI Platform Error Interfaces callback. */
+	if (apei_nmi != NULL && (*apei_nmi)())
+		claimed = true;
 
 	/*
 	 * NMIs can be useful for debugging.  They can be hooked up to a

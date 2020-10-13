@@ -70,6 +70,7 @@ _LIBRARIES=	\
 		${_INTERNALLIBS} \
 		${LOCAL_LIBRARIES} \
 		80211 \
+		9p \
 		alias \
 		archive \
 		asn1 \
@@ -89,6 +90,7 @@ _LIBRARIES=	\
 		cap_dns \
 		cap_fileargs \
 		cap_grp \
+		cap_net \
 		cap_pwd \
 		cap_sysctl \
 		cap_syslog \
@@ -124,6 +126,7 @@ _LIBRARIES=	\
 		heimntlm \
 		heimsqlite \
 		hx509 \
+		icp \
 		ipsec \
 		ipt \
 		jail \
@@ -145,6 +148,7 @@ _LIBRARIES=	\
 		ncurses \
 		ncursesw \
 		netgraph \
+		netmap \
 		ngatm \
 		nv \
 		nvpair \
@@ -171,6 +175,7 @@ _LIBRARIES=	\
 		sdp \
 		sm \
 		smb \
+		spl \
 		ssl \
 		ssp_nonshared \
 		stats \
@@ -180,6 +185,7 @@ _LIBRARIES=	\
 		tacplus \
 		termcap \
 		termcapw \
+		tpool \
 		ufs \
 		ugidfw \
 		ulog \
@@ -197,7 +203,9 @@ _LIBRARIES=	\
 		z \
 		zfs_core \
 		zfs \
+		zfsbootenv \
 		zpool \
+		zutil
 
 .if ${MK_BLACKLIST} != "no"
 _LIBRARIES+= \
@@ -239,6 +247,7 @@ LIBVERIEXEC?=	${LIBVERIEXECDIR}/libveriexec.a
 # Each library's LIBADD needs to be duplicated here for static linkage of
 # 2nd+ order consumers.  Auto-generating this would be better.
 _DP_80211=	sbuf bsdxml
+_DP_9p=		sbuf
 _DP_archive=	z bz2 lzma bsdxml zstd
 _DP_zstd=	pthread
 .if ${MK_BLACKLIST} != "no"
@@ -320,7 +329,7 @@ _DP_dpv=	dialog figpar util ncursesw
 _DP_dialog=	ncursesw m
 _DP_cuse=	pthread
 _DP_atf_cxx=	atf_c
-_DP_gtest=	pthread
+_DP_gtest=	pthread regex
 _DP_gmock=	gtest
 _DP_gmock_main=	gmock
 _DP_gtest_main=	gtest
@@ -354,9 +363,10 @@ _DP_lzma=	md pthread
 _DP_ucl=	m
 _DP_vmmapi=	util
 _DP_opencsd=	cxxrt
-_DP_ctf=	z
+_DP_ctf=	spl z
 _DP_dtrace=	ctf elf proc pthread rtld_db
 _DP_xo=		util
+_DP_ztest=	geom m nvpair umem zpool pthread avl zfs_core spl zutil zfs uutil icp
 # The libc dependencies are not strictly needed but are defined to make the
 # assert happy.
 _DP_c=		compiler_rt
@@ -374,11 +384,17 @@ _DP_smb=	kiconv
 _DP_ulog=	md
 _DP_fifolog=	z
 _DP_ipf=	kvm
-_DP_zfs=	md pthread umem util uutil m nvpair avl bsdxml geom nvpair z \
-		zfs_core
+_DP_tpool=	spl
+_DP_uutil=	avl spl
+_DP_zfs=	md pthread umem util uutil m avl bsdxml crypto geom nvpair \
+	z zfs_core zutil
+_DP_zfsbootenv= zfs nvpair
 _DP_zfs_core=	nvpair
-_DP_zpool=	md pthread z nvpair avl umem
-_DP_be=		zfs nvpair
+_DP_zpool=	md pthread z icp spl nvpair avl umem
+_DP_zutil=	avl tpool
+_DP_be=		zfs spl nvpair zfsbootenv
+_DP_netmap=
+_DP_ifconfig=	m
 
 # OFED support
 .if ${MK_OFED} != "no"
@@ -582,12 +598,16 @@ LIBC_NOSSP_PIC?=	${LIBC_NOSSP_PICDIR}/libc_nossp_pic.a
 LIBAVLDIR=	${OBJTOP}/cddl/lib/libavl
 LIBCTFDIR=	${OBJTOP}/cddl/lib/libctf
 LIBDTRACEDIR=	${OBJTOP}/cddl/lib/libdtrace
+LIBICPDIR=	${OBJTOP}/cddl/lib/libicp
 LIBNVPAIRDIR=	${OBJTOP}/cddl/lib/libnvpair
 LIBUMEMDIR=	${OBJTOP}/cddl/lib/libumem
 LIBUUTILDIR=	${OBJTOP}/cddl/lib/libuutil
 LIBZFSDIR=	${OBJTOP}/cddl/lib/libzfs
 LIBZFS_COREDIR=	${OBJTOP}/cddl/lib/libzfs_core
+LIBZFSBOOTENVDIR=	${OBJTOP}/cddl/lib/libzfsbootenv
 LIBZPOOLDIR=	${OBJTOP}/cddl/lib/libzpool
+LIBZUTILDIR=	${OBJTOP}/cddl/lib/libzutil
+LIBTPOOLDIR=	${OBJTOP}/cddl/lib/libtpool
 
 # OFED support
 LIBCXGB4DIR=	${OBJTOP}/lib/ofed/libcxgb4
@@ -637,6 +657,7 @@ LIBBSNMPDIR=	${OBJTOP}/lib/libbsnmp/libbsnmp
 LIBCASPERDIR=	${OBJTOP}/lib/libcasper/libcasper
 LIBCAP_DNSDIR=	${OBJTOP}/lib/libcasper/services/cap_dns
 LIBCAP_GRPDIR=	${OBJTOP}/lib/libcasper/services/cap_grp
+LIBCAP_NETDIR=	${OBJTOP}/lib/libcasper/services/cap_net
 LIBCAP_PWDDIR=	${OBJTOP}/lib/libcasper/services/cap_pwd
 LIBCAP_SYSCTLDIR=	${OBJTOP}/lib/libcasper/services/cap_sysctl
 LIBCAP_SYSLOGDIR=	${OBJTOP}/lib/libcasper/services/cap_syslog
@@ -653,6 +674,7 @@ LIBNCURSESWDIR=	${OBJTOP}/lib/ncurses/ncursesw
 LIBPANELDIR=	${OBJTOP}/lib/ncurses/panel
 LIBPANELWDIR=	${OBJTOP}/lib/ncurses/panelw
 LIBCRYPTODIR=	${OBJTOP}/secure/lib/libcrypto
+LIBSPLDIR=	${OBJTOP}/cddl/lib/libspl
 LIBSSHDIR=	${OBJTOP}/secure/lib/libssh
 LIBSSLDIR=	${OBJTOP}/secure/lib/libssl
 LIBTEKENDIR=	${OBJTOP}/sys/teken/libteken
