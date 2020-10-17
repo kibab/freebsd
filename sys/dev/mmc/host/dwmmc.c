@@ -1232,6 +1232,9 @@ dwmmc_next_operation(struct dwmmc_softc *sc)
 	sc->curcmd = NULL;
 	ccb->ccb_h.status =
 		(ccb->mmcio.cmd.error == 0 ? CAM_REQ_CMP : CAM_REQ_CMP_ERR);
+	if (ccb->mmcio.cmd.error != 0) {
+		device_printf(sc->dev, "MMC ERROR %d\n", ccb->mmcio.cmd.error);
+	}
 	xpt_done(ccb);
 #else
 	sc->req = NULL;

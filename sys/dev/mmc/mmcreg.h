@@ -140,7 +140,7 @@ struct mmc_command {
 #define	R1_ERROR (1u << 19)			/* erx, c */
 #define	R1_CSD_OVERWRITE (1u << 16)		/* erx, c */
 #define	R1_WP_ERASE_SKIP (1u << 15)		/* erx, c */
-#define	R1_CARD_ECC_DISABLED (1u << 14)		/* sx, a */
+#define	R1_CARD_ECC_DISABLED (1u << 14)		/* sx, a */ /* eMMC: always 0 */
 #define	R1_ERASE_RESET (1u << 13)		/* sr, c */
 #define	R1_CURRENT_STATE_MASK (0xfu << 9)	/* sx, b */
 #define	R1_READY_FOR_DATA (1u << 8)		/* sx, a */
@@ -731,4 +731,9 @@ struct mmc_quirk {
  */
 #define	MMC_SECTOR_SIZE	512
 
+/* MMC_SEND_STATUS reply bits */
+#define MMC_STATUS_R_CURRENT_STATE   (1U << 9)
+#define MMC_STATUS_R_CURRENT_STATE_MASK (4U << 9)
+#define MMC_STATUS_R_SWITCH_ERROR    (1U << 7)
+#define MMC_STATUS_R_EXCEPTION_EVENT (1U << 6)
 #endif /* DEV_MMCREG_H */
