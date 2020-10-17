@@ -205,6 +205,8 @@ static inline bool sdda_get_read_only(struct cam_periph *periph, union ccb *star
 static uint32_t mmc_get_spec_vers(struct cam_periph *periph);
 static uint64_t mmc_get_media_size(struct cam_periph *periph);
 static uint32_t mmc_get_cmd6_timeout(struct cam_periph *periph);
+static int mmc_set_vccq(struct cam_periph *periph, union ccb *ccb,
+  enum mmc_vccq new_vccq);
 static void sdda_add_part(struct cam_periph *periph, u_int type,
     const char *name, u_int cnt, off_t media_size, bool ro);
 
