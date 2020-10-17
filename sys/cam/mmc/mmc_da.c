@@ -186,6 +186,7 @@ static int mmc_select_card(struct cam_periph *periph, union ccb *ccb, uint32_t r
 static inline uint32_t mmc_get_sector_size(struct cam_periph *periph) {return MMC_SECTOR_SIZE;}
 static inline const char *bus_width_str(enum mmc_bus_width w);
 static inline const char *bus_timing_str(enum mmc_bus_timing t);
+static inline const char *vccq_str(enum mmc_vccq vccq);
 
 static SYSCTL_NODE(_kern_cam, OID_AUTO, sdda, CTLFLAG_RD | CTLFLAG_MPSAFE, 0,
     "CAM Direct Access Disk driver");
@@ -1015,6 +1016,28 @@ mmc_get_cmd6_timeout(struct cam_periph *periph)
 }
 
 static int
+mmc_set_vccq(struct cam_periph *periph, union ccb *ccb, enum mmc_vccq new_vccq)
+{
+	struct ccb_trans_settings_mmc *cts;
+
+	CAM_DEBUG(periph->path, CAM_DEBUG_PERIPH,
+	  ("mmc_set_vccq: setting VCCQ to %s\n", vccq_str(new_vccq)));
+
+	cts = &ccb->cts.proto_specific.mmc;
+	ccb->ccb_h.func_code = XPT_SET_TRAN_SETTINGS;
+	ccb->ccb_h.flags = CAM_DIR_NONE;
+	ccb->ccb_h.retry_count = 0;
+	ccb->ccb_h.timeout = 100;
+	ccb->ccb_h.cbfcnp = NULL;
+	cts->ios.vccq = new_vccq;
+	cts->ios_valid = MMC_VCCQ;
+	xpt_action(ccb);
+	if (((ccb->ccb_h.status & CAM_STATUS_MASK) != CAM_REQ_CMP))
+		return (EIO);
+	return (0);
+}
+
+static int
 mmc_sd_switch(struct cam_periph *periph, union ccb *ccb,
 	      uint8_t mode, uint8_t grp, uint8_t value,
 	      uint8_t *res) {
@@ -1344,6 +1367,20 @@ static inline const char
 		return ("4-bit");
 	case bus_width_8:
 		return ("8-bit");
+	}
+}
+
+static inline const char
+*vccq_str(enum mmc_vccq vccq)
+{
+
+	switch (vccq) {
+	case vccq_120:
+		return ("1.2V");
+	case vccq_180:
+		return ("1.8V");
+	case vccq_330:
+		return ("3.3V");
 	}
 }
 
