@@ -159,6 +159,21 @@ mmc_fdt_parse(device_t dev, phandle_t node, struct mmc_fdt_helper *helper,
 	}
 
 	if (helper->vqmmc_supply != NULL) {
+		int uvolt;
+		if (regulator_get_voltage(helper->vqmmc_supply, &uvolt) == 0) {
+			switch (uvolt) {
+			case 1200000:
+				host->ios.vccq = vccq_120;
+				break;
+			case 1800000:
+				host->ios.vccq = vccq_180;
+				break;
+			case 3300000:
+				host->ios.vccq = vccq_330;
+				break;
+			}
+			device_printf(dev, "vqmmc current voltage: %d\n", uvolt);
+		}
 		if (regulator_check_voltage(helper->vqmmc_supply, 1200000) == 0)
 			host->caps |= MMC_CAP_SIGNALING_120;
 		else
