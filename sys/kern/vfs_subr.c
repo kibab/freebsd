@@ -1121,24 +1121,12 @@ restart:
 		if (vp->v_type == VBAD || vp->v_type == VNON)
 			goto next_iter;
 
-		if (!VI_TRYLOCK(vp))
-			goto next_iter;
-
-		if (vp->v_usecount > 0 || vp->v_holdcnt == 0 ||
-		    (!reclaim_nc_src && !LIST_EMPTY(&vp->v_cache_src)) ||
-		    VN_IS_DOOMED(vp) || vp->v_type == VNON) {
-			VI_UNLOCK(vp);
-			goto next_iter;
-		}
-
 		object = atomic_load_ptr(&vp->v_object);
 		if (object == NULL || object->resident_page_count > trigger) {
-			VI_UNLOCK(vp);
 			goto next_iter;
 		}
 
-		vholdl(vp);
-		VI_UNLOCK(vp);
+		vhold(vp);
 		TAILQ_REMOVE(&vnode_list, mvp, v_vnodelist);
 		TAILQ_INSERT_AFTER(&vnode_list, vp, mvp, v_vnodelist);
 		mtx_unlock(&vnode_list_mtx);
@@ -1235,21 +1223,18 @@ restart:
 		 * blocking.
 		 */
 		if (vp->v_holdcnt > 0 || (mnt_op != NULL && (mp = vp->v_mount) != NULL &&
-		    mp->mnt_op != mnt_op) || !VI_TRYLOCK(vp)) {
+		    mp->mnt_op != mnt_op)) {
 			continue;
 		}
 		TAILQ_REMOVE(&vnode_list, mvp, v_vnodelist);
 		TAILQ_INSERT_AFTER(&vnode_list, vp, mvp, v_vnodelist);
 		if (__predict_false(vp->v_type == VBAD || vp->v_type == VNON)) {
-			VI_UNLOCK(vp);
 			continue;
 		}
-		vholdl(vp);
+		vhold(vp);
 		count--;
 		mtx_unlock(&vnode_list_mtx);
-		VI_UNLOCK(vp);
 		vtryrecycle(vp);
-		vdrop(vp);
 		mtx_lock(&vnode_list_mtx);
 		goto restart;
 	}
@@ -1520,6 +1505,7 @@ vtryrecycle(struct vnode *vp)
 		CTR2(KTR_VFS,
 		    "%s: impossible to recycle, vp %p lock is already held",
 		    __func__, vp);
+		vdrop(vp);
 		return (EWOULDBLOCK);
 	}
 	/*
@@ -1530,6 +1516,7 @@ vtryrecycle(struct vnode *vp)
 		CTR2(KTR_VFS,
 		    "%s: impossible to recycle, cannot start the write for %p",
 		    __func__, vp);
+		vdrop(vp);
 		return (EBUSY);
 	}
 	/*
@@ -1541,7 +1528,7 @@ vtryrecycle(struct vnode *vp)
 	VI_LOCK(vp);
 	if (vp->v_usecount) {
 		VOP_UNLOCK(vp);
-		VI_UNLOCK(vp);
+		vdropl(vp);
 		vn_finished_write(vnmp);
 		CTR2(KTR_VFS,
 		    "%s: impossible to recycle, %p is already referenced",
@@ -1553,7 +1540,7 @@ vtryrecycle(struct vnode *vp)
 		vgonel(vp);
 	}
 	VOP_UNLOCK(vp);
-	VI_UNLOCK(vp);
+	vdropl(vp);
 	vn_finished_write(vnmp);
 	return (0);
 }
@@ -1794,6 +1781,8 @@ freevnode(struct vnode *vp)
 	VNASSERT(vp->v_cache_dd == NULL, vp, ("vp has namecache for .."));
 	VNASSERT(TAILQ_EMPTY(&vp->v_rl.rl_waiters), vp,
 	    ("Dangling rangelock waiters"));
+	VNASSERT((vp->v_iflag & (VI_DOINGINACT | VI_OWEINACT)) == 0, vp,
+	    ("Leaked inactivation"));
 	VI_UNLOCK(vp);
 #ifdef MAC
 	mac_vnode_destroy(vp);
@@ -3522,7 +3511,7 @@ vinactivef(struct vnode *vp)
 		vm_object_page_clean(obj, 0, 0, 0);
 		VM_OBJECT_WUNLOCK(obj);
 	}
-	VOP_INACTIVE(vp, curthread);
+	VOP_INACTIVE(vp);
 	VI_LOCK(vp);
 	VNASSERT(vp->v_iflag & VI_DOINGINACT, vp,
 	    ("vinactive: lost VI_DOINGINACT"));
@@ -3803,7 +3792,7 @@ vgonel(struct vnode *vp)
 	struct thread *td;
 	struct mount *mp;
 	vm_object_t object;
-	bool active, oweinact;
+	bool active, doinginact, oweinact;
 
 	ASSERT_VOP_ELOCKED(vp, "vgonel");
 	ASSERT_VI_LOCKED(vp, "vgonel");
@@ -3825,11 +3814,17 @@ vgonel(struct vnode *vp)
 	vp->v_irflag |= VIRF_DOOMED;
 
 	/*
-	 * Check to see if the vnode is in use.  If so, we have to call
-	 * VOP_CLOSE() and VOP_INACTIVE().
+	 * Check to see if the vnode is in use.  If so, we have to
+	 * call VOP_CLOSE() and VOP_INACTIVE().
+	 *
+	 * It could be that VOP_INACTIVE() requested reclamation, in
+	 * which case we should avoid recursion, so check
+	 * VI_DOINGINACT.  This is not precise but good enough.
 	 */
 	active = vp->v_usecount > 0;
 	oweinact = (vp->v_iflag & VI_OWEINACT) != 0;
+	doinginact = (vp->v_iflag & VI_DOINGINACT) != 0;
+
 	/*
 	 * If we need to do inactive VI_OWEINACT will be set.
 	 */
@@ -3850,7 +3845,7 @@ vgonel(struct vnode *vp)
 	 */
 	if (active)
 		VOP_CLOSE(vp, FNONBLOCK, NOCRED, td);
-	if (oweinact || active) {
+	if ((oweinact || active) && !doinginact) {
 		VI_LOCK(vp);
 		vinactivef(vp);
 		VI_UNLOCK(vp);
@@ -5578,6 +5573,18 @@ vop_mkdir_post(void *ap, int rc)
 	if (!rc)
 		VFS_KNOTE_LOCKED(dvp, NOTE_WRITE | NOTE_LINK);
 }
+
+#ifdef DEBUG_VFS_LOCKS
+void
+vop_mkdir_debugpost(void *ap, int rc)
+{
+	struct vop_mkdir_args *a;
+
+	a = ap;
+	if (!rc)
+		cache_validate(a->a_dvp, *a->a_vpp, a->a_cnp);
+}
+#endif
 
 void
 vop_mknod_pre(void *ap)
