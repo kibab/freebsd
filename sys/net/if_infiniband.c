@@ -30,6 +30,7 @@
 __FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
+#include <sys/systm.h>
 #include <sys/devctl.h>
 #include <sys/eventhandler.h>
 #include <sys/kernel.h>
@@ -37,7 +38,6 @@ __FBSDID("$FreeBSD$");
 #include <sys/module.h>
 #include <sys/socket.h>
 #include <sys/sysctl.h>
-#include <sys/systm.h>
 
 #include <net/bpf.h>
 #include <net/ethernet.h>
@@ -64,8 +64,8 @@ struct mbuf *(*lagg_input_infiniband_p)(struct ifnet *, struct mbuf *);
 
 #ifdef INET
 static inline void
-infiniband_ipv4_multicast_map(
-    uint32_t addr, const uint8_t *broadcast, uint8_t *buf)
+infiniband_ipv4_multicast_map(uint32_t addr,
+    const uint8_t *broadcast, uint8_t *buf)
 {
 	uint8_t scope;
 
@@ -97,8 +97,8 @@ infiniband_ipv4_multicast_map(
 
 #ifdef INET6
 static inline void
-infiniband_ipv6_multicast_map(
-    const struct in6_addr *addr, const uint8_t *broadcast, uint8_t *buf)
+infiniband_ipv6_multicast_map(const struct in6_addr *addr,
+    const uint8_t *broadcast, uint8_t *buf)
 {
 	uint8_t scope;
 
@@ -408,8 +408,8 @@ done:
 }
 
 static int
-infiniband_resolvemulti(
-    struct ifnet *ifp, struct sockaddr **llsa, struct sockaddr *sa)
+infiniband_resolvemulti(struct ifnet *ifp, struct sockaddr **llsa,
+    struct sockaddr *sa)
 {
 	struct sockaddr_dl *sdl;
 #ifdef INET

@@ -874,6 +874,13 @@ linux_utimensat(struct thread *td, struct linux_utimensat_args *args)
 			return (0);
 	}
 
+	if (!LUSECONVPATH(td)) {
+		if (args->pathname != NULL) {
+			return (kern_utimensat(td, dfd, args->pathname,
+			    UIO_USERSPACE, timesp, UIO_SYSSPACE, flags));
+		}
+	}
+
 	if (args->pathname != NULL)
 		LCONVPATHEXIST_AT(td, args->pathname, &path, dfd);
 	else if (args->flags != 0)
@@ -1949,6 +1956,10 @@ linux_prctl(struct thread *td, struct linux_prctl_args *args)
 		    (void *)(register_t)args->arg2,
 		    sizeof(pdeath_signal)));
 		break;
+	case LINUX_PR_SET_DUMPABLE:
+		linux_msg(td, "unsupported prctl PR_SET_DUMPABLE");
+		error = EINVAL;
+		break;
 	case LINUX_PR_GET_KEEPCAPS:
 		/*
 		 * Indicate that we always clear the effective and
@@ -2006,6 +2017,14 @@ linux_prctl(struct thread *td, struct linux_prctl_args *args)
 		/*
 		 * Same as returned by Linux without CONFIG_SECCOMP enabled.
 		 */
+		error = EINVAL;
+		break;
+	case LINUX_PR_SET_NO_NEW_PRIVS:
+		linux_msg(td, "unsupported prctl PR_SET_NO_NEW_PRIVS");
+		error = EINVAL;
+		break;
+	case LINUX_PR_SET_PTRACER:
+		linux_msg(td, "unsupported prctl PR_SET_PTRACER");
 		error = EINVAL;
 		break;
 	default:

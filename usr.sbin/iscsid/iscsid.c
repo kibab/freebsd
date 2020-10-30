@@ -2,7 +2,6 @@
  * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
  *
  * Copyright (c) 2012 The FreeBSD Foundation
- * All rights reserved.
  *
  * This software was developed by Edward Tomasz Napierala under sponsorship
  * from the FreeBSD Foundation.
@@ -293,6 +292,25 @@ connection_new(int iscsi_fd, const struct iscsi_daemon_request *request)
 			    IPPROTO_IPV6, IPV6_TCLASS,
 			    &tos, sizeof(tos)) == -1)
 				log_warn("setsockopt(IPV6_TCLASS) "
+				    "failed for %s",
+				    from_addr);
+		}
+	}
+	if (conn->conn_conf.isc_pcp != -1) {
+		int pcp = conn->conn_conf.isc_pcp;
+		if (to_ai->ai_family == AF_INET) {
+			if (setsockopt(conn->conn_socket,
+			    IPPROTO_IP, IP_VLAN_PCP,
+			    &pcp, sizeof(pcp)) == -1)
+				log_warn("setsockopt(IP_VLAN_PCP) "
+				    "failed for %s",
+				    from_addr);
+		} else
+		if (to_ai->ai_family == AF_INET6) {
+			if (setsockopt(conn->conn_socket,
+			    IPPROTO_IPV6, IPV6_VLAN_PCP,
+			    &pcp, sizeof(pcp)) == -1)
+				log_warn("setsockopt(IPV6_VLAN_PCP) "
 				    "failed for %s",
 				    from_addr);
 		}

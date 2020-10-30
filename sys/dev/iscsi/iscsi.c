@@ -2,7 +2,6 @@
  * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
  *
  * Copyright (c) 2012 The FreeBSD Foundation
- * All rights reserved.
  *
  * This software was developed by Edward Tomasz Napierala under sponsorship
  * from the FreeBSD Foundation.
@@ -2298,6 +2297,11 @@ iscsi_action_scsiio(struct iscsi_session *is, union ccb *ccb)
 		}
 	} else
 		bhssc->bhssc_flags |= BHSSC_FLAGS_ATTR_UNTAGGED;
+
+	if (is->is_protocol_level >= 2) {
+		bhssc->bhssc_pri = (csio->priority << BHSSC_PRI_SHIFT) &
+		    BHSSC_PRI_MASK;
+	}
 
 	bhssc->bhssc_lun = htobe64(CAM_EXTLUN_BYTE_SWIZZLE(ccb->ccb_h.target_lun));
 	bhssc->bhssc_initiator_task_tag = initiator_task_tag;

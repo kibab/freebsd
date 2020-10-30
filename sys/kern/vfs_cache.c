@@ -188,7 +188,7 @@ TAILQ_HEAD(cache_freebatch, namecache);
  * Regardless of the above, use of dedicated zones instead of malloc may be
  * inducing additional waste. This may be hard to address as said zones are
  * tied to VFS SMR. Even if retaining them, the current split should be
- * reevaluated.
+ * re-evaluated.
  */
 #ifdef __LP64__
 #define	CACHE_PATH_CUTOFF	45
@@ -597,7 +597,7 @@ cache_alloc(int len, bool ts)
 	 * Avoid blowout in namecache entries.
 	 *
 	 * Bugs:
-	 * 1. filesystems may end up tryng to add an already existing entry
+	 * 1. filesystems may end up trying to add an already existing entry
 	 * (for example this can happen after a cache miss during concurrent
 	 * lookup), in which case we will call cache_neg_evict despite not
 	 * adding anything.
@@ -3285,12 +3285,12 @@ vn_fullpath_any(struct vnode *vp, struct vnode *rdir, char *buf, char **retbuf,
 /*
  * Resolve an arbitrary vnode to a pathname (taking care of hardlinks).
  *
- * Since the namecache does not track handlings, the caller is expected to first
+ * Since the namecache does not track hardlinks, the caller is expected to first
  * look up the target vnode with SAVENAME | WANTPARENT flags passed to namei.
  *
  * Then we have 2 cases:
  * - if the found vnode is a directory, the path can be constructed just by
- *   fullowing names up the chain
+ *   following names up the chain
  * - otherwise we populate the buffer with the saved name and start resolving
  *   from the parent
  */
@@ -3327,7 +3327,7 @@ vn_fullpath_hardlink(struct nameidata *ndp, char **retbuf, char **freebuf,
 	 * populate part of the buffer and descend to vn_fullpath_dir with
 	 * vp == vp_crossmp. Prevent the problem by checking for VBAD.
 	 *
-	 * This should be atomic_load(&vp->v_type) but it is ilegal to take
+	 * This should be atomic_load(&vp->v_type) but it is illegal to take
 	 * an address of a bit field, even if said field is sized to char.
 	 * Work around the problem by reading the value into a full-sized enum
 	 * and then re-reading it with atomic_load which will still prevent
@@ -3607,13 +3607,24 @@ cache_fpl_checkpoint(struct cache_fpl *fpl, struct nameidata_saved *snd)
 }
 
 static void
-cache_fpl_restore(struct cache_fpl *fpl, struct nameidata_saved *snd)
+cache_fpl_restore_partial(struct cache_fpl *fpl, struct nameidata_saved *snd)
 {
 
 	fpl->ndp->ni_cnd.cn_flags = snd->cn_flags;
 	fpl->ndp->ni_cnd.cn_namelen = snd->cn_namelen;
 	fpl->ndp->ni_cnd.cn_nameptr = snd->cn_nameptr;
 	fpl->ndp->ni_pathlen = snd->ni_pathlen;
+}
+
+static void
+cache_fpl_restore_abort(struct cache_fpl *fpl, struct nameidata_saved *snd)
+{
+
+	cache_fpl_restore_partial(fpl, snd);
+	/*
+	 * It is 0 on entry by API contract.
+	 */
+	fpl->ndp->ni_resflags = 0;
 }
 
 #ifdef INVARIANTS
@@ -3700,8 +3711,9 @@ cache_fpl_handled_impl(struct cache_fpl *fpl, int error, int line)
 #define cache_fpl_handled(x, e)	cache_fpl_handled_impl((x), (e), __LINE__)
 
 #define CACHE_FPL_SUPPORTED_CN_FLAGS \
-	(LOCKLEAF | LOCKPARENT | WANTPARENT | NOCACHE | FOLLOW | LOCKSHARED | SAVENAME | \
-	 SAVESTART | WILLBEDIR | ISOPEN | NOMACCHECK | AUDITVNODE1 | AUDITVNODE2 | NOCAPCHECK)
+	(NC_NOMAKEENTRY | NC_KEEPPOSENTRY | LOCKLEAF | LOCKPARENT | WANTPARENT | \
+	 FOLLOW | LOCKSHARED | SAVENAME | SAVESTART | WILLBEDIR | ISOPEN | \
+	 NOMACCHECK | AUDITVNODE1 | AUDITVNODE2 | NOCAPCHECK)
 
 #define CACHE_FPL_INTERNAL_CN_FLAGS \
 	(ISDOTDOT | MAKEENTRY | ISLASTCN)
@@ -3845,7 +3857,7 @@ cache_fplookup_partial_setup(struct cache_fpl *fpl)
 		return (cache_fpl_aborted(fpl));
 	}
 
-	cache_fpl_restore(fpl, &fpl->snd);
+	cache_fpl_restore_partial(fpl, &fpl->snd);
 
 	ndp->ni_startdir = dvp;
 	cnp->cn_flags |= MAKEENTRY;
@@ -4695,6 +4707,7 @@ cache_fplookup(struct nameidata *ndp, enum cache_fpl_status *status,
 	cnp->cn_nameptr = cnp->cn_pnbuf;
 	if (cnp->cn_pnbuf[0] == '/') {
 		cache_fpl_handle_root(ndp, &dvp);
+		ndp->ni_resflags |= NIRES_ABS;
 	} else {
 		if (ndp->ni_dirfd == AT_FDCWD) {
 			dvp = pwd->pwd_cdir;
@@ -4729,7 +4742,7 @@ out:
 		 */
 		break;
 	case CACHE_FPL_STATUS_ABORTED:
-		cache_fpl_restore(&fpl, &orig);
+		cache_fpl_restore_abort(&fpl, &orig);
 		break;
 	}
 	return (error);
