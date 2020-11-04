@@ -176,6 +176,7 @@ static int aw_mmc_request(device_t, device_t, struct mmc_request *);
 static int aw_mmc_get_ro(device_t, device_t);
 static int aw_mmc_acquire_host(device_t, device_t);
 static int aw_mmc_release_host(device_t, device_t);
+static int aw_mmc_switch_vccq(device_t, device_t);
 #ifdef MMCCAM
 static void aw_mmc_cam_action(struct cam_sim *, union ccb *);
 static void aw_mmc_cam_poll(struct cam_sim *);
@@ -291,6 +292,7 @@ aw_mmc_cam_settran_settings(struct aw_mmc_softc *sc, union ccb *ccb)
 	struct mmc_ios *ios;
 	struct mmc_ios *new_ios;
 	struct ccb_trans_settings_mmc *cts;
+	int res;
 
 	ios = &sc->aw_host.ios;
 
@@ -332,6 +334,14 @@ aw_mmc_cam_settran_settings(struct aw_mmc_softc *sc, union ccb *ccb)
 		ios->bus_mode = new_ios->bus_mode;
 		if (bootverbose)
 			device_printf(sc->aw_dev, "Bus mode => %d\n", ios->bus_mode);
+	}
+	if (cts->ios_valid & MMC_VCCQ) {
+		ios->vccq = new_ios->vccq;
+		if (bootverbose)
+			device_printf(sc->aw_dev, "VCCQ => %d\n", ios->vccq);
+		res = aw_mmc_switch_vccq(sc->aw_dev, NULL);
+		if (bootverbose)
+			device_printf(sc->aw_dev, "VCCQ switch result: %d\n", res);
 	}
 
 	return (aw_mmc_update_ios(sc->aw_dev, NULL));
@@ -512,6 +522,7 @@ aw_mmc_attach(device_t dev)
 	/* Set some defaults for freq and supported mode */
 	sc->aw_host.f_min = 400000;
 	sc->aw_host.f_max = 52000000;
+	sc->aw_host.ios.vccq = vccq_330;
 	sc->aw_host.host_ocr = MMC_OCR_320_330 | MMC_OCR_330_340;
 	sc->aw_host.caps |= MMC_CAP_HSPEED | MMC_CAP_SIGNALING_330;
 	mmc_fdt_parse(dev, 0, &sc->mmc_helper, &sc->aw_host);
@@ -1415,7 +1426,6 @@ aw_mmc_update_ios(device_t bus, device_t child)
 	case power_off:
 		if (bootverbose)
 			device_printf(sc->aw_dev, "Powering down sd/mmc\n");
-
 		if (sc->mmc_helper.vmmc_supply)
 			regulator_disable(sc->mmc_helper.vmmc_supply);
 		if (sc->mmc_helper.vqmmc_supply)
