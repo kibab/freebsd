@@ -1232,6 +1232,9 @@ dwmmc_next_operation(struct dwmmc_softc *sc)
 	sc->curcmd = NULL;
 	ccb->ccb_h.status =
 		(ccb->mmcio.cmd.error == 0 ? CAM_REQ_CMP : CAM_REQ_CMP_ERR);
+	if (ccb->mmcio.cmd.error != 0) {
+		device_printf(sc->dev, "MMC ERROR %d\n", ccb->mmcio.cmd.error);
+	}
 	xpt_done(ccb);
 #else
 	sc->req = NULL;
@@ -1478,8 +1481,14 @@ dwmmc_cam_action(struct cam_sim *sim, union ccb *ccb)
 	}
 	case XPT_SET_TRAN_SETTINGS:
 	{
-		dwmmc_cam_settran_settings(sc, ccb);
-		ccb->ccb_h.status = CAM_REQ_CMP;
+		if (bootverbose)
+			device_printf(sc->dev, "Got XPT_SET_TRAN_SETTINGS\n");
+		if (dwmmc_cam_settran_settings(sc, ccb) != 0) {
+			device_printf(sc->dev, "cannot set controller settings\n");
+			ccb->ccb_h.status = CAM_REQ_CMP_ERR;
+		} else {
+			ccb->ccb_h.status = CAM_REQ_CMP;
+		}
 		break;
 	}
 	case XPT_RESET_BUS: {
@@ -1549,7 +1558,8 @@ dwmmc_cam_settran_settings(struct dwmmc_softc *sc, union ccb *ccb)
 	struct mmc_ios *ios;
 	struct mmc_ios *new_ios;
 	struct ccb_trans_settings_mmc *cts;
-	int res;
+	int vccq_switch_res = 0;
+	int ios_update_res = 0;
 
 	ios = &sc->host.ios;
 
@@ -1592,15 +1602,25 @@ dwmmc_cam_settran_settings(struct dwmmc_softc *sc, union ccb *ccb)
 		if (bootverbose)
 			device_printf(sc->dev, "Bus mode => %d\n", ios->bus_mode);
 	}
-	if (cts->ios_valid & MMC_VCCQ) {
+	if (cts->ios_valid & MMC_VCCQ && ios->vccq != new_ios->vccq) {
 		ios->vccq = new_ios->vccq;
 		if (bootverbose)
 			device_printf(sc->dev, "VCCQ => %d\n", ios->vccq);
-		res = dwmmc_switch_vccq(sc->dev, NULL);
-		device_printf(sc->dev, "VCCQ switch result: %d\n", res);
+		vccq_switch_res = dwmmc_switch_vccq(sc->dev, NULL);
+		device_printf(sc->dev, "VCCQ switch result: %d\n", vccq_switch_res);
 	}
 
-	return (dwmmc_update_ios(sc->dev, NULL));
+	ios_update_res = dwmmc_update_ios(sc->dev, NULL);
+
+	/*
+	 * If either updating IOS or setting new VCCQ resulted in error,
+	 * report this error back to the callee, otherwise report success.
+	 */
+	if (ios_update_res > 0)
+		return (ios_update_res);
+	if (vccq_switch_res > 0)
+		return (vccq_switch_res);
+	return (0);
 }
 
 static int
